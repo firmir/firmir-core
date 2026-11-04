@@ -1,0 +1,8 @@
+#include "my_project/MyButton.hpp"
+
+MyButton {
+    id: button
+    width: 120
+    height: 40
+    label: "OK"
+}

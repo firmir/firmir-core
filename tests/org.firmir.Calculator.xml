@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<node>
+  <interface name="org.firmir.Calculator">
+    <method name="Add">
+      <arg name="a" type="i" direction="in"/>
+      <arg name="b" type="i" direction="in"/>
+      <arg name="result" type="i" direction="out"/>
+    </method>
+    <method name="Divide">
+      <arg name="num" type="i" direction="in"/>
+      <arg name="denom" type="i" direction="in"/>
+      <arg name="quotient" type="i" direction="out"/>
+      <arg name="remainder" type="i" direction="out"/>
+    </method>
+    <method name="Notify"/>
+    <method name="Names">
+      <arg name="names" type="as" direction="out"/>
+    </method>
+    <signal name="Computed">
+      <arg name="value" type="i"/>
+    </signal>
+  </interface>
+</node>

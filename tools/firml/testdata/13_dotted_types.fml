@@ -1,0 +1,8 @@
+// Qualified type names (Firmir.Gui.X) map to C++ namespaces (Firmir::Gui::X).
+#include <firmir/items/Rectangle.hpp>
+
+Firmir.Gui.Rectangle {
+    Firmir.Gui.Rectangle {
+        width: 10
+    }
+}

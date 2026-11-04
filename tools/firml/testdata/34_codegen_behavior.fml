@@ -1,0 +1,21 @@
+// M5 codegen: `behavior on <property>` with an animation tree.
+#include <firmir/items/Rectangle.hpp>
+
+Firmir.Gui.Rectangle {
+    id: box
+    width: 100
+    height: 100
+    color: "#000000"
+
+    behavior on width {
+        SequentialAnimation {
+            NumberAnimation { duration: 200ms; easing: OutCubic }
+            PauseAnimation { duration: 50ms }
+            NumberAnimation { duration: 100ms }
+        }
+    }
+
+    behavior on color {
+        ColorAnimation { duration: 300ms; easing: InOutQuad }
+    }
+}

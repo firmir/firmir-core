@@ -1,0 +1,16 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+
+Rectangle {
+    id: root
+    width: 640
+
+    Rectangle {
+        id: dup
+        width: 10
+    }
+
+    Text {
+        id: dup
+    }
+}

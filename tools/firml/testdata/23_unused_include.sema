@@ -1,0 +1,5 @@
+(sema 23_unused_include.fml
+  (symbol root Rectangle 4:1)
+  (set root.width)
+  (set root.height)
+)

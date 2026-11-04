@@ -1,0 +1,11 @@
+(sema 03_nested.fml
+  (symbol root Rectangle 4:1)
+  (symbol header Rectangle 9:5)
+  (symbol title Text 13:9)
+  (symbol footer Text 19:5)
+  (set root.width)
+  (set root.height)
+  (set header.height)
+  (set title.text)
+  (set footer.text)
+)

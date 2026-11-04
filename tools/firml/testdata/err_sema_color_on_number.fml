@@ -1,0 +1,9 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+
+    behavior on width {
+        ColorAnimation { duration: 100ms }
+    }
+}

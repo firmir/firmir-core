@@ -1,0 +1,40 @@
+(file 11_full.fml
+  (include <firmir/items/Rectangle.hpp> 1:1)
+  (include <firmir/items/Text.hpp> 2:1)
+  (object Rectangle 4:1
+    (property id 5:5 (ident root))
+    (property width 6:5 (number 640))
+    (property height 7:5 (number 480))
+    (property color 8:5 (string "#202020"))
+    (object Rectangle 10:5
+      (property id 11:9 (ident header))
+      (property height 12:9 (number 48))
+      (anchor left 13:19 (member (ident parent) left))
+      (anchor right 13:38 (member (ident parent) right))
+      (anchor top 13:59 (member (ident parent) top))
+      (object Text 15:9
+        (property id 16:13 (ident title))
+        (property text 17:13 (string "Hello, Firml"))
+        (property x 18:13 (binary - (binary / (member (ident root) width) (number 2)) (binary / (ident width) (number 2))))
+        (property y 19:13 (number 40))
+        (behavior x 21:13
+          (object NumberAnimation 22:17
+            (property duration 23:21 (number 300ms))
+            (property easing 24:21 (ident OutCubic))
+          )
+        )
+      )
+    )
+    (object Rectangle 30:5
+      (property id 31:9 (ident content))
+      (anchor fill 32:19 (ident parent))
+      (anchor topMargin 32:33 (member (ident header) height))
+    )
+    (object Text 35:5
+      (property id 36:9 (ident badge))
+      (property text 37:9 (cond (binary > (ident width) (number 100)) (string "wide") (string "narrow")))
+      (anchor centerIn 38:17 (ident parent))
+      (anchor verticalCenterOffset 39:17 (unary - (number 20)))
+    )
+  )
+)

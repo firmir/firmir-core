@@ -1,0 +1,1 @@
+err_sema_bad_easing.fml:10:13: error: unknown easing 'Bouncy' (supported: Linear, InQuad, OutQuad, InOutQuad, OutCubic, OutExpo)

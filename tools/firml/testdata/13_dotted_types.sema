@@ -1,0 +1,5 @@
+(sema 13_dotted_types.fml
+  (symbol _obj_0 Rectangle 4:1)
+  (symbol _obj_1 Rectangle 5:5)
+  (set _obj_1.width)
+)

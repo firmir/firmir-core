@@ -1,0 +1,10 @@
+(file 09_strings_bools.fml
+  (include <firmir/items/Text.hpp> 1:1)
+  (object Text 3:1
+    (property id 4:5 (ident label))
+    (property text 5:5 (string "Hello, \"Firml\"\nTab:\tEnd"))
+    (property color 6:5 (string "#202020"))
+    (property visible 7:5 (bool true))
+    (property enabled 8:5 (bool false))
+  )
+)

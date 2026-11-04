@@ -1,0 +1,8 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+
+Rectangle {
+    id: root
+    width: 100
+    height: 100
+}

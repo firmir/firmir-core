@@ -1,0 +1,1 @@
+err_sema_handler_property_lowercase.fml:5:5: error: the property in 'on_widthChanged' must start with a lowercase letter

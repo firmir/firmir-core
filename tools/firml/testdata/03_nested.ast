@@ -1,0 +1,21 @@
+(file 03_nested.fml
+  (include <firmir/items/Rectangle.hpp> 1:1)
+  (include <firmir/items/Text.hpp> 2:1)
+  (object Rectangle 4:1
+    (property id 5:5 (ident root))
+    (property width 6:5 (number 640))
+    (property height 7:5 (number 480))
+    (object Rectangle 9:5
+      (property id 10:9 (ident header))
+      (property height 11:9 (number 48))
+      (object Text 13:9
+        (property id 14:13 (ident title))
+        (property text 15:13 (string "Header"))
+      )
+    )
+    (object Text 19:5
+      (property id 20:9 (ident footer))
+      (property text 21:9 (string "Footer"))
+    )
+  )
+)

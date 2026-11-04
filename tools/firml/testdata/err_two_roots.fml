@@ -1,0 +1,10 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+
+Rectangle {
+    width: 640
+}
+
+Text {
+    text: "second root"
+}

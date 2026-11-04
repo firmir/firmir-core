@@ -1,0 +1,13 @@
+(file 12_comments_semicolons.fml
+  (include <firmir/items/Rectangle.hpp> 2:1)
+  (object Rectangle 6:1
+    (property id 7:5 (ident root))
+    (property width 8:5 (number 640))
+    (property height 9:5 (number 480))
+    (object Rectangle 11:5
+      (property id 12:9 (ident child))
+      (anchor left 13:19 (member (ident parent) left))
+      (anchor right 13:38 (member (ident parent) right))
+    )
+  )
+)

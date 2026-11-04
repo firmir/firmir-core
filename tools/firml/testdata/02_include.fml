@@ -1,0 +1,8 @@
+#include <firmir/items/Rectangle.hpp>
+#include "my_project/MyButton.hpp"
+
+Rectangle {
+    MyButton {
+        text: "Click me"
+    }
+}

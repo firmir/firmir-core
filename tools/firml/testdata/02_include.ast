@@ -1,0 +1,9 @@
+(file 02_include.fml
+  (include <firmir/items/Rectangle.hpp> 1:1)
+  (include "my_project/MyButton.hpp" 2:1)
+  (object Rectangle 4:1
+    (object MyButton 5:5
+      (property text 6:9 (string "Click me"))
+    )
+  )
+)

@@ -1,0 +1,1 @@
+err_sema_type_mismatch.fml:5:5: error: cannot assign Number to 'visible' of type Bool

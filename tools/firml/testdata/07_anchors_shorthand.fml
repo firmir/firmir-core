@@ -1,0 +1,20 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+
+Rectangle {
+    id: root
+    width: 640
+    height: 480
+
+    Text {
+        id: badge
+        anchors.centerIn: parent
+        anchors.verticalCenterOffset: -20
+    }
+
+    Rectangle {
+        id: overlay
+        anchors.fill: parent
+        anchors.left: undefined
+    }
+}

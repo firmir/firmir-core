@@ -1,0 +1,7 @@
+(sema 08_behavior.fml
+  (symbol root Rectangle 3:1)
+  (set root.width)
+  (behavior root.width (SequentialAnimation (NumberAnimation duration=300ms easing=OutCubic) (PauseAnimation duration=50ms) (NumberAnimation duration=100ms easing=Linear)))
+  (behavior root.opacity (ParallelAnimation (NumberAnimation duration=150ms) (PauseAnimation duration=80ms)))
+  (behavior root.color (ColorAnimation duration=200ms easing=InOutQuad))
+)

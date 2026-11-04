@@ -1,0 +1,1 @@
+err_sema_color_on_number.fml:7:9: error: ColorAnimation cannot animate a Number property

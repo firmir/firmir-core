@@ -1,0 +1,1 @@
+err_sema_animation_type.fml:8:9: error: unknown animation type 'MagicAnimation' (supported: NumberAnimation, ColorAnimation, PauseAnimation, SequentialAnimation, ParallelAnimation)

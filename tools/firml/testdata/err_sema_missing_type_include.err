@@ -1,0 +1,1 @@
+err_sema_missing_type_include.fml:1:1: error: unknown type 'Rectangle' (missing #include, e.g. #include <firmir/items/Rectangle.hpp>)

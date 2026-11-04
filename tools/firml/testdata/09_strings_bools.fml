@@ -1,0 +1,9 @@
+#include <firmir/items/Text.hpp>
+
+Text {
+    id: label
+    text: "Hello, \"Firml\"\nTab:\tEnd"
+    color: "#202020"
+    visible: true
+    enabled: false
+}

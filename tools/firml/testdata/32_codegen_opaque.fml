@@ -1,0 +1,9 @@
+// M3 codegen: opaque custom type (quoted include); 'label' is not verifiable.
+#include "my_project/MyButton.hpp"
+
+MyButton {
+    id: button
+    width: 120
+    height: 40
+    label: "OK"
+}
