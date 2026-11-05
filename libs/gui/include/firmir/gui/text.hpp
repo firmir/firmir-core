@@ -1,5 +1,6 @@
 #pragma once
 
+#include <firmir/gui/font.hpp>
 #include <firmir/gui/item.hpp>
 #include <firmir/gui/painter.hpp>
 #include <firmir/string.hpp>
@@ -7,19 +8,8 @@
 namespace Firmir {
 namespace Gui {
 
-/**
- * @brief Text item (QML Text).
- *
- * Draws "text" (UTF-8) with the built-in 8x8 bitmap font (font8x8, Public
- * Domain — see Painter::drawText). "fontSize" is the requested glyph cell
- * height in pixels; the effective size is rounded up to a multiple of 8
- * (integer scaling, default 8).
- *
- * The item size is content-driven (QML implicitWidth/implicitHeight
- * semantics): setting "text"/"fontSize" derives width/height from the
- * rendered text extents, unless the dimension was explicitly assigned —
- * explicit writes stick. Anchors re-resolve on size changes.
- */
+/// UTF-8 text item with legacy bitmap-font compatibility and native
+/// FreeType/HarfBuzz rendering when Font is assigned.
 class Text : public Item {
 public:
     explicit Text(Object* parent = nullptr);
@@ -29,12 +19,28 @@ public:
     void setText(String text);
     Color color() const;
     void setColor(Color color);
+    Font font() const;
+    void setFont(Font font);
+    /// Legacy QML-like alias for font.pixelSize.
     int fontSize() const;
     void setFontSize(int fontSize);
+    String fontFamily() const;
+    void setFontFamily(String family);
+    int fontPixelSize() const;
+    void setFontPixelSize(int pixels);
+    float fontPointSize() const;
+    void setFontPointSize(float points);
+    bool fontBold() const;
+    void setFontBold(bool bold);
+    bool fontItalic() const;
+    void setFontItalic(bool italic);
+    bool fontUnderline() const;
+    void setFontUnderline(bool underline);
+    bool fontStrikeOut() const;
+    void setFontStrikeOut(bool strikeOut);
 
 protected:
     void paint(Painter& painter) override;
-
 private:
     class Impl;
     std::unique_ptr<Impl> d;

@@ -3,10 +3,14 @@
 #include "detail/font8x8.h"
 
 #include <firmir/render/device.hpp>
+#ifdef FIRMIR_HAVE_SHADERC
+#include <shaderc/shaderc.hpp>
+#endif
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <stdexcept>
 #include <vector>
 
@@ -123,6 +127,48 @@ void forEachCodepoint(const std::string& text, F&& fn) {
 
 } // namespace
 
+ShaderDesc customFragmentDesc(RenderDevice* device, const std::string& body) {
+    const std::string backend = device->backendName();
+    if (backend == "opengl") {
+        const std::string source =
+            "precision mediump float;\n"
+            "varying vec4 v_color; varying vec2 v_uv;\n"
+            "uniform sampler2D u_texture; uniform bool u_textured;\n"
+            "void main() {\n" + body + "\n}\n";
+        return {ShaderStage::Fragment, ShaderLanguage::Glsl, "main",
+                std::vector<std::uint8_t>(source.begin(), source.end())};
+    }
+#ifdef FIRMIR_HAVE_SHADERC
+    if (backend == "vulkan") {
+        const std::string source =
+            "#version 450\n"
+            "layout(location=0) in vec4 inColor; layout(location=1) in vec2 inUv;\n"
+            "layout(location=0) out vec4 outColor;\n"
+            "layout(set=0,binding=1) uniform sampler2D u_texture;\n"
+            "layout(push_constant) uniform PushConstants { vec2 targetSize; int textured; int padding; } pc;\n"
+            "#define texture2D texture\n"
+            "void main() {\n"
+            "vec4 v_color=inColor; vec2 v_uv=inUv; bool u_textured=pc.textured!=0;\n"
+            "vec4 gl_FragColor=vec4(0.0);\n" + body + "\noutColor=gl_FragColor;\n}\n";
+        shaderc::Compiler compiler;
+        shaderc::CompileOptions options;
+        options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_0);
+        const auto result = compiler.CompileGlslToSpv(
+            source, shaderc_fragment_shader, "firmir-shader-effect.frag", options);
+        if (result.GetCompilationStatus() == shaderc_compilation_status_success) {
+            const std::vector<std::uint32_t> words(result.cbegin(), result.cend());
+            const auto* bytes = reinterpret_cast<const std::uint8_t*>(words.data());
+            return {ShaderStage::Fragment, ShaderLanguage::Spirv, "main",
+                    std::vector<std::uint8_t>(bytes, bytes + words.size() * 4)};
+        }
+        (void)result;
+    }
+#else
+    (void)body;
+#endif
+    return {ShaderStage::Fragment, ShaderLanguage::Glsl, "main", dummyShaderCode()};
+}
+
 class RenderResources::Impl {
 public:
     explicit Impl(RenderDevice* device) : device(device) {}
@@ -219,6 +265,71 @@ public:
         return vertexBuffer_.get();
     }
 
+    RenderTexture* rgbaTexture(const void* key, std::uint64_t generation,
+                               int width, int height, const void* pixels) {
+        if (!key || !pixels || width <= 0 || height <= 0)
+            return nullptr;
+        auto& entry = rgbaTextures_[key];
+        const std::size_t bytes = static_cast<std::size_t>(width) * height * 4;
+        if (!entry.texture || entry.width != width || entry.height != height) {
+            TextureDesc desc;
+            desc.width = width;
+            desc.height = height;
+            desc.sampler.minFilter = Filter::Linear;
+            desc.sampler.magFilter = Filter::Linear;
+            entry.texture.reset(device->createTexture(desc));
+            entry.generation = generation - 1;
+        }
+        if (!entry.texture)
+            return nullptr;
+        if (entry.generation != generation) {
+            if (!entry.texture->write(pixels, bytes))
+                return nullptr;
+            entry.generation = generation;
+            entry.width = width;
+            entry.height = height;
+        }
+        return entry.texture.get();
+    }
+
+    RenderPipeline* customPipeline(const void* key, const std::string& body) {
+        RenderPipeline* fallback = pipeline(true, true);
+        if (!key || device->backendName() == "soft" || device->backendName() == "null")
+            return fallback;
+        auto& entry = shaderEffects_[key];
+        if (entry.pipeline && entry.body == body)
+            return entry.pipeline.get();
+        entry.body = body;
+        entry.fragment.reset(device->createShader(customFragmentDesc(device, body)));
+        PipelineDesc desc;
+        desc.vertexLayout.stride = sizeof(TextVertex);
+        desc.vertexLayout.attributes = {
+            {0, "pos", VertexFormat::Float2, 0},
+            {1, "color", VertexFormat::UByte4Norm, 8},
+            {2, "uv", VertexFormat::Float2, 12},
+        };
+        desc.rasterizer.scissorEnabled = true;
+        desc.blend.enabled = true;
+        desc.blend.srcColor = BlendFactor::SrcAlpha;
+        desc.blend.dstColor = BlendFactor::OneMinusSrcAlpha;
+        entry.pipeline.reset(entry.fragment
+            ? device->createPipeline(desc, vertexShader.get(), entry.fragment.get()) : nullptr);
+        return entry.pipeline ? entry.pipeline.get() : fallback;
+    }
+
+    struct ShaderEffectEntry {
+        std::string body;
+        std::unique_ptr<RenderShader> fragment;
+        std::unique_ptr<RenderPipeline> pipeline;
+    };
+    std::map<const void*, ShaderEffectEntry> shaderEffects_;
+    struct RgbaEntry {
+        std::unique_ptr<RenderTexture> texture;
+        std::uint64_t generation = 0;
+        int width = 0;
+        int height = 0;
+    };
+    std::map<const void*, RgbaEntry> rgbaTextures_;
 
     RenderDevice* device;
     std::unique_ptr<RenderShader> vertexShader;
@@ -474,6 +585,63 @@ void Painter::drawText(float x, float y, const std::string& text, Color color,
         d->emitQuad(verts, d->resources.pipeline(true, true), atlas);
         penX += advance;
     });
+}
+
+void Painter::drawRgba(const RectF& target, const void* rgba, int imageWidth,
+                       int imageHeight, const void* cacheKey,
+                       std::uint64_t generation, Color tint) {
+    if (!rgba || target.width <= 0 || target.height <= 0)
+        return;
+    Render::RenderTexture* texture = d->resources.rgbaTexture(
+        cacheKey, generation, imageWidth, imageHeight, rgba);
+    if (!texture)
+        return;
+    const auto& state = d->state();
+    const unsigned alpha = static_cast<unsigned>(tint.a) * 255 * state.opacity / 255;
+    if (!alpha)
+        return;
+    const std::uint8_t color[4] = {tint.r, tint.g, tint.b,
+                                   static_cast<std::uint8_t>(alpha)};
+    Point q[4];
+    Impl::mapRect(state, target.x, target.y, target.width, target.height, q);
+    const TextVertex vertices[6] = {
+        {q[0].x, q[0].y, {color[0], color[1], color[2], color[3]}, 0, 0},
+        {q[1].x, q[1].y, {color[0], color[1], color[2], color[3]}, 1, 0},
+        {q[2].x, q[2].y, {color[0], color[1], color[2], color[3]}, 1, 1},
+        {q[0].x, q[0].y, {color[0], color[1], color[2], color[3]}, 0, 0},
+        {q[2].x, q[2].y, {color[0], color[1], color[2], color[3]}, 1, 1},
+        {q[3].x, q[3].y, {color[0], color[1], color[2], color[3]}, 0, 1},
+    };
+    d->emitQuad(vertices, d->resources.pipeline(true, true), texture);
+}
+
+void Painter::drawShader(const RectF& target, const std::string& fragmentMain,
+                         const void* cacheKey, Color tint, const void* rgba,
+                         int imageWidth, int imageHeight, std::uint64_t generation) {
+    if (target.width <= 0 || target.height <= 0)
+        return;
+    Render::RenderTexture* texture = rgba
+        ? d->resources.rgbaTexture(cacheKey, generation, imageWidth, imageHeight, rgba)
+        : nullptr;
+    Render::RenderPipeline* pipeline = d->resources.customPipeline(cacheKey, fragmentMain);
+    if (!pipeline)
+        return;
+    const auto& state = d->state();
+    const unsigned alpha = static_cast<unsigned>(tint.a) * 255 * state.opacity / 255;
+    if (!alpha)
+        return;
+    const std::uint8_t color[4] = {tint.r, tint.g, tint.b, static_cast<std::uint8_t>(alpha)};
+    Point q[4];
+    Impl::mapRect(state, target.x, target.y, target.width, target.height, q);
+    const TextVertex vertices[6] = {
+        {q[0].x, q[0].y, {color[0], color[1], color[2], color[3]}, 0, 0},
+        {q[1].x, q[1].y, {color[0], color[1], color[2], color[3]}, 1, 0},
+        {q[2].x, q[2].y, {color[0], color[1], color[2], color[3]}, 1, 1},
+        {q[0].x, q[0].y, {color[0], color[1], color[2], color[3]}, 0, 0},
+        {q[2].x, q[2].y, {color[0], color[1], color[2], color[3]}, 1, 1},
+        {q[3].x, q[3].y, {color[0], color[1], color[2], color[3]}, 0, 1},
+    };
+    d->emitQuad(vertices, pipeline, texture);
 }
 
 void Painter::textSize(const std::string& text, int scale, float& width,

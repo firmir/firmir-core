@@ -24,13 +24,17 @@ LIB_XML=0
 LIB_DBUS=0
 LIB_NETWORKING=0
 LIB_GUI=0
+LIB_GUI_CONTROLS=0
 LIB_RENDER=0
+LIB_WAYLAND=0
+LIB_WAYLAND_COMPOSITOR=0
 PLUGIN_DRM=0
 PLUGIN_EVDEV=0
 PLUGIN_HEADLESS=0
 PLUGIN_RENDER_NULL=0
 PLUGIN_RENDER_SOFT=0
 PLUGIN_RENDER_OPENGL=0
+PLUGIN_RENDER_VULKAN=0
 
 usage() {
     cat <<'USAGE'
@@ -46,7 +50,9 @@ Component selection:
   --all-libs             build all libraries (default when no --lib-* is given)
   --lib-core             build firmir-core
   --lib-dbus             build firmir-dbus (also enables core+xml)
-  --lib-gui              build firmir-gui (also enables core)
+  --lib-gui              build firmir-gui and firmir-gui-controls (also enables core)
+  --lib-wayland          build firmir-wayland-client/server
+  --lib-wayland-compositor build the compositor module (also enables gui+wayland)
   --lib-json             build firmir-json (also enables core)
   --lib-networking       build firmir-networking (also enables core)
   --lib-render           build firmir-render (also enables core)
@@ -59,6 +65,7 @@ Component selection:
   --plugin-render-null   build the null render plugin
   --plugin-render-soft   build the software render plugin (used by firmir-gui)
   --plugin-render-opengl build the OpenGL ES 2 render plugin (EGL/GLES2)
+  --plugin-render-vulkan build the Vulkan render plugin (offscreen/readback)
   --no-examples          do not build examples
 
 Documentation:
@@ -90,10 +97,14 @@ while [ $# -gt 0 ]; do
         --all-libs)
             LIB_SELECTION=1
             LIB_CORE=1; LIB_JSON=1; LIB_XML=1; LIB_DBUS=1; LIB_NETWORKING=1; LIB_GUI=1; LIB_RENDER=1
+            LIB_GUI_CONTROLS=1; LIB_WAYLAND=1; LIB_WAYLAND_COMPOSITOR=1
             shift ;;
         --lib-core) LIB_SELECTION=1; LIB_CORE=1; shift ;;
         --lib-dbus) LIB_SELECTION=1; LIB_DBUS=1; shift ;;
-        --lib-gui) LIB_SELECTION=1; LIB_GUI=1; shift ;;
+        --lib-gui) LIB_SELECTION=1; LIB_GUI=1; LIB_GUI_CONTROLS=1; shift ;;
+        --lib-wayland) LIB_SELECTION=1; LIB_WAYLAND=1; shift ;;
+        --lib-wayland-compositor)
+            LIB_SELECTION=1; LIB_WAYLAND=1; LIB_WAYLAND_COMPOSITOR=1; LIB_GUI=1; LIB_GUI_CONTROLS=1; shift ;;
         --lib-json) LIB_SELECTION=1; LIB_JSON=1; shift ;;
         --lib-networking) LIB_SELECTION=1; LIB_NETWORKING=1; shift ;;
         --lib-render) LIB_SELECTION=1; LIB_RENDER=1; shift ;;
@@ -107,11 +118,12 @@ while [ $# -gt 0 ]; do
         --plugins-gui-headless|--plugin-gui-headless) PLUGIN_SELECTION=1; PLUGIN_HEADLESS=1; shift ;;
         --plugins-render-all)
             RENDER_PLUGIN_SELECTION=1
-            PLUGIN_RENDER_NULL=1; PLUGIN_RENDER_SOFT=1; PLUGIN_RENDER_OPENGL=1
+            PLUGIN_RENDER_NULL=1; PLUGIN_RENDER_SOFT=1; PLUGIN_RENDER_OPENGL=1; PLUGIN_RENDER_VULKAN=1
             shift ;;
         --plugins-render-null|--plugin-render-null) RENDER_PLUGIN_SELECTION=1; PLUGIN_RENDER_NULL=1; shift ;;
         --plugins-render-soft|--plugin-render-soft) RENDER_PLUGIN_SELECTION=1; PLUGIN_RENDER_SOFT=1; shift ;;
         --plugins-render-opengl|--plugin-render-opengl) RENDER_PLUGIN_SELECTION=1; PLUGIN_RENDER_OPENGL=1; shift ;;
+        --plugins-render-vulkan|--plugin-render-vulkan) RENDER_PLUGIN_SELECTION=1; PLUGIN_RENDER_VULKAN=1; shift ;;
         --no-examples) BUILD_EXAMPLES=0; shift ;;
         --no-doc-generate) DOC_GENERATE=0; shift ;;
         --no-doc-build|--no-doc) DOC_BUILD=0; DOC_GENERATE=0; shift ;;
@@ -132,6 +144,7 @@ fi
 
 if [ "$LIB_SELECTION" -eq 0 ]; then
     LIB_CORE=1; LIB_JSON=1; LIB_XML=1; LIB_DBUS=1; LIB_NETWORKING=1; LIB_GUI=1; LIB_RENDER=1
+    LIB_GUI_CONTROLS=1; LIB_WAYLAND=1; LIB_WAYLAND_COMPOSITOR=1
 fi
 if [ "$LIB_JSON" -eq 1 ] || [ "$LIB_XML" -eq 1 ] || [ "$LIB_DBUS" -eq 1 ] || \
    [ "$LIB_NETWORKING" -eq 1 ] || [ "$LIB_GUI" -eq 1 ] || [ "$LIB_RENDER" -eq 1 ]; then
@@ -144,6 +157,9 @@ if [ "$LIB_GUI" -eq 1 ]; then
     # firmir-gui renders through firmir-render.
     LIB_RENDER=1
 fi
+if [ "$LIB_WAYLAND_COMPOSITOR" -eq 1 ]; then
+    LIB_RENDER=1
+fi
 if [ "$PLUGIN_SELECTION" -eq 0 ]; then
     if [ "$LIB_GUI" -eq 1 ]; then
         PLUGIN_DRM=1; PLUGIN_EVDEV=1; PLUGIN_HEADLESS=1
@@ -153,9 +169,9 @@ if [ "$PLUGIN_SELECTION" -eq 0 ]; then
 fi
 if [ "$RENDER_PLUGIN_SELECTION" -eq 0 ]; then
     if [ "$LIB_RENDER" -eq 1 ]; then
-        PLUGIN_RENDER_NULL=1; PLUGIN_RENDER_SOFT=1; PLUGIN_RENDER_OPENGL=1
+        PLUGIN_RENDER_NULL=1; PLUGIN_RENDER_SOFT=1; PLUGIN_RENDER_OPENGL=1; PLUGIN_RENDER_VULKAN=1
     else
-        PLUGIN_RENDER_NULL=0; PLUGIN_RENDER_SOFT=0; PLUGIN_RENDER_OPENGL=0
+        PLUGIN_RENDER_NULL=0; PLUGIN_RENDER_SOFT=0; PLUGIN_RENDER_OPENGL=0; PLUGIN_RENDER_VULKAN=0
     fi
 fi
 if [ "$PLUGIN_DRM" -eq 1 ] || [ "$PLUGIN_EVDEV" -eq 1 ] || [ "$PLUGIN_HEADLESS" -eq 1 ]; then
@@ -235,7 +251,9 @@ generate_docs() { # generate_docs <build-dir>
     [ "$LIB_DBUS" -eq 1 ] && libs+=(dbus)
     [ "$LIB_NETWORKING" -eq 1 ] && libs+=(networking)
     [ "$LIB_GUI" -eq 1 ] && libs+=(gui)
+    [ "$LIB_GUI_CONTROLS" -eq 1 ] && libs+=(gui-controls)
     [ "$LIB_RENDER" -eq 1 ] && libs+=(render)
+    [ "$LIB_WAYLAND" -eq 1 ] && libs+=(wayland)
     for lib in "${libs[@]}"; do
         "$tool" "libs/$lib" "$dir/doc/$lib" || return 1
     done
@@ -294,13 +312,17 @@ CMAKE_ARGS=(
     -DFIRMIR_BUILD_LIB_DBUS="$(bool "$LIB_DBUS")"
     -DFIRMIR_BUILD_LIB_NETWORKING="$(bool "$LIB_NETWORKING")"
     -DFIRMIR_BUILD_LIB_GUI="$(bool "$LIB_GUI")"
+    -DFIRMIR_BUILD_LIB_GUI_CONTROLS="$(bool "$LIB_GUI_CONTROLS")"
     -DFIRMIR_BUILD_LIB_RENDER="$(bool "$LIB_RENDER")"
+    -DFIRMIR_BUILD_LIB_WAYLAND="$(bool "$LIB_WAYLAND")"
+    -DFIRMIR_BUILD_LIB_WAYLAND_COMPOSITOR="$(bool "$LIB_WAYLAND_COMPOSITOR")"
     -DFIRMIR_BUILD_PLUGIN_GUI_DRM="$(bool "$PLUGIN_DRM")"
     -DFIRMIR_BUILD_PLUGIN_GUI_EVDEV="$(bool "$PLUGIN_EVDEV")"
     -DFIRMIR_BUILD_PLUGIN_GUI_HEADLESS="$(bool "$PLUGIN_HEADLESS")"
     -DFIRMIR_BUILD_PLUGIN_RENDER_NULL="$(bool "$PLUGIN_RENDER_NULL")"
     -DFIRMIR_BUILD_PLUGIN_RENDER_SOFT="$(bool "$PLUGIN_RENDER_SOFT")"
     -DFIRMIR_BUILD_PLUGIN_RENDER_OPENGL="$(bool "$PLUGIN_RENDER_OPENGL")"
+    -DFIRMIR_BUILD_PLUGIN_RENDER_VULKAN="$(bool "$PLUGIN_RENDER_VULKAN")"
 )
 if [ -n "$SANITIZER" ]; then
     CMAKE_ARGS+=(-DFIRMIR_SANITIZER="$SANITIZER")

@@ -6,16 +6,36 @@ add_library(firmir-gui SHARED
     src/animation.cpp
     src/app.cpp
     src/button.cpp
+    src/font.cpp
+    src/flickable.cpp
+    src/image.cpp
     src/item.cpp
+    src/mousearea.cpp
     src/painter.cpp
     src/platform.cpp
     src/rectangle.cpp
     src/screen.cpp
+    src/shadereffect.cpp
     src/text.cpp
     src/window.cpp
 )
 target_include_directories(firmir-gui PUBLIC include)
 target_link_libraries(firmir-gui PUBLIC firmir-core PRIVATE firmir-render ${CMAKE_DL_LIBS})
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(FIRMIR_FONT REQUIRED freetype2 fontconfig harfbuzz)
+target_include_directories(firmir-gui PRIVATE ${FIRMIR_FONT_INCLUDE_DIRS})
+target_link_directories(firmir-gui PRIVATE ${FIRMIR_FONT_LIBRARY_DIRS})
+target_link_libraries(firmir-gui PRIVATE ${FIRMIR_FONT_LIBRARIES})
+find_package(PNG REQUIRED)
+find_package(JPEG REQUIRED)
+target_link_libraries(firmir-gui PRIVATE PNG::PNG JPEG::JPEG)
+find_path(SHADERC_INCLUDE_DIR shaderc/shaderc.hpp)
+find_library(SHADERC_SHARED_LIBRARY shaderc_shared)
+if(SHADERC_INCLUDE_DIR AND SHADERC_SHARED_LIBRARY)
+    target_include_directories(firmir-gui PRIVATE ${SHADERC_INCLUDE_DIR})
+    target_link_libraries(firmir-gui PRIVATE ${SHADERC_SHARED_LIBRARY})
+    target_compile_definitions(firmir-gui PRIVATE FIRMIR_HAVE_SHADERC)
+endif()
 
 # Header-only interface with the backend plugin ABI, for plugin targets that
 # must not link the base library itself.

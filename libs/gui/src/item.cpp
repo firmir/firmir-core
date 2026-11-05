@@ -678,6 +678,12 @@ Window* Item::window() const {
     return nullptr;
 }
 
+std::unique_lock<std::recursive_mutex> Item::lockScene() const {
+    if (Window* w = window())
+        return std::unique_lock<std::recursive_mutex>(detail::sceneMutex(w));
+    return std::unique_lock<std::recursive_mutex>();
+}
+
 void Item::update() {
     if (Window* w = window())
         detail::scheduleRender(w);

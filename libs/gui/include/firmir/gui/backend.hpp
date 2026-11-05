@@ -35,6 +35,11 @@ public:
     virtual void setTitle(const std::string& title) = 0;
     virtual void setGeometry(const Rect& geometry) = 0;
     virtual void setVisible(bool visible) = 0;
+    virtual void setMaximized(bool maximized) { (void)maximized; }
+    virtual void setFullscreen(bool fullscreen) { (void)fullscreen; }
+    virtual void setMinimized() {}
+    /// Native configure notification (Wayland/xdg, resize, WM actions).
+    std::function<void(const Rect&)> geometryCallback;
     /// Presents a rendered ARGB32 frame. Called from the render thread;
     /// implementations must be thread-safe with respect to the GUI thread.
     virtual void present(const std::uint32_t* pixels, const Size& size) = 0;

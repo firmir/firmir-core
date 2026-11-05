@@ -1,8 +1,8 @@
 # Firmir
 
-Firmir — C++17 фреймворк в духе Qt, но без внешних зависимостей: только
-стандартная библиотека и Linux API (epoll, eventfd, timerfd). Исключение —
-модуль networking, который использует OpenSSL для HTTPS.
+Firmir — C++17 фреймворк в духе Qt. Ядро использует стандартную библиотеку
+и Linux API (epoll, eventfd, timerfd); модули расширения подключают OpenSSL,
+Vulkan/OpenGL, FreeType/Fontconfig/HarfBuzz, PNG/JPEG и базовую libwayland.
 
 ## Требования
 
@@ -13,12 +13,15 @@ Firmir — C++17 фреймворк в духе Qt, но без внешних �
 | pthreads | в составе glibc | `Threads::Threads` |
 | OpenSSL | `libssl-dev` | модуль networking (HTTPS) |
 | EGL + GLES2 | `libegl1-mesa-dev`, `libgles2-mesa-dev` | OpenGL render-плагин (опционально) |
+| Vulkan + SPIR-V | `libvulkan-dev`, `glslang-tools`, `libshaderc-dev`, `mesa-vulkan-drivers` | Vulkan renderer и ShaderEffect |
+| Шрифты | `libfreetype-dev`, `libfontconfig1-dev`, `libharfbuzz-dev` | Font, FontDatabase, Unicode Text |
+| Изображения | `libpng-dev`, `libjpeg-dev` | Gui::Image |
 | dbus-daemon | `dbus` | приватная сессионная шина в тестах и примере D-Bus (без него D-Bus-тесты пропускаются) |
 | setarch | `util-linux` | запуск TSan-сборки с отключённым ASLR |
 | linux/input.h | `linux-libc-dev` | GUI-плагин evdev (опционально) |
 | drm/drm.h | `libdrm-dev` | GUI-плагин drm (опционально) |
-| wayland-client | `libwayland-dev` | GUI-плагин wayland — настоящие окна под Wayland/WSLg (опционально) |
-| wayland-scanner + xdg-shell | `libwayland-bin`, `wayland-protocols` | генерация xdg-shell кода для wayland-плагина |
+| wayland-client/server | `libwayland-dev` | firmir-wayland-client/server/compositor и GUI-плагин |
+| wayland-scanner + protocols | `libwayland-bin`, `wayland-protocols` | C/C++ protocol generation, xdg-shell/viewporter/decoration/output |
 | lcov + genhtml | `lcov` | отчёт о покрытии (`setup.sh --coverage`) |
 | gcovr | — | альтернативный отчёт о покрытии (опционально) |
 
@@ -32,33 +35,58 @@ libs/
   xml/          firmir-xml      — XmlElement/XmlDocument
   dbus/         firmir-dbus     — DBusConnection + утилита firmir-dbus-tool
   networking/   firmir-networking — NetworkAccessManager/NetworkReply (OpenSSL)
-  gui/          firmir-gui      — Screen, Window, Item, Text, Painter, Platform
+  gui/          firmir-gui      — Screen, Window, Item, Text, Painter, Platform,
+                                   Font/FontDatabase, Image/Flickable/ShaderEffect/MouseArea
+  gui-controls/ firmir-gui-controls — Button, selection controls, views, indicators
+  wayland/      firmir-wayland-client/server/compositor + C++ protocol generator
   render/       firmir-render   — абстракция примитивного рендеринга поверх GPU API
 plugins/gui/    подгружаемые бэкенды firmir-gui-<имя>.so (headless, evdev, drm, wayland)
 plugins/render/ подгружаемые рендер-бэкенды firmir-render-<имя>.so
-                (null, soft, opengl; Vulkan/DirectX — здесь)
+                (null, soft, opengl, vulkan)
 tools/doc/      firmir-doc      — генератор Markdown из ///-комментариев
 tools/firml/    firmlc          — транспайлер Firml (.fml) → C++ (лексер/парсер, semantic
                 analysis, кодогенерация: статические свойства, anchors, привязки
                 через propertyChanged, `behavior on` → дерево анимаций;
                 snapshot-тесты + e2e); cmake/FirmlCodegen.cmake: firml_add_target() —
                 компиляция .fml → C++ во время сборки
-apps/           red-window      — generated red/blue Firml views с Button;
-                запуск: FIRMIR_GUI_DISPLAY=wayland ./build/apps/red-window/red-window
-                [red|blue] (закрытие — кнопка, backend: FIRMIR_RENDER_BACKEND)
+apps/           red-window      — Controls Gallery: главное меню и страницы всех
+                элементов; размер — треть экрана, кнопки minimize/maximize/close.
+                Запуск: FIRMIR_GUI_DISPLAY=wayland ./build/apps/red-window/red-window
+                (renderer: FIRMIR_RENDER_BACKEND=soft|opengl|vulkan)
 examples/       example-{core,json,xml,dbus,networking,render}, example_gui
 tests/          собственный мини-фреймворк, один бинарник tests
 setup.sh        сборка и CTest; опционально ASan/TSan/coverage и выбор компонентов
 ```
 
 Рендеринг GUI идёт через firmir-render: сцена элементов записывается в
-командный буфер (треугольники, атлас глифов) и исполняется бэкендом —
-по умолчанию `soft` (CPU-растеризатор; переопределяется
-`FIRMIR_RENDER_BACKEND`). Бэкенд `opengl` выполняет те же команды через
-EGL/OpenGL ES 2 (GLSL, VBO, FBO) и возвращает кадр display-плагину через
-`glReadPixels`. Текст рисуется встроенным растровым шрифтом
-font8x8 (Daniel Hepper, Public Domain), масштабирование — целочисленное
-(`fontSize` округляется вверх до кратного 8).
+командный буфер и исполняется выбранным backend (`FIRMIR_RENDER_BACKEND`,
+по умолчанию `soft`). `opengl` использует EGL/GLES2/FBO/glReadPixels; `vulkan` —
+SPIR-V pipelines, buffers/images/descriptors/render passes и readback в
+`CpuRenderTarget`. Display backends получают одинаковый ARGB-кадр.
+
+`Gui::Text` сохраняет встроенный font8x8 для совместимости, а после назначения
+`Gui::Font` использует Fontconfig/FreeType/HarfBuzz. `FontDatabase` перечисляет
+семейства и регистрирует TTF/OTF из файла или памяти. Поддерживаются
+`font.family`, `font.pixelSize`, `font.pointSize`, bold/italic/underline/strikeout.
+
+`firmir-gui-controls` содержит Button, CheckBox, RadioButton, Switch, ScrollView,
+SplitView, StackView, SwipeView, TabBar, BusyIndicator и ProgressBar. Gallery в
+`apps/red-window` демонстрирует их вместе с Flickable, Image, ShaderEffect и
+MouseArea. Для headless smoke-проверки: `FIRMIR_GALLERY_HEADLESS=1`,
+`FIRMIR_GALLERY_PAGE=0..12`, `FIRMIR_GALLERY_AUTO_QUIT=1`.
+
+Wayland разделён на `firmir-wayland-client`, `firmir-wayland-server` и
+`firmir-wayland-compositor`. Используется только базовая libwayland, без Qt и
+wlroots. `tools/wayland/firmir-wayland-generator.py` создаёт C++ proxy/resource
+классы из XML. GUI backend использует client Display/Registry/dispatch API.
+Пример собственного сервера:
+
+```sh
+./build/examples/wayland/example_wayland_compositor
+# В другом терминале подставьте напечатанный socket:
+WAYLAND_DISPLAY=wayland-0 FIRMIR_GUI_DISPLAY=wayland \
+  FIRMIR_RENDER_BACKEND=vulkan ./build/apps/red-window/red-window
+```
 
 Для неблокирующего D-Bus вызова используйте `DBusConnection::asyncCall()`:
 возвращённый `DBusMessage*` принадлежит соединению, а в его сигнале

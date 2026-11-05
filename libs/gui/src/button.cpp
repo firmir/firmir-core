@@ -60,6 +60,7 @@ Button::~Button() = default;
 
 String Button::text() const { return d->text; }
 void Button::setText(String text) {
+    auto sceneLock = lockScene();
     if (d->text == text)
         return;
     d->text = std::move(text);
@@ -70,6 +71,7 @@ void Button::setText(String text) {
 
 Color Button::color() const { return d->color; }
 void Button::setColor(Color color) {
+    auto sceneLock = lockScene();
     if (d->color == color)
         return;
     d->color = color;
@@ -79,6 +81,7 @@ void Button::setColor(Color color) {
 
 Color Button::textColor() const { return d->textColor; }
 void Button::setTextColor(Color color) {
+    auto sceneLock = lockScene();
     if (d->textColor == color)
         return;
     d->textColor = color;
@@ -88,6 +91,7 @@ void Button::setTextColor(Color color) {
 
 int Button::fontSize() const { return d->fontSize; }
 void Button::setFontSize(int fontSize) {
+    auto sceneLock = lockScene();
     if (d->fontSize == fontSize)
         return;
     d->fontSize = fontSize;
@@ -99,6 +103,7 @@ void Button::setFontSize(int fontSize) {
 bool Button::isPressed() const { return d->pressed; }
 
 void Button::setPressed(bool pressed) {
+    auto sceneLock = lockScene();
     if (d->pressed == pressed)
         return;
     d->pressed = pressed;

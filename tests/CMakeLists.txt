@@ -46,14 +46,26 @@ if(FIRMIR_BUILD_LIB_RENDER AND TARGET firmir-render-null)
     if(TARGET firmir-render-soft)
         list(APPEND TEST_LIBS firmir-render-soft)
     endif()
-    if(TARGET firmir-render-opengl)
-        list(APPEND TEST_LIBS firmir-render-opengl)
-    endif()
 elseif(FIRMIR_BUILD_LIB_RENDER)
     message(STATUS "firmir-render tests require the null plugin; skipping them")
 endif()
 
+if(TARGET firmir-gui-controls)
+    list(APPEND TEST_SOURCES test_gui_extended.cpp)
+    list(APPEND TEST_LIBS firmir-gui-controls)
+endif()
+if(TARGET firmir-wayland-compositor)
+    list(APPEND TEST_SOURCES test_wayland.cpp)
+    list(APPEND TEST_LIBS firmir-wayland-client firmir-wayland-compositor)
+endif()
+
 add_executable(tests ${TEST_SOURCES})
+if(TARGET firmir-render-opengl)
+    add_dependencies(tests firmir-render-opengl)
+endif()
+if(TARGET firmir-render-vulkan)
+    add_dependencies(tests firmir-render-vulkan)
+endif()
 target_link_libraries(tests PRIVATE ${TEST_LIBS})
 
 if(FIRMIR_BUILD_LIB_GUI AND TARGET firmir-gui-headless)
@@ -73,6 +85,9 @@ if(TARGET firmir-render-soft)
 endif()
 if(TARGET firmir-render-opengl)
     target_compile_definitions(tests PRIVATE FIRMIR_RENDER_TEST_OPENGL)
+endif()
+if(TARGET firmir-render-vulkan)
+    target_compile_definitions(tests PRIVATE FIRMIR_RENDER_TEST_VULKAN)
 endif()
 
 if(FIRMIR_BUILD_LIB_DBUS)
@@ -115,4 +130,22 @@ if(FIRMIR_SANITIZER STREQUAL "thread")
     add_test(NAME firmir.tests COMMAND setarch -R $<TARGET_FILE:tests>)
 else()
     add_test(NAME firmir.tests COMMAND $<TARGET_FILE:tests>)
+endif()
+
+# Mesa's Vulkan worker cache survives the loader itself (two native allocations
+# outside Firmir ownership). Keep LSan for the full suite and isolate only the
+# Vulkan pixel test with leak detection disabled; ASan/UBSan remain active.
+if(FIRMIR_SANITIZER STREQUAL "address" AND TARGET firmir-render-vulkan)
+    set_tests_properties(firmir.tests PROPERTIES
+        ENVIRONMENT "FIRMIR_TEST_SKIP_FILTER=render_vulkan")
+    add_test(NAME firmir.vulkan COMMAND $<TARGET_FILE:tests>)
+    set_tests_properties(firmir.vulkan PROPERTIES
+        ENVIRONMENT "FIRMIR_TEST_FILTER=render_vulkan;ASAN_OPTIONS=detect_leaks=0")
+endif()
+if(FIRMIR_SANITIZER STREQUAL "thread" AND TARGET firmir-render-vulkan)
+    set_tests_properties(firmir.tests PROPERTIES
+        ENVIRONMENT "FIRMIR_TEST_SKIP_FILTER=render_vulkan")
+    add_test(NAME firmir.vulkan COMMAND setarch -R $<TARGET_FILE:tests>)
+    set_tests_properties(firmir.vulkan PROPERTIES
+        ENVIRONMENT "FIRMIR_TEST_FILTER=render_vulkan;TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan-lavapipe.supp")
 endif()

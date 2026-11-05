@@ -10,6 +10,8 @@
 
 #include <firmir/gui/backend.hpp>
 #include <firmir/thread.hpp>
+#include <firmir/wayland/client/display.hpp>
+#include <firmir/wayland/client/registry.hpp>
 
 #include <wayland-client.h>
 #include <xdg-shell-client-protocol.h>
@@ -148,6 +150,15 @@ public:
     }
 
     void present(const std::uint32_t* pixels, const Size& size) override;
+    void setMaximized(bool maximized) override {
+        if (maximized) xdg_toplevel_set_maximized(m_toplevel);
+        else xdg_toplevel_unset_maximized(m_toplevel);
+    }
+    void setFullscreen(bool fullscreen) override {
+        if (fullscreen) xdg_toplevel_set_fullscreen(m_toplevel, nullptr);
+        else xdg_toplevel_unset_fullscreen(m_toplevel);
+    }
+    void setMinimized() override { xdg_toplevel_set_minimized(m_toplevel); }
 
 private:
     void destroyBuffer(Buffer& buffer);
@@ -160,8 +171,15 @@ private:
 
     static void onSurfaceConfigure(void* data, xdg_surface* surface,
                                    std::uint32_t serial);
-    static void onToplevelConfigure(void*, xdg_toplevel*, std::int32_t,
-                                    std::int32_t, wl_array*) {}
+    static void onToplevelConfigure(void* data, xdg_toplevel*, std::int32_t width,
+                                    std::int32_t height, wl_array*) {
+        auto* self = static_cast<WaylandWindow*>(data);
+        if (width > 0 && height > 0) {
+            self->m_size = Size{width, height};
+            if (self->geometryCallback)
+                self->geometryCallback(Rect{0, 0, width, height});
+        }
+    }
     static void onToplevelClose(void* data, xdg_toplevel*);
 
     static const wl_buffer_listener bufferListener;
@@ -277,11 +295,12 @@ private:
     static void onPointerAxis(void*, wl_pointer*, std::uint32_t, std::uint32_t,
                               wl_fixed_t) {}
 
-    static const wl_registry_listener registryListener;
     static const xdg_wm_base_listener wmBaseListener;
     static const wl_seat_listener seatListener;
     static const wl_pointer_listener pointerListener;
 
+    std::unique_ptr<Firmir::Wayland::Client::Display> m_clientDisplay;
+    std::unique_ptr<Firmir::Wayland::Client::Registry> m_clientRegistry;
     wl_display* m_display = nullptr;
     wl_registry* m_registry = nullptr;
     std::vector<std::unique_ptr<WaylandScreen>> m_screens;
@@ -297,23 +316,31 @@ private:
     friend class WaylandScreen;
 };
 
-const wl_registry_listener WaylandBackend::registryListener = {onGlobal,
-                                                               onGlobalRemove};
 const xdg_wm_base_listener WaylandBackend::wmBaseListener = {onPing};
 
 WaylandBackend::WaylandBackend() {
-    m_display = wl_display_connect(nullptr);
+    m_clientDisplay = std::make_unique<Firmir::Wayland::Client::Display>();
+    m_display = m_clientDisplay->handle();
     if (!m_display) {
         std::fprintf(stderr, "firmir-wayland: wl_display_connect failed "
                              "(WAYLAND_DISPLAY not set?)\n");
         return;
     }
-    m_registry = wl_display_get_registry(m_display);
-    wl_registry_add_listener(m_registry, &registryListener, this);
+    m_clientRegistry = m_clientDisplay->createRegistry();
+    m_registry = m_clientRegistry ? m_clientRegistry->handle() : nullptr;
+    if (!m_registry)
+        return;
+    m_clientRegistry->setGlobalHandler([this](std::uint32_t name, const char* interface,
+                                              std::uint32_t version) {
+        onGlobal(this, m_registry, name, interface, version);
+    });
+    m_clientRegistry->setGlobalRemoveHandler([this](std::uint32_t name) {
+        onGlobalRemove(this, m_registry, name);
+    });
     // Two roundtrips: globals arrive in the first, the wl_output
     // name/mode/done burst in the second.
-    wl_display_roundtrip(m_display);
-    wl_display_roundtrip(m_display);
+    m_clientDisplay->roundtrip();
+    m_clientDisplay->roundtrip();
     if (!m_compositor || !m_shm || !m_wmBase)
         std::fprintf(stderr, "firmir-wayland: compositor misses "
                              "wl_compositor/wl_shm/xdg_wm_base\n");
@@ -342,11 +369,11 @@ WaylandBackend::~WaylandBackend() {
             wl_shm_destroy(m_shm);
         if (m_compositor)
             wl_compositor_destroy(m_compositor);
-        if (m_registry)
-            wl_registry_destroy(m_registry);
+        m_clientRegistry.reset();
+        m_registry = nullptr;
     }
-    if (m_display)
-        wl_display_disconnect(m_display);
+    m_clientDisplay.reset();
+    m_display = nullptr;
 }
 
 void WaylandBackend::onGlobal(void* data, wl_registry* registry,
@@ -473,22 +500,22 @@ void WaylandBackend::onGlobalRemove(void* data, wl_registry*,
 /// Canonical multithreaded read loop: prepare_read + poll + read_events,
 /// then dispatch. The 100 ms poll timeout bounds the shutdown latency.
 void WaylandBackend::threadMain() {
-    const int fd = wl_display_get_fd(m_display);
+    const int fd = m_clientDisplay->fd();
     while (m_running) {
         {
             std::lock_guard<std::mutex> lock(api);
-            while (wl_display_prepare_read(m_display) != 0)
-                wl_display_dispatch_pending(m_display);
-            wl_display_flush(m_display);
+            while (m_clientDisplay->prepareRead() != 0)
+                m_clientDisplay->dispatchPending();
+            m_clientDisplay->flush();
         }
         pollfd pfd{fd, POLLIN, 0};
         const int ret = ::poll(&pfd, 1, 100);
         std::lock_guard<std::mutex> lock(api);
         if (ret > 0 && (pfd.revents & POLLIN))
-            wl_display_read_events(m_display);
+            m_clientDisplay->readEvents();
         else
-            wl_display_cancel_read(m_display);
-        wl_display_dispatch_pending(m_display);
+            m_clientDisplay->cancelRead();
+        m_clientDisplay->dispatchPending();
     }
 }
 

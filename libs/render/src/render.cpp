@@ -116,5 +116,15 @@ std::unique_ptr<RenderDevice> Render::createDevice(const std::string& name,
     return std::unique_ptr<RenderDevice>(selected->createDevice(desc));
 }
 
+void Render::shutdown() {
+    std::vector<LoadedBackend> loaded;
+    {
+        std::lock_guard<std::mutex> lock(g_backendsMutex);
+        loaded.swap(g_backends);
+    }
+    for (auto it = loaded.rbegin(); it != loaded.rend(); ++it)
+        dlclose(it->handle);
+}
+
 } // namespace Render
 } // namespace Firmir

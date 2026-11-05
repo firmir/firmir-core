@@ -50,13 +50,18 @@ tests/          собственный мини-фреймворк, один б�
   wl_compositor/wl_shm/xdg-shell, shm double-buffering, поток dispatch
   (prepare_read/poll), экраны через wl_output, pointer-ввод (wl_seat),
   закрытие окна → quit. Первое приложение: `apps/red-window`.
-- **Рендеринг GUI через firmir-render** — Painter записывает команды
-  (fillRect → треугольники, drawText → атлас глифов) в RenderCommandBuffer;
-  бэкенд `soft` (plugins/render/soft) — CPU-растеризатор треугольников
-  (барицентрика, top-left rule, source-over, текстуры nearest, scissor).
-  Бэкенд `opengl` использует EGL pbuffer, OpenGL ES 2, GLSL/VBO/FBO и
-  glReadPixels; `CpuRenderTarget` передаёт пиксели существующим display-бэкендам.
-  Текст — встроенный шрифт font8x8 (Public Domain); Text: fontSize + implicit size.
+- **Рендеринг GUI через firmir-render** — Painter записывает команды в
+  RenderCommandBuffer; backends: soft (CPU), OpenGL ES 2 (EGL/FBO/readback),
+  Vulkan (SPIR-V, render passes/pipelines/descriptors/offscreen readback).
+  RGBA-текстуры Text/Image/ShaderEffect живут в RenderResources до разрушения
+  device, поэтому один scene graph работает на всех backends.
+- **Fonts/controls** — Fontconfig + FreeType + HarfBuzz для native Text;
+  FontDatabase поддерживает system/application fonts. Отдельная
+  firmir-gui-controls реализует requested QuickControls-подобные классы.
+- **Wayland modules** — client (Display/Registry/Proxy + XML→C++ generator),
+  server (Display/Client/Resource), compositor (surfaces/outputs/seat/shells,
+  xdg-shell/viewporter/decoration/output). GUI backend использует client module.
+  Собственный example compositor способен принять gallery и показать shm-кадр.
 - **DBus/network async IO** — `DBusConnection::asyncCall` переводит чтение
   bus-fd на SocketNotifier и заменяет pending `DBusMessage` ответом перед
   сигналом `finished()`. `NetworkAccessManager::RequestMode` выбирает worker
@@ -166,6 +171,11 @@ ctest --test-dir build --output-on-failure
       `propertyChanged`), item-типы `Rectangle`/`Text`, `Color::fromString/
       lighter/darker`, `PropertyAnimation` + easing (Linear/InQuad/OutQuad/
       InOutQuad/OutCubic/OutExpo).
+- [x] Vulkan offscreen renderer + pixel tests на lavapipe.
+- [x] Font/FontDatabase, native arbitrary-font Text, Flickable/ShaderEffect/Image/MouseArea.
+- [x] firmir-gui-controls (11 controls) и Controls Gallery со всеми страницами.
+- [x] firmir-wayland-client/server/compositor, XML→C++ generator, migrated backend,
+      собственный compositor example с реальным first frame клиента.
 - [ ] Покрытие тестами 100% (ветки ошибок, граничные случаи)
 - [x] Wayland-бэкенд для gui (wl_compositor/wl_shm/xdg-shell, pointer input)
 - [ ] DRM-бэкенд: page flip vsync вместо простого memcpy, окна меньше

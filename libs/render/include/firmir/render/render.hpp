@@ -26,6 +26,9 @@ public:
     static std::unique_ptr<RenderDevice> createDevice(
         const std::string& name = std::string(),
         const DeviceDesc& desc = {});
+    /// Unloads cached plugins. All devices and their resources must already
+    /// be destroyed; subsequent backend()/createDevice() calls reload them.
+    static void shutdown();
 };
 
 } // namespace Render

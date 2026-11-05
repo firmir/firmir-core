@@ -21,5 +21,15 @@ if(FIRMIR_BUILD_PLUGIN_RENDER_OPENGL)
     endif()
 endif()
 
+if(FIRMIR_BUILD_PLUGIN_RENDER_VULKAN)
+    find_package(Vulkan QUIET)
+    find_program(GLSLANG_VALIDATOR glslangValidator)
+    if(Vulkan_FOUND AND GLSLANG_VALIDATOR)
+        add_subdirectory(vulkan)
+    else()
+        message(STATUS "Vulkan/glslangValidator not found; skipping the Vulkan render plugin")
+    endif()
+endif()
+
 # Real platform backends (opengl/vulkan/directx) belong here as
 # plugins/render/<api>/ and must export firmir_render_create_backend().

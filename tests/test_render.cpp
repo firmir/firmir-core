@@ -351,3 +351,78 @@ TEST_CASE(render_opengl_clear_quad_and_texture) {
     CHECK(((pixel >> 16) & 0xff) <= 0x81);
 }
 #endif // FIRMIR_RENDER_TEST_OPENGL
+
+#ifdef FIRMIR_RENDER_TEST_VULKAN
+TEST_CASE(render_vulkan_clear_quad_scissor_texture_and_indices) {
+    SoftScene scene = makeSoftScene(true, "vulkan");
+    if (!scene.device) {
+        std::fprintf(stderr, "render_vulkan: no Vulkan device; test skipped\n");
+        return;
+    }
+    CHECK_EQ(scene.device->backendName(), "vulkan");
+    CHECK(scene.pipeline && scene.vertices && scene.target && scene.commands);
+    SoftVertex verts[6];
+    writeQuad(verts, 4, 8, 255, 0, 0, 255);
+    CHECK(scene.vertices->write(verts, sizeof(verts)));
+    ClearValue black;
+    runQuad(scene, black);
+    auto* cpu = dynamic_cast<CpuRenderTarget*>(scene.target.get());
+    CHECK(cpu != nullptr);
+    CHECK_EQ(cpu->pixels()[0], 0xFFFF0000u);
+    CHECK_EQ(cpu->pixels()[3], 0xFFFF0000u);
+    CHECK_EQ(cpu->pixels()[4], 0xFF000000u);
+
+    writeQuad(verts, 8, 8, 0, 255, 0, 255);
+    CHECK(scene.vertices->write(verts, sizeof(verts)));
+    scene.commands->begin();
+    scene.commands->beginRenderPass(scene.target.get(), black);
+    scene.commands->setScissor(Rect{2, 2, 2, 2});
+    scene.commands->bindPipeline(scene.pipeline.get());
+    scene.commands->bindVertexBuffer(0, scene.vertices.get());
+    scene.commands->draw(6);
+    scene.commands->endRenderPass();
+    scene.commands->end();
+    scene.device->submit(scene.commands.get());
+    CHECK_EQ(cpu->pixels()[0], 0xFF000000u);
+    CHECK_EQ(cpu->pixels()[2 * 8 + 2], 0xFF00FF00u);
+    CHECK_EQ(cpu->pixels()[4 * 8 + 4], 0xFF000000u);
+
+    TextureDesc textureDesc;
+    std::unique_ptr<RenderTexture> texture(scene.device->createTexture(textureDesc));
+    const std::uint8_t whiteHalfAlpha[4] = {255, 255, 255, 128};
+    CHECK(texture && texture->write(whiteHalfAlpha, sizeof(whiteHalfAlpha)));
+    writeQuad(verts, 8, 8, 255, 255, 255, 255);
+    CHECK(scene.vertices->write(verts, sizeof(verts)));
+    runQuad(scene, black, texture.get());
+    const std::uint32_t pixel = cpu->pixels()[0];
+    CHECK_EQ(pixel >> 24, 0xFFu);
+    CHECK(((pixel >> 16) & 0xff) >= 0x7f);
+    CHECK(((pixel >> 16) & 0xff) <= 0x81);
+
+    const std::uint16_t indices[6] = {0, 1, 2, 0, 2, 3};
+    std::unique_ptr<RenderBuffer> indexBuffer(scene.device->createBuffer(
+        BufferDesc{BufferUsage::Index, sizeof(indices)}));
+    CHECK(indexBuffer && indexBuffer->write(indices, sizeof(indices)));
+    scene.commands->begin();
+    scene.commands->beginRenderPass(scene.target.get(), black);
+    scene.commands->setScissor(Rect{0, 0, 8, 8});
+    scene.commands->bindPipeline(scene.pipeline.get());
+    scene.commands->bindVertexBuffer(0, scene.vertices.get());
+    scene.commands->bindIndexBuffer(indexBuffer.get(), IndexFormat::UInt16);
+    scene.commands->drawIndexed(6);
+    scene.commands->endRenderPass();
+    scene.commands->end();
+    scene.device->submit(scene.commands.get());
+    CHECK(cpu->pixels() != nullptr);
+    indexBuffer.reset();
+    texture.reset();
+    scene.commands.reset();
+    scene.target.reset();
+    scene.vertices.reset();
+    scene.pipeline.reset();
+    scene.fs.reset();
+    scene.vs.reset();
+    scene.device.reset();
+    Render::shutdown();
+}
+#endif // FIRMIR_RENDER_TEST_VULKAN

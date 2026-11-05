@@ -4,6 +4,7 @@
 #include <firmir/object.hpp>
 
 #include <memory>
+#include <mutex>
 #include <vector>
 
 namespace Firmir {
@@ -212,6 +213,8 @@ public:
     void update();
 
 protected:
+    /// Serializes subclass-owned state with the owning window's render thread.
+    std::unique_lock<std::recursive_mutex> lockScene() const;
     /// Paints the item content. Called on the render thread; reimplement and
     /// use the painter (coordinates are item-local).
     virtual void paint(Painter& painter);

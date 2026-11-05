@@ -232,6 +232,9 @@ void Window::show() {
             Platform::instance()->createPlatformWindow(d->screen);
     if (!d->platformWindow)
         return;
+    d->platformWindow->geometryCallback = [this](const Rect& geometry) {
+        setGeometry(geometry);
+    };
     d->platformWindow->setTitle(d->title);
     d->platformWindow->setGeometry(d->geometry);
     d->platformWindow->setVisible(true);
@@ -259,6 +262,24 @@ void Window::hide() {
     emitSignal(signalVisibilityChanged, false);
 }
 
+void Window::showMaximized() {
+    if (!d->platformWindow) show();
+    if (d->platformWindow) d->platformWindow->setMaximized(true);
+}
+void Window::showFullscreen() {
+    if (!d->platformWindow) show();
+    if (d->platformWindow) d->platformWindow->setFullscreen(true);
+}
+void Window::showMinimized() {
+    if (d->platformWindow) d->platformWindow->setMinimized();
+}
+void Window::showNormal() {
+    if (d->platformWindow) {
+        d->platformWindow->setFullscreen(false);
+        d->platformWindow->setMaximized(false);
+    }
+}
+
 Item* Window::contentItem() const { return d->content; }
 
 void Window::destroyItem(Item* item) {
@@ -273,6 +294,7 @@ void Window::update() { detail::scheduleRender(this); }
 Item* Window::focusItem() const { return d->focusItem; }
 
 void Window::setFocusItem(Item* item) {
+    std::lock_guard<std::recursive_mutex> sceneLock(d->sceneMutex);
     if (d->focusItem == item)
         return;
     Item* previous = d->focusItem;
@@ -290,6 +312,7 @@ void Window::setFocusItem(Item* item) {
 }
 
 void Window::dispatchMouse(MouseEvent& event) {
+    std::lock_guard<std::recursive_mutex> sceneLock(d->sceneMutex);
     Item* target =
         d->content ? d->content->itemAt(event.pos.x, event.pos.y) : nullptr;
     if (event.action == MouseEvent::Action::Press && target &&
@@ -306,6 +329,7 @@ void Window::dispatchMouse(MouseEvent& event) {
 }
 
 void Window::dispatchTouch(TouchEvent& event) {
+    std::lock_guard<std::recursive_mutex> sceneLock(d->sceneMutex);
     if (event.points.empty() || !d->content)
         return;
     Item* target =
@@ -325,6 +349,7 @@ void Window::dispatchTouch(TouchEvent& event) {
 }
 
 void Window::dispatchKey(KeyEvent& event) {
+    std::lock_guard<std::recursive_mutex> sceneLock(d->sceneMutex);
     // KEY_TAB (evdev 15): cycle through activeFocusOnTab items.
     if (event.pressed && event.key == 15) {
         std::vector<Item*> chain;

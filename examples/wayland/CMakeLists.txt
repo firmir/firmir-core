@@ -1,0 +1,2 @@
+add_executable(example_wayland_compositor compositor.cpp)
+target_link_libraries(example_wayland_compositor PRIVATE firmir-wayland-compositor)

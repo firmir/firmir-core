@@ -51,6 +51,11 @@ public:
     bool isVisible() const;
     void show();
     void hide();
+    void close() { hide(); }
+    void showMaximized();
+    void showFullscreen();
+    void showMinimized();
+    void showNormal();
 
     /// Root of the scene graph; reparent items to it to show them.
     Item* contentItem() const;

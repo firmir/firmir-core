@@ -22,6 +22,12 @@ inline std::vector<std::pair<std::string, std::function<void()>>>& registry() {
 inline int runAll() {
     int passed = 0;
     for (auto& [name, fn] : registry()) {
+        const char* filter = std::getenv("FIRMIR_TEST_FILTER");
+        const char* skipFilter = std::getenv("FIRMIR_TEST_SKIP_FILTER");
+        if (filter && *filter && name.find(filter) == std::string::npos)
+            continue;
+        if (skipFilter && *skipFilter && name.find(skipFilter) != std::string::npos)
+            continue;
         std::fprintf(stderr, "[ RUN  ] %s\n", name.c_str());
         fn();
         ++passed;

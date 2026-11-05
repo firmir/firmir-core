@@ -140,6 +140,17 @@ public:
      */
     void drawText(float x, float y, const std::string& text, Color color,
                   int scale = 1);
+    /// Draws an RGBA8 bitmap. cacheKey identifies the owning item and
+    /// generation invalidates the device-lifetime texture after CPU changes.
+    void drawRgba(const RectF& target, const void* rgba, int imageWidth,
+                  int imageHeight, const void* cacheKey, std::uint64_t generation,
+                  Color tint = Color::rgb(255, 255, 255));
+    /// Draws a quad with a user fragment main body. Available variables follow
+    /// the OpenGL path: v_color, v_uv, u_texture, u_textured, gl_FragColor.
+    void drawShader(const RectF& target, const std::string& fragmentMain,
+                    const void* cacheKey, Color tint,
+                    const void* rgba = nullptr, int imageWidth = 0,
+                    int imageHeight = 0, std::uint64_t generation = 0);
     /// Pixel size of the drawText() output for @p text at @p scale.
     static void textSize(const std::string& text, int scale, float& width,
                          float& height);
