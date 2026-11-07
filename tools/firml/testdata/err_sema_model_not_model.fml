@@ -1,0 +1,14 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Repeater.hpp>
+
+Rectangle {
+    id: root
+    Rectangle {
+        id: notAModel
+    }
+    Repeater {
+        model: notAModel
+        Rectangle {
+        }
+    }
+}

@@ -91,6 +91,54 @@ const TypeInfo timerType{"Timer",
                          TypeKind::Timer,
                          "Firmir::Timer"};
 
+// Column/Row/Grid: positioner items (Firmir::Gui::Column/Row/Grid).
+const TypeInfo columnType{"Column",
+                          &itemType,
+                          {{"spacing", ValueType::Number}},
+                          {},
+                          {},
+                          false};
+const TypeInfo rowType{"Row",
+                       &itemType,
+                       {{"spacing", ValueType::Number}},
+                       {},
+                       {},
+                       false};
+const TypeInfo gridType{"Grid",
+                        &itemType,
+                        {{"spacing", ValueType::Number},
+                         {"columns", ValueType::Number},
+                         {"rows", ValueType::Number}},
+                        {},
+                        {},
+                        false};
+
+// Repeater: an inert item whose single child is the delegate template;
+// `model` (a ListModel id or a number) is handled specially by sema — it is
+// not an ordinary property.
+const TypeInfo repeaterType{"Repeater", &itemType, {}, {}, {}, false};
+
+// ListModel: non-visual list of role-value rows (Firmir::Gui::ListModel).
+const TypeInfo listModelType{"ListModel",
+                             nullptr,
+                             {{"count", ValueType::Number, true}},
+                             {},
+                             {},
+                             false,
+                             TypeKind::Model,
+                             "Firmir::Gui::ListModel"};
+
+// ListElement: one row of a ListModel; only literal role assignments are
+// allowed. No runtime object is created — rows compile into append() calls.
+const TypeInfo listElementType{"ListElement",
+                               nullptr,
+                               {},
+                               {},
+                               {},
+                               false,
+                               TypeKind::ModelElement,
+                               {}};
+
 } // namespace
 
 const char* valueTypeName(ValueType type) {
@@ -142,6 +190,18 @@ const TypeInfo* builtinType(const std::string& name) {
         return &windowType;
     if (name == "Timer")
         return &timerType;
+    if (name == "Column")
+        return &columnType;
+    if (name == "Row")
+        return &rowType;
+    if (name == "Grid")
+        return &gridType;
+    if (name == "Repeater")
+        return &repeaterType;
+    if (name == "ListModel")
+        return &listModelType;
+    if (name == "ListElement")
+        return &listElementType;
     return nullptr;
 }
 

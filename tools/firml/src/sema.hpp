@@ -78,6 +78,17 @@ struct ObjectInfo {
     std::map<std::string, SourceLoc> propLocs; // for duplicate/overconstraint checks
     std::set<std::string> anchorKeys;          // filled while processing members
     std::vector<CustomPropInfo> customProps;   // `property` declarations, in order
+
+    /// The enclosing Repeater when this object is part of a delegate subtree
+    /// (the delegate root's delegateScope is the Repeater itself).
+    ObjectInfo* delegateScope = nullptr;
+    /// Repeater: the resolved ListModel object, or nullptr when `model` is a
+    /// plain number (then modelCount is the delegate count).
+    const ObjectInfo* modelObject = nullptr;
+    int modelCount = 0;
+    /// ListModel: role name -> value type (first-seen type wins), filled from
+    /// the ListElement children. Used to type-check `model.<role>` reads.
+    std::map<std::string, ValueType> roles;
 };
 
 /// Finds a script-declared property of the object (nullptr when none).

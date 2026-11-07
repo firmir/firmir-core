@@ -1,14 +1,15 @@
-# The UI is declared in example_gui.fml; firmlc compiles it to C++ at build
-# time (the generated library links firmir-gui publicly).
+# GUI examples. example_gui, calculator and views-menu declare their UI in
+# Firml (.fml), compiled to C++ by firmlc at build time; controls-gallery is a
+# hand-written C++ demo of firmir-gui-controls.
 if(NOT TARGET firmlc)
     message(FATAL_ERROR
-        "the animation example requires FIRMIR_BUILD_TOOL_FIRML (the UI is written in Firml)")
+        "the GUI examples require FIRMIR_BUILD_TOOL_FIRML (the UI is written in Firml)")
 endif()
 include(${CMAKE_SOURCE_DIR}/tools/firml/cmake/FirmlCodegen.cmake)
-firml_add_target(example_gui_codegen SOURCES example_gui.fml)
 
-add_executable(firmir-example-gui-animation main.cpp)
-target_link_libraries(firmir-example-gui-animation PRIVATE example_gui_codegen)
-firmir_install_example(firmir-example-gui-animation)
-
+add_subdirectory(example_gui)
 add_subdirectory(calculator)
+add_subdirectory(views-menu)
+if(TARGET firmir-gui-controls)
+    add_subdirectory(controls-gallery)
+endif()

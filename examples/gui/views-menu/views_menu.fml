@@ -1,0 +1,120 @@
+// views-menu example: the whole UI *and* the view-switching logic are
+// declared in Firml and compiled to C++ by firmlc at build time; main.cpp
+// only picks the screen and runs the event loop.
+//
+// The menu is a ListModel rendered by a Repeater into a Column; the delegate
+// handler toggles the views' `visible` property by the row index.
+#include <firmir/items/Window.hpp>
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+#include <firmir/items/Button.hpp>
+#include <firmir/items/Column.hpp>
+#include <firmir/items/Repeater.hpp>
+#include <firmir/items/ListModel.hpp>
+#include <firmir/items/ListElement.hpp>
+
+Firmir.Gui.Window {
+    id: root
+    title: "views-menu"
+    width: 400
+    height: 300
+
+    ListModel {
+        id: viewList
+        ListElement {
+            title: "Greeting"
+        }
+        ListElement {
+            title: "Palette"
+        }
+        ListElement {
+            title: "About"
+        }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        color: "#202830"
+    }
+
+    // ------------------------------- views --------------------------------
+    // (declared before the menu so the delegate handlers can reference them)
+
+    Rectangle {
+        id: greetingView
+        x: 150
+        y: 16
+        width: 234
+        height: 268
+        color: "#C0392B"
+        Text {
+            text: "Hello, Firml!"
+            color: "#FFFFFF"
+            fontSize: 16
+            anchors.centerIn: parent
+        }
+    }
+
+    Rectangle {
+        id: paletteView
+        x: 150
+        y: 16
+        width: 234
+        height: 268
+        color: "#204080"
+        visible: false
+        Text {
+            text: "Second view"
+            color: "#FFFFFF"
+            fontSize: 24
+            anchors.centerIn: parent
+        }
+    }
+
+    Rectangle {
+        id: aboutView
+        x: 150
+        y: 16
+        width: 234
+        height: 268
+        color: "#30363F"
+        visible: false
+        Text {
+            text: "views-menu: FML logic"
+            color: "#FFFFFF"
+            fontSize: 14
+            anchors.centerIn: parent
+        }
+    }
+
+    Column {
+        x: 16
+        y: 16
+        spacing: 8
+
+        Text {
+            text: "Views"
+            color: "#FFFFFF"
+            fontSize: 20
+            width: 110
+            height: 28
+        }
+
+        Repeater {
+            model: viewList
+            Button {
+                width: 110
+                height: 36
+                text: model.title
+                fontSize: 15
+                color: pressed ? "#50627A" : "#3A4A5C"
+                textColor: "#FFFFFF"
+                onClicked: {
+                    greetingView.visible = index == 0
+                    paletteView.visible = index == 1
+                    aboutView.visible = index == 2
+                }
+            }
+        }
+    }
+}

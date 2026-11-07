@@ -1,0 +1,55 @@
+// End-to-end fixture: Grid + Repeater + ListModel; the generated C++ is
+// compiled against the real firmir-gui and run by the firmlc.e2e.repeater test.
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Button.hpp>
+#include <firmir/items/Grid.hpp>
+#include <firmir/items/Repeater.hpp>
+#include <firmir/items/ListModel.hpp>
+#include <firmir/items/ListElement.hpp>
+
+Firmir.Gui.Rectangle {
+    id: root
+    width: 220
+    height: 120
+    property number selected: 0
+
+    ListModel {
+        id: keys
+        ListElement {
+            label: "a"
+            size: 20
+        }
+        ListElement {
+            label: "b"
+            size: 20
+        }
+        ListElement {
+            label: "c"
+            size: 30
+            badge: "#FF0000"
+        }
+        ListElement {
+            label: "d"
+            size: 30
+        }
+    }
+
+    Grid {
+        id: grid
+        columns: 2
+        spacing: 10
+        Repeater {
+            id: rep
+            model: keys
+            Button {
+                text: model.label
+                width: model.size
+                height: model.size
+                color: model.badge
+                onClicked: {
+                    root.selected = index + 1
+                }
+            }
+        }
+    }
+}

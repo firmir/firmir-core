@@ -1,0 +1,1 @@
+err_sema_repeater_no_model.fml:6:5: error: 'Repeater' requires a 'model' property

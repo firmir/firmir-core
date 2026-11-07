@@ -1,0 +1,21 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+#include <firmir/items/Repeater.hpp>
+#include <firmir/items/ListModel.hpp>
+#include <firmir/items/ListElement.hpp>
+
+Rectangle {
+    id: root
+    ListModel {
+        id: tags
+        ListElement {
+            label: "alpha"
+        }
+    }
+    Repeater {
+        model: tags
+        Text {
+            text: model.nope
+        }
+    }
+}

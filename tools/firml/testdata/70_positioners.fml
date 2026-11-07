@@ -1,0 +1,51 @@
+// M10: positioner items Column/Row/Grid.
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Column.hpp>
+#include <firmir/items/Row.hpp>
+#include <firmir/items/Grid.hpp>
+
+Firmir.Gui.Rectangle {
+    id: root
+    width: 400
+    height: 300
+
+    Column {
+        id: col
+        spacing: 8
+        Rectangle {
+            width: 20
+            height: 10
+        }
+        Rectangle {
+            width: 30
+            height: 10
+        }
+    }
+
+    Row {
+        id: row
+        spacing: 4
+        Rectangle {
+            width: 10
+            height: 10
+        }
+    }
+
+    Grid {
+        id: grid
+        columns: 2
+        spacing: 2
+        Rectangle {
+            width: 10
+            height: 10
+        }
+        Rectangle {
+            width: 10
+            height: 10
+        }
+        Rectangle {
+            width: 10
+            height: 10
+        }
+    }
+}

@@ -10,9 +10,12 @@ add_library(firmir-gui SHARED
     src/flickable.cpp
     src/image.cpp
     src/item.cpp
+    src/listmodel.cpp
     src/mousearea.cpp
     src/painter.cpp
     src/platform.cpp
+    src/positioners.cpp
+    src/repeater.cpp
     src/rectangle.cpp
     src/screen.cpp
     src/shadereffect.cpp

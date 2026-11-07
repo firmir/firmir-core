@@ -379,7 +379,7 @@ int main(int argc, char**) {
 #endif
     const auto screens = platform->screens();
     if (screens.empty()) {
-        std::fprintf(stderr, "red-window: no display screens\n");
+        std::fprintf(stderr, "controls-gallery: no display screens\n");
         return 1;
     }
     const Size screen = screens.front()->size();

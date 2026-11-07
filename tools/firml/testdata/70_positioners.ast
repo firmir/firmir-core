@@ -1,0 +1,48 @@
+(file 70_positioners.fml
+  (include <firmir/items/Rectangle.hpp> 2:1)
+  (include <firmir/items/Column.hpp> 3:1)
+  (include <firmir/items/Row.hpp> 4:1)
+  (include <firmir/items/Grid.hpp> 5:1)
+  (object Firmir.Gui.Rectangle 7:1
+    (property id 8:5 (ident root))
+    (property width 9:5 (number 400))
+    (property height 10:5 (number 300))
+    (object Column 12:5
+      (property id 13:9 (ident col))
+      (property spacing 14:9 (number 8))
+      (object Rectangle 15:9
+        (property width 16:13 (number 20))
+        (property height 17:13 (number 10))
+      )
+      (object Rectangle 19:9
+        (property width 20:13 (number 30))
+        (property height 21:13 (number 10))
+      )
+    )
+    (object Row 25:5
+      (property id 26:9 (ident row))
+      (property spacing 27:9 (number 4))
+      (object Rectangle 28:9
+        (property width 29:13 (number 10))
+        (property height 30:13 (number 10))
+      )
+    )
+    (object Grid 34:5
+      (property id 35:9 (ident grid))
+      (property columns 36:9 (number 2))
+      (property spacing 37:9 (number 2))
+      (object Rectangle 38:9
+        (property width 39:13 (number 10))
+        (property height 40:13 (number 10))
+      )
+      (object Rectangle 42:9
+        (property width 43:13 (number 10))
+        (property height 44:13 (number 10))
+      )
+      (object Rectangle 46:9
+        (property width 47:13 (number 10))
+        (property height 48:13 (number 10))
+      )
+    )
+  )
+)

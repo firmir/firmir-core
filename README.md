@@ -50,14 +50,17 @@ tools/firml/    firmlc          — транспайлер Firml (.fml) → C++ 
                 через propertyChanged, `behavior on` → дерево анимаций;
                 snapshot-тесты + e2e); cmake/FirmlCodegen.cmake: firml_add_target() —
                 компиляция .fml → C++ во время сборки
-apps/           red-window      — Controls Gallery: главное меню и страницы всех
-                элементов; размер — треть экрана, кнопки minimize/maximize/close.
-                Запуск: FIRMIR_GUI_DISPLAY=wayland ./build/apps/red-window/red-window
-                (renderer: FIRMIR_RENDER_BACKEND=soft|opengl|vulkan)
 examples/       firmir-example-{модуль}-{имя}: core-basics, json-document,
                 xml-document, dbus-echo, networking-fetch, render-triangle,
                 gui-animation, gui-calculator (калькулятор целиком на Firml:
-                окно, сетка кнопок, состояние и логика в .fml),
+                окно, клавиатура 4×5 через Grid + Repeater + ListModel,
+                состояние и логика в .fml), gui-views-menu (меню видов на
+                ListModel + Repeater, переключение — FML-обработчики),
+                gui-controls-gallery (Controls Gallery: главное меню и
+                страницы всех элементов; размер — треть экрана, кнопки
+                minimize/maximize/close. Запуск:
+                FIRMIR_GUI_DISPLAY=wayland ./build/examples/gui/controls-gallery/firmir-example-gui-controls-gallery
+                renderer: FIRMIR_RENDER_BACKEND=soft|opengl|vulkan),
                 wayland-compositor
 tests/          собственный мини-фреймворк, один бинарник tests
 ```
@@ -78,9 +81,15 @@ HarfBuzz) со шрифтом **Inter** (при отсутствии Inter fontc
 
 `firmir-gui-controls` содержит Button, CheckBox, RadioButton, Switch, ScrollView,
 SplitView, StackView, SwipeView, TabBar, BusyIndicator и ProgressBar. Gallery в
-`apps/red-window` демонстрирует их вместе с Flickable, Image, ShaderEffect и
-MouseArea. Для headless smoke-проверки: `FIRMIR_GALLERY_HEADLESS=1`,
+`examples/gui/controls-gallery` демонстрирует их вместе с Flickable, Image,
+ShaderEffect и MouseArea. Для headless smoke-проверки: `FIRMIR_GALLERY_HEADLESS=1`,
 `FIRMIR_GALLERY_PAGE=0..12`, `FIRMIR_GALLERY_AUTO_QUIT=1`.
+
+Базовая `firmir-gui` дополнительно содержит позиционеры `Column`/`Row`/`Grid`
+(автораскладка детей, делегаты Repeater разворачиваются на месте), модель
+`ListModel` (строки роль→значение поверх `AbstractDataList`) и фабрику
+`Repeater`; в Firml они доступны как `Column`/`Row`/`Grid`/`ListModel` +
+`ListElement`/`Repeater` (в делегате — `model.<роль>` и `index`).
 
 Wayland разделён на `firmir-wayland-client`, `firmir-wayland-server` и
 `firmir-wayland-compositor`. Используется только базовая libwayland, без
@@ -92,7 +101,8 @@ wlroots. `tools/wayland/firmir-wayland-generator.py` создаёт C++ proxy/re
 ./build/examples/wayland/firmir-example-wayland-compositor
 # В другом терминале подставьте напечатанный socket:
 WAYLAND_DISPLAY=wayland-0 FIRMIR_GUI_DISPLAY=wayland \
-  FIRMIR_RENDER_BACKEND=vulkan ./build/apps/red-window/red-window
+  FIRMIR_RENDER_BACKEND=vulkan \
+  ./build/examples/gui/controls-gallery/firmir-example-gui-controls-gallery
 ```
 
 Для неблокирующего D-Bus вызова используйте `DBusConnection::asyncCall()`:

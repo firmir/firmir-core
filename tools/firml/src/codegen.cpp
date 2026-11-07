@@ -177,6 +177,13 @@ public:
     std::map<std::string, ValueType> locals;
     const SemaResult* sema = nullptr; // for id/property type resolution
 
+    /// Repeater delegate context, set while emitting inside a delegate loop:
+    /// the model variable (empty for a numeric model), the loop index variable
+    /// and the model's role table.
+    std::string delegateModelVar;
+    std::string delegateIndexVar;
+    const std::map<std::string, ValueType>* delegateRoles = nullptr;
+
     /// The Firml type of an expression, re-derived for emission decisions
     /// (string conversion on `+`); sema has already validated the expression.
     ValueType typeOf(const Expr& expr, const ObjectInfo& scope) const {
@@ -189,6 +196,8 @@ public:
         if (const auto* ident = std::get_if<IdentExpr>(&expr.node)) {
             if (const auto local = locals.find(ident->name); local != locals.end())
                 return local->second;
+            if (ident->name == "index" && !delegateIndexVar.empty())
+                return ValueType::Number;
             if (const PropertyInfo* prop = scope.type->findProperty(ident->name))
                 return prop->type;
             if (const CustomPropInfo* custom = findCustomProp(scope, ident->name))
@@ -197,6 +206,11 @@ public:
         }
         if (const auto* member = std::get_if<MemberExpr>(&expr.node)) {
             const auto* base = std::get_if<IdentExpr>(&member->object->node);
+            if (base && base->name == "model" && delegateRoles) {
+                const auto role = delegateRoles->find(member->name);
+                if (role != delegateRoles->end())
+                    return role->second;
+            }
             if (!base) {
                 if (const TypeInfo* singleton =
                         builtinSingleton(dottedExprName(*member->object)))
@@ -253,10 +267,18 @@ public:
         if (const auto* ident = std::get_if<IdentExpr>(&expr.node)) {
             if (const auto local = locals.find(ident->name); local != locals.end())
                 return ident->name; // handler argument
+            if (ident->name == "index" && !delegateIndexVar.empty())
+                return "(double)" + delegateIndexVar; // delegate row index
             return memberAccess(scope.internalName, ident->name, type); // own property
         }
         if (const auto* member = std::get_if<MemberExpr>(&expr.node)) {
             const auto* base = std::get_if<IdentExpr>(&member->object->node);
+            if (base && base->name == "model" && delegateRoles) {
+                // Delegate role access: model.<role> -> model->data(index, "role").
+                return "Firmir::detail::anyConvert<" + cppValueType(type) + ">(" +
+                       delegateModelVar + "->data(" + delegateIndexVar + ", \"" +
+                       member->name + "\"))";
+            }
             if (!base) {
                 // A dotted singleton reference: Firmir.Gui.App.screenWidth.
                 if (builtinSingleton(dottedExprName(*member->object)))
@@ -299,7 +321,9 @@ public:
                 return "std::fmod(" + emit(*bin->lhs, ValueType::Number, scope) +
                        ", " + emit(*bin->rhs, ValueType::Number, scope) + ")";
             }
-            ValueType operandType = type; // == / !=
+            // == / != compare values of the operands' own type, not the
+            // context type (the result is Bool, the operands usually are not).
+            ValueType operandType = typeOf(*bin->lhs, scope); // == / !=
             if (bin->op == "&&" || bin->op == "||")
                 operandType = ValueType::Bool;
             else if (bin->op == "+" || bin->op == "-" || bin->op == "*" ||
@@ -444,8 +468,14 @@ public:
         else
             body << structName << " " << funcName << "(Firmir::Gui::Item* parent) {\n";
         body << "    " << structName << " objects;\n";
-        for (const ObjectInfo* obj : m_sema.objects)
+        for (const ObjectInfo* obj : m_sema.objects) {
+            // Delegate subtrees are emitted by their Repeater (inside the
+            // instantiation loop); ListElements compile into append() calls
+            // of their ListModel.
+            if (obj->delegateScope || obj->type->kind == TypeKind::ModelElement)
+                continue;
             emitObject(*obj, body);
+        }
         if (windowRoot && m_sema.usesAppSingleton) {
             // The singleton must exist before the bindings below evaluate it.
             body << "\n    auto* app = new Firmir::Gui::App(" << rootInfo->internalName
@@ -457,6 +487,11 @@ public:
         emitAnchors(body);
         emitBehaviors(body);
         emitHandlers(body);
+        // Delegate instantiation loops run last: their expressions may read
+        // custom properties of outer objects, which the bindings pass above
+        // has initialized by then.
+        for (const ObjectInfo* repeater : m_repeaters)
+            emitDelegateLoop(*repeater, body);
         if (windowRoot)
             body << "\n    " << rootInfo->internalName << "->show();\n";
         body << "    return objects;\n";
@@ -504,6 +539,10 @@ private:
             emitTimerSettings(obj, body);
             return;
         }
+        if (obj.type->kind == TypeKind::Model) {
+            emitListModelRows(obj, body);
+            return;
+        }
         for (const BindingInfo& binding : m_sema.bindings) {
             if (binding.object != &obj || !binding.isStatic)
                 continue;
@@ -524,6 +563,77 @@ private:
             body << "    " << var << "->setProperty(\"" << binding.property
                  << "\", " << m_expr.emit(binding.stmt->value, type, obj) << ");\n";
         }
+        if (obj.type == builtinType("Repeater"))
+            m_repeaters.push_back(&obj); // the delegate loop is emitted last
+    }
+
+    /// Emits the ListElement children of a ListModel as append() calls. Sema
+    /// guarantees literal role values; color-looking strings become Color.
+    void emitListModelRows(const ObjectInfo& obj, std::ostringstream& body) {
+        const std::string& var = obj.internalName;
+        for (const ObjectInfo* child : obj.children) {
+            body << "    " << var << "->append({";
+            bool first = true;
+            for (const MemberNode& member : child->node->members) {
+                const auto& prop = std::get<PropertyStmt>(member);
+                if (!first)
+                    body << ", ";
+                first = false;
+                body << "{\"" << prop.name << "\", " << roleValueExpr(prop) << "}";
+            }
+            body << "});\n";
+        }
+    }
+
+    /// The C++ expression for one ListElement role value (std::any element).
+    std::string roleValueExpr(const PropertyStmt& prop) {
+        if (const auto* lit = std::get_if<NumberLit>(&prop.value.node))
+            return numberLiteral(*lit, prop.loc);
+        if (const auto* unary = std::get_if<UnaryExpr>(&prop.value.node)) {
+            // A signed number literal (-1 / +2), validated by sema.
+            const auto& lit = std::get<NumberLit>(unary->operand->node);
+            return "(" + std::string(1, unary->op) + numberLiteral(lit, prop.loc) + ")";
+        }
+        if (const auto* lit = std::get_if<BoolLit>(&prop.value.node))
+            return lit->value ? "true" : "false";
+        const auto& lit = std::get<StringLit>(prop.value.node); // checked by sema
+        if (isColorLiteralText(lit.value)) {
+            m_expr.usesPainter = true;
+            return colorLiteralExpr(lit.value);
+        }
+        return "Firmir::String(\"" + escapeCpp(lit.value) + "\")";
+    }
+
+    /// Emits the delegate instantiation loop of a Repeater: one delegate
+    /// subtree per model row, with `model.<role>`/`index` in scope.
+    void emitDelegateLoop(const ObjectInfo& obj, std::ostringstream& body) {
+        const std::string base = std::to_string(obj.declIndex);
+        const std::string indexVar = "_index_" + base;
+        std::string modelVar;
+        body << "    {\n";
+        if (obj.modelObject) {
+            modelVar = "_model_" + base;
+            body << "        const auto* " << modelVar << " = "
+                 << obj.modelObject->internalName << ";\n";
+        }
+        const std::string countExpr =
+            obj.modelObject ? modelVar + "->count()" : std::to_string(obj.modelCount);
+        body << "        for (int " << indexVar << " = 0; " << indexVar << " < "
+             << countExpr << "; ++" << indexVar << ") {\n";
+
+        m_expr.delegateModelVar = modelVar;
+        m_expr.delegateIndexVar = indexVar;
+        m_expr.delegateRoles = obj.modelObject ? &obj.modelObject->roles : nullptr;
+        for (const ObjectInfo* sub : m_sema.objects)
+            if (sub->delegateScope == &obj)
+                emitObject(*sub, body);
+        emitBindings(body, &obj);
+        emitHandlers(body, &obj);
+        m_expr.delegateModelVar.clear();
+        m_expr.delegateIndexVar.clear();
+        m_expr.delegateRoles = nullptr;
+
+        body << "        }\n    }\n";
     }
 
     /// Timer settings are applied through the native Firmir::Timer API (no
@@ -574,6 +684,13 @@ private:
         body << "    " << assignPrefix << exprText << ");\n";
 
         std::vector<std::string> captures{var};
+        // Inside a delegate loop the re-evaluation lambda also needs the
+        // loop variables (model / index) the expression may reference.
+        if (!m_expr.delegateIndexVar.empty()) {
+            captures.push_back(m_expr.delegateIndexVar);
+            if (!m_expr.delegateModelVar.empty())
+                captures.push_back(m_expr.delegateModelVar);
+        }
         for (const std::string& dep : deps) {
             const std::string depObj = dep.substr(0, dep.rfind('.'));
             if (depObj == "Firmir.Gui.App")
@@ -603,10 +720,14 @@ private:
         }
     }
 
-    void emitBindings(std::ostringstream& body) {
+    /// `delegate` selects the emission scope: nullptr for top-level objects,
+    /// or the Repeater whose delegate subtree is being emitted in its loop.
+    void emitBindings(std::ostringstream& body, const ObjectInfo* delegate = nullptr) {
         bool wroteComment = false;
         for (const BindingInfo& binding : m_sema.bindings) {
             if (binding.isStatic)
+                continue;
+            if (binding.object->delegateScope != delegate)
                 continue;
             if (!wroteComment) {
                 body << "\n    // bindings\n";
@@ -716,6 +837,16 @@ private:
             if (const auto local = m_expr.locals.find(ident->name);
                 local != m_expr.locals.end())
                 return local->second;
+            if (ident->name == "index" && !m_expr.delegateIndexVar.empty())
+                return ValueType::Number;
+        }
+        if (const auto* member = std::get_if<MemberExpr>(&expr.node)) {
+            const auto* base = std::get_if<IdentExpr>(&member->object->node);
+            if (base && base->name == "model" && m_expr.delegateRoles) {
+                const auto role = m_expr.delegateRoles->find(member->name);
+                if (role != m_expr.delegateRoles->end())
+                    return role->second;
+            }
         }
         return inferType(expr);
     }
@@ -742,8 +873,11 @@ private:
              << ");\n";
     }
 
-    void emitHandlers(std::ostringstream& body) {
+    /// `delegate` selects the emission scope (see emitBindings).
+    void emitHandlers(std::ostringstream& body, const ObjectInfo* delegate = nullptr) {
         for (const HandlerInfo& handler : m_sema.handlers) {
+            if (handler.object->delegateScope != delegate)
+                continue;
             const HandlerStmt& stmt = *handler.stmt;
             const std::string& var = handler.object->internalName;
             m_expr.locals.clear();
@@ -897,6 +1031,7 @@ private:
     const SemaResult& m_sema;
     std::string m_outputStem;
     ExprEmitter m_expr;
+    std::vector<const ObjectInfo*> m_repeaters; // delegate loops pending emission
     int m_animationCounter = 0;
     bool m_usesAnimation = false;
     bool m_usesTimer = false;

@@ -1,0 +1,9 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/ListElement.hpp>
+
+Rectangle {
+    id: root
+    ListElement {
+        label: "alpha"
+    }
+}

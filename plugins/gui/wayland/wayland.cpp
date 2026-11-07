@@ -815,5 +815,3 @@ InputBackend* firmir_gui_create_input() {
 }
 
 } // extern "C"
-
-

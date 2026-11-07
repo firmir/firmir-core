@@ -39,6 +39,8 @@ if(FIRMIR_BUILD_TESTS)
         40_handlers
         50_window_timer
         60_custom_props
+        70_positioners
+        71_repeater
         err_bad_token
         err_two_roots
         err_unclosed_brace
@@ -62,6 +64,8 @@ if(FIRMIR_BUILD_TESTS)
         40_handlers
         50_window_timer
         60_custom_props
+        70_positioners
+        71_repeater
         err_sema_anchor_axis_conflict
         err_sema_anchor_center_conflict
         err_sema_anchor_fill_conflict
@@ -75,10 +79,18 @@ if(FIRMIR_BUILD_TESTS)
         err_sema_color_on_number
         err_sema_cycle_anchor
         err_sema_cycle_binding
+        err_sema_delegate_id
         err_sema_dup_id
         err_sema_handler_property_lowercase
         err_sema_include_not_found
+        err_sema_listelement_literal
+        err_sema_listelement_placement
         err_sema_missing_type_include
+        err_sema_model_not_model
+        err_sema_model_unknown_role
+        err_sema_nested_repeater
+        err_sema_repeater_delegates
+        err_sema_repeater_no_model
         err_sema_concat_bool
         err_sema_property_builtin
         err_sema_property_dup
@@ -130,6 +142,8 @@ if(FIRMIR_BUILD_TESTS)
         40_handlers
         50_window_timer
         60_custom_props
+        70_positioners
+        71_repeater
     )
     foreach(case IN LISTS FIRML_GEN_CASES)
         add_test(
@@ -171,6 +185,29 @@ if(FIRMIR_BUILD_TESTS)
             add_test(NAME firmlc.e2e.app COMMAND setarch -R $<TARGET_FILE:firml_e2e_app>)
         else()
             add_test(NAME firmlc.e2e.app COMMAND $<TARGET_FILE:firml_e2e_app>)
+        endif()
+
+        # Repeater/ListModel/Grid: delegate instantiation against the real
+        # firmir-gui, including sparse roles and the row index in handlers.
+        add_custom_command(
+            OUTPUT ${E2E_GEN_DIR}/repeater.hpp ${E2E_GEN_DIR}/repeater.cpp
+            COMMAND ${FIRML_TOOL_WRAPPER_LIST} $<TARGET_FILE:firmlc>
+                    ${CMAKE_CURRENT_SOURCE_DIR}/testdata/e2e/repeater.fml
+                    -I ${CMAKE_SOURCE_DIR}/libs/gui/include
+                    -o ${E2E_GEN_DIR}
+            DEPENDS firmlc ${CMAKE_CURRENT_SOURCE_DIR}/testdata/e2e/repeater.fml
+            VERBATIM
+        )
+        add_executable(firml_e2e_repeater
+            testdata/e2e/repeater_main.cpp
+            ${E2E_GEN_DIR}/repeater.cpp
+        )
+        target_include_directories(firml_e2e_repeater PRIVATE ${E2E_GEN_DIR})
+        target_link_libraries(firml_e2e_repeater PRIVATE firmir-gui)
+        if(FIRMIR_SANITIZER STREQUAL "thread")
+            add_test(NAME firmlc.e2e.repeater COMMAND setarch -R $<TARGET_FILE:firml_e2e_repeater>)
+        else()
+            add_test(NAME firmlc.e2e.repeater COMMAND $<TARGET_FILE:firml_e2e_repeater>)
         endif()
 
         # Generated signal/property handlers + singleton + Button, exercised

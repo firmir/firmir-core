@@ -1,0 +1,13 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/ListModel.hpp>
+#include <firmir/items/ListElement.hpp>
+
+Rectangle {
+    id: root
+    ListModel {
+        id: tags
+        ListElement {
+            size: root.width
+        }
+    }
+}

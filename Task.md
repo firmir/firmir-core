@@ -51,7 +51,7 @@ tests/          собственный мини-фреймворк, один б�
 - **GUI-бэкенды (плагины .so)** — headless (тесты), evdev, drm и **wayland**:
   wl_compositor/wl_shm/xdg-shell, shm double-buffering, поток dispatch
   (prepare_read/poll), экраны через wl_output, pointer-ввод (wl_seat),
-  закрытие окна → quit. Первое приложение: `apps/red-window`.
+  закрытие окна → quit.
 - **Рендеринг GUI через firmir-render** — Painter записывает команды в
   RenderCommandBuffer; backends: soft (CPU), OpenGL ES 2 (EGL/FBO/readback),
   Vulkan (SPIR-V, render passes/pipelines/descriptors/offscreen readback).
@@ -187,6 +187,21 @@ ctest --test-dir build --output-on-failure
       headless e2e `firmlc.calc.app` (мини-калькулятор, клики через
       `emitSignal("clicked")`, проверка текста дисплея); полноценный
       калькулятор на Firml — `examples/gui/calculator`.
+      M10 готов — позиционеры `Column`/`Row`/`Grid` (автораскладка по
+      childrenChanged + width/height/visible детей, implicit size; делегаты
+      Repeater разворачиваются на месте), `ListModel`/`ListElement` (строки
+      роль→значение поверх `AbstractDataList<ItemT>` — begin/end
+      insert/move/remove/reset с сигналами; разрежённые роли получают
+      дефолт типа), `Repeater` (`model`: id модели или число; ровно один
+      делегат; в делегате — `model.<роль>` и `index`; цикл инстанцирования
+      эмитится последним, после инициализации внешних custom-свойств).
+      Попутно исправлена кодогенерация `==`/`!=` (операнды приводились к
+      контекстному типу результата вместо собственного). Snapshot
+      `70_positioners`/`71_repeater` + 8 err-кейсов + e2e
+      `firmlc.e2e.repeater`; калькулятор переписан на Grid+Repeater
+      (20 клавиш в ListModel, единый обработчик по ролям), apps/red-window
+      разнесён: `examples/gui/views-menu` (логика на Firml) и
+      `examples/gui/controls-gallery` (C++-галерея контролов).
 - [x] firmir-wayland-generator переписан на C++ (tools/wayland,
       парсинг XML через firmir-xml, вывод байт-в-байт совместим с
       Python-версией; Python-зависимость сборки удалена).

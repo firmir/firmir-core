@@ -29,8 +29,10 @@ struct SignalInfo {
 
 /// Object categories known to firmlc. Items are the default; Window is only
 /// allowed as the root object; Timer is a non-visual object (no children,
-/// anchors or behaviors, static properties only).
-enum class TypeKind { Item, Window, Timer };
+/// anchors or behaviors, static properties only). Model is a non-visual data
+/// object (ListModel: only ListElement children); ModelElement (ListElement)
+/// lives only inside a Model and carries literal role values.
+enum class TypeKind { Item, Window, Timer, Model, ModelElement };
 
 /// Static description of an item type known to firmlc. Types from project
 /// headers are opaque: only the Item base properties are known for them.

@@ -1,0 +1,43 @@
+(file 71_repeater.fml
+  (include <firmir/items/Rectangle.hpp> 3:1)
+  (include <firmir/items/Button.hpp> 4:1)
+  (include <firmir/items/Column.hpp> 5:1)
+  (include <firmir/items/Repeater.hpp> 6:1)
+  (include <firmir/items/ListModel.hpp> 7:1)
+  (include <firmir/items/ListElement.hpp> 8:1)
+  (object Firmir.Gui.Rectangle 10:1
+    (property id 11:5 (ident root))
+    (property width 12:5 (number 400))
+    (property height 13:5 (number 300))
+    (decl number selected 14:5 (number 0))
+    (object ListModel 16:5
+      (property id 17:9 (ident tags))
+      (object ListElement 18:9
+        (property label 19:13 (string "alpha"))
+        (property size 20:13 (number 12))
+      )
+      (object ListElement 22:9
+        (property label 23:13 (string "beta"))
+        (property size 24:13 (number 16))
+        (property badge 25:13 (string "#FF8000"))
+      )
+    )
+    (object Column 29:5
+      (property spacing 30:9 (number 4))
+      (object Repeater 31:9
+        (property id 32:13 (ident rep))
+        (property model 33:13 (ident tags))
+        (object Button 34:13
+          (property text 35:17 (member (ident model) label))
+          (property fontSize 36:17 (member (ident model) size))
+          (property color 37:17 (member (ident model) badge))
+          (property width 38:17 (number 100))
+          (property height 39:17 (member (ident model) size))
+          (property x 40:17 (binary * (ident index) (number 5)))
+          (handler onClicked 41:17
+(assign (member (ident root) selected) (ident index))          )
+        )
+      )
+    )
+  )
+)

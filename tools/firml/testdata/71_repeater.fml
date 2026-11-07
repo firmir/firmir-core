@@ -1,0 +1,47 @@
+// M10: ListModel/ListElement + Repeater with model.<role> and index in the
+// delegate, plus a handler referencing outer ids.
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Button.hpp>
+#include <firmir/items/Column.hpp>
+#include <firmir/items/Repeater.hpp>
+#include <firmir/items/ListModel.hpp>
+#include <firmir/items/ListElement.hpp>
+
+Firmir.Gui.Rectangle {
+    id: root
+    width: 400
+    height: 300
+    property number selected: 0
+
+    ListModel {
+        id: tags
+        ListElement {
+            label: "alpha"
+            size: 12
+        }
+        ListElement {
+            label: "beta"
+            size: 16
+            badge: "#FF8000"
+        }
+    }
+
+    Column {
+        spacing: 4
+        Repeater {
+            id: rep
+            model: tags
+            Button {
+                text: model.label
+                fontSize: model.size
+                color: model.badge
+                width: 100
+                height: model.size
+                x: index * 5
+                onClicked: {
+                    root.selected = index
+                }
+            }
+        }
+    }
+}

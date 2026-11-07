@@ -4,12 +4,16 @@
 //
 // State lives in script-declared dynamic properties on the root window; every
 // write emits propertyChanged, so the display binding re-evaluates itself.
+// The 20 keys are declared once in a ListModel and instantiated by a Repeater
+// into a 4x5 Grid; the single delegate handler dispatches on the key roles.
 #include <firmir/items/Window.hpp>
 #include <firmir/items/Rectangle.hpp>
 #include <firmir/items/Text.hpp>
 #include <firmir/items/Button.hpp>
-
-using CalcButton = Firmir.Gui.Button;
+#include <firmir/items/Grid.hpp>
+#include <firmir/items/Repeater.hpp>
+#include <firmir/items/ListModel.hpp>
+#include <firmir/items/ListElement.hpp>
 
 Firmir.Gui.Window {
     id: root
@@ -30,6 +34,34 @@ Firmir.Gui.Window {
     property number displayH: 80
     property number colW: (width - 5 * gap) / 4
     property number rowH: (height - displayH - 7 * gap) / 5
+
+    // ------------------------------ key model ----------------------------
+    // Roles: text (label), digit (0-9 or -1), fn (1 clear, 2 sign, 3 percent,
+    // 4 backspace, 5 decimal point, 6 equals, 7 operator), op (pending
+    // operation for fn == 7), bg/fg (colors).
+    ListModel {
+        id: keys
+        ListElement { text: "C" digit: -1 fn: 1 op: 0 bg: "#8e8e96" fg: "#101012" }
+        ListElement { text: "+/-" digit: -1 fn: 2 op: 0 bg: "#8e8e96" fg: "#101012" }
+        ListElement { text: "%" digit: -1 fn: 3 op: 0 bg: "#8e8e96" fg: "#101012" }
+        ListElement { text: "/" digit: -1 fn: 7 op: 4 bg: "#ff9f0a" fg: "#ffffff" }
+        ListElement { text: "7" digit: 7 fn: 0 op: 0 bg: "#505054" fg: "#ffffff" }
+        ListElement { text: "8" digit: 8 fn: 0 op: 0 bg: "#505054" fg: "#ffffff" }
+        ListElement { text: "9" digit: 9 fn: 0 op: 0 bg: "#505054" fg: "#ffffff" }
+        ListElement { text: "*" digit: -1 fn: 7 op: 3 bg: "#ff9f0a" fg: "#ffffff" }
+        ListElement { text: "4" digit: 4 fn: 0 op: 0 bg: "#505054" fg: "#ffffff" }
+        ListElement { text: "5" digit: 5 fn: 0 op: 0 bg: "#505054" fg: "#ffffff" }
+        ListElement { text: "6" digit: 6 fn: 0 op: 0 bg: "#505054" fg: "#ffffff" }
+        ListElement { text: "-" digit: -1 fn: 7 op: 2 bg: "#ff9f0a" fg: "#ffffff" }
+        ListElement { text: "1" digit: 1 fn: 0 op: 0 bg: "#505054" fg: "#ffffff" }
+        ListElement { text: "2" digit: 2 fn: 0 op: 0 bg: "#505054" fg: "#ffffff" }
+        ListElement { text: "3" digit: 3 fn: 0 op: 0 bg: "#505054" fg: "#ffffff" }
+        ListElement { text: "+" digit: -1 fn: 7 op: 1 bg: "#ff9f0a" fg: "#ffffff" }
+        ListElement { text: "0" digit: 0 fn: 0 op: 0 bg: "#505054" fg: "#ffffff" }
+        ListElement { text: "." digit: -1 fn: 5 op: 0 bg: "#505054" fg: "#ffffff" }
+        ListElement { text: "⌫" digit: -1 fn: 4 op: 0 bg: "#505054" fg: "#ffffff" }
+        ListElement { text: "=" digit: -1 fn: 6 op: 0 bg: "#ff9f0a" fg: "#ffffff" }
+    }
 
     Rectangle {
         anchors.fill: parent
@@ -56,347 +88,32 @@ Firmir.Gui.Window {
         text: root.editing ? "" + root.entry : "" + root.acc
     }
 
-    // Row 0: C  +/-  %  /
-    CalcButton {
-        id: btnC
-        text: "C"
-        fontSize: 22
-        color: btnC.pressed ? "#6a6a72" : "#8e8e96"
-        textColor: "#101012"
+    Grid {
+        id: keypad
+        columns: 4
+        spacing: root.gap
         x: root.gap
         y: root.displayH + 2 * root.gap
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.acc = 0
-            root.entry = 0
-            root.dot = 0
-            root.op = 0
-            root.fresh = true
-            root.editing = true
-        }
-    }
-    CalcButton {
-        id: btnSign
-        text: "+/-"
-        fontSize: 22
-        color: btnSign.pressed ? "#6a6a72" : "#8e8e96"
-        textColor: "#101012"
-        x: root.gap + (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.entry = root.editing ? -root.entry : root.entry
-            root.acc = root.editing ? root.acc : -root.acc
-        }
-    }
-    CalcButton {
-        id: btnPercent
-        text: "%"
-        fontSize: 22
-        color: btnPercent.pressed ? "#6a6a72" : "#8e8e96"
-        textColor: "#101012"
-        x: root.gap + 2 * (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.entry = root.editing ? root.entry / 100 : root.entry
-            root.acc = root.editing ? root.acc : root.acc / 100
-        }
-    }
-    CalcButton {
-        id: btnDiv
-        text: "/"
-        fontSize: 22
-        color: btnDiv.pressed ? "#c07a08" : "#ff9f0a"
-        textColor: "#ffffff"
-        x: root.gap + 3 * (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.acc = root.op == 0 ? root.entry : (root.op == 1 ? root.acc + root.entry : (root.op == 2 ? root.acc - root.entry : (root.op == 3 ? root.acc * root.entry : root.acc / root.entry)))
-            root.entry = 0
-            root.dot = 0
-            root.op = 4
-            root.fresh = true
-            root.editing = false
-        }
-    }
 
-
-    // Row 1: 7 8 9 *
-    CalcButton {
-        id: btn7
-        text: "7"
-        fontSize: 22
-        color: btn7.pressed ? "#3a3a3e" : "#505054"
-        textColor: "#ffffff"
-        x: root.gap
-        y: root.displayH + 2 * root.gap + (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.entry = root.fresh ? 7 : (root.dot > 0 ? root.entry + 7 / root.dot : root.entry * 10 + 7)
-            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
-            root.fresh = false
-            root.editing = true
-        }
-    }
-    CalcButton {
-        id: btn8
-        text: "8"
-        fontSize: 22
-        color: btn8.pressed ? "#3a3a3e" : "#505054"
-        textColor: "#ffffff"
-        x: root.gap + (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap + (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.entry = root.fresh ? 8 : (root.dot > 0 ? root.entry + 8 / root.dot : root.entry * 10 + 8)
-            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
-            root.fresh = false
-            root.editing = true
-        }
-    }
-    CalcButton {
-        id: btn9
-        text: "9"
-        fontSize: 22
-        color: btn9.pressed ? "#3a3a3e" : "#505054"
-        textColor: "#ffffff"
-        x: root.gap + 2 * (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap + (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.entry = root.fresh ? 9 : (root.dot > 0 ? root.entry + 9 / root.dot : root.entry * 10 + 9)
-            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
-            root.fresh = false
-            root.editing = true
-        }
-    }
-    CalcButton {
-        id: btnMul
-        text: "*"
-        fontSize: 22
-        color: btnMul.pressed ? "#c07a08" : "#ff9f0a"
-        textColor: "#ffffff"
-        x: root.gap + 3 * (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap + (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.acc = root.op == 0 ? root.entry : (root.op == 1 ? root.acc + root.entry : (root.op == 2 ? root.acc - root.entry : (root.op == 3 ? root.acc * root.entry : root.acc / root.entry)))
-            root.entry = 0
-            root.dot = 0
-            root.op = 3
-            root.fresh = true
-            root.editing = false
-        }
-    }
-
-    // Row 2: 4 5 6 -
-    CalcButton {
-        id: btn4
-        text: "4"
-        fontSize: 22
-        color: btn4.pressed ? "#3a3a3e" : "#505054"
-        textColor: "#ffffff"
-        x: root.gap
-        y: root.displayH + 2 * root.gap + 2 * (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.entry = root.fresh ? 4 : (root.dot > 0 ? root.entry + 4 / root.dot : root.entry * 10 + 4)
-            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
-            root.fresh = false
-            root.editing = true
-        }
-    }
-    CalcButton {
-        id: btn5
-        text: "5"
-        fontSize: 22
-        color: btn5.pressed ? "#3a3a3e" : "#505054"
-        textColor: "#ffffff"
-        x: root.gap + (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap + 2 * (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.entry = root.fresh ? 5 : (root.dot > 0 ? root.entry + 5 / root.dot : root.entry * 10 + 5)
-            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
-            root.fresh = false
-            root.editing = true
-        }
-    }
-    CalcButton {
-        id: btn6
-        text: "6"
-        fontSize: 22
-        color: btn6.pressed ? "#3a3a3e" : "#505054"
-        textColor: "#ffffff"
-        x: root.gap + 2 * (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap + 2 * (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.entry = root.fresh ? 6 : (root.dot > 0 ? root.entry + 6 / root.dot : root.entry * 10 + 6)
-            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
-            root.fresh = false
-            root.editing = true
-        }
-    }
-    CalcButton {
-        id: btnSub
-        text: "-"
-        fontSize: 22
-        color: btnSub.pressed ? "#c07a08" : "#ff9f0a"
-        textColor: "#ffffff"
-        x: root.gap + 3 * (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap + 2 * (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.acc = root.op == 0 ? root.entry : (root.op == 1 ? root.acc + root.entry : (root.op == 2 ? root.acc - root.entry : (root.op == 3 ? root.acc * root.entry : root.acc / root.entry)))
-            root.entry = 0
-            root.dot = 0
-            root.op = 2
-            root.fresh = true
-            root.editing = false
-        }
-    }
-
-    // Row 3: 1 2 3 +
-    CalcButton {
-        id: btn1
-        text: "1"
-        fontSize: 22
-        color: btn1.pressed ? "#3a3a3e" : "#505054"
-        textColor: "#ffffff"
-        x: root.gap
-        y: root.displayH + 2 * root.gap + 3 * (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.entry = root.fresh ? 1 : (root.dot > 0 ? root.entry + 1 / root.dot : root.entry * 10 + 1)
-            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
-            root.fresh = false
-            root.editing = true
-        }
-    }
-    CalcButton {
-        id: btn2
-        text: "2"
-        fontSize: 22
-        color: btn2.pressed ? "#3a3a3e" : "#505054"
-        textColor: "#ffffff"
-        x: root.gap + (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap + 3 * (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.entry = root.fresh ? 2 : (root.dot > 0 ? root.entry + 2 / root.dot : root.entry * 10 + 2)
-            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
-            root.fresh = false
-            root.editing = true
-        }
-    }
-    CalcButton {
-        id: btn3
-        text: "3"
-        fontSize: 22
-        color: btn3.pressed ? "#3a3a3e" : "#505054"
-        textColor: "#ffffff"
-        x: root.gap + 2 * (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap + 3 * (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.entry = root.fresh ? 3 : (root.dot > 0 ? root.entry + 3 / root.dot : root.entry * 10 + 3)
-            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
-            root.fresh = false
-            root.editing = true
-        }
-    }
-    CalcButton {
-        id: btnAdd
-        text: "+"
-        fontSize: 22
-        color: btnAdd.pressed ? "#c07a08" : "#ff9f0a"
-        textColor: "#ffffff"
-        x: root.gap + 3 * (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap + 3 * (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.acc = root.op == 0 ? root.entry : (root.op == 1 ? root.acc + root.entry : (root.op == 2 ? root.acc - root.entry : (root.op == 3 ? root.acc * root.entry : root.acc / root.entry)))
-            root.entry = 0
-            root.dot = 0
-            root.op = 1
-            root.fresh = true
-            root.editing = false
-        }
-    }
-
-
-
-    // Row 4: 0 (double width)  .  =
-    CalcButton {
-        id: btn0
-        text: "0"
-        fontSize: 22
-        color: btn0.pressed ? "#3a3a3e" : "#505054"
-        textColor: "#ffffff"
-        x: root.gap
-        y: root.displayH + 2 * root.gap + 4 * (root.rowH + root.gap)
-        width: 2 * root.colW + root.gap
-        height: root.rowH
-        onClicked: {
-            root.entry = root.fresh ? 0 : (root.dot > 0 ? root.entry + 0 / root.dot : root.entry * 10)
-            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
-            root.fresh = false
-            root.editing = true
-        }
-    }
-    CalcButton {
-        id: btnDot
-        text: "."
-        fontSize: 22
-        color: btnDot.pressed ? "#3a3a3e" : "#505054"
-        textColor: "#ffffff"
-        x: root.gap + 2 * (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap + 4 * (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.entry = root.fresh ? 0 : root.entry
-            root.dot = root.dot > 0 ? root.dot : 10
-            root.fresh = false
-            root.editing = true
-        }
-    }
-    CalcButton {
-        id: btnEq
-        text: "="
-        fontSize: 22
-        color: btnEq.pressed ? "#c07a08" : "#ff9f0a"
-        textColor: "#ffffff"
-        x: root.gap + 3 * (root.colW + root.gap)
-        y: root.displayH + 2 * root.gap + 4 * (root.rowH + root.gap)
-        width: root.colW
-        height: root.rowH
-        onClicked: {
-            root.acc = root.op == 0 ? root.acc : (root.op == 1 ? root.acc + root.entry : (root.op == 2 ? root.acc - root.entry : (root.op == 3 ? root.acc * root.entry : root.acc / root.entry)))
-            root.entry = 0
-            root.dot = 0
-            root.op = 0
-            root.fresh = true
-            root.editing = false
+        Repeater {
+            model: keys
+            Button {
+                text: model.text
+                fontSize: 22
+                width: root.colW
+                height: root.rowH
+                color: pressed ? darker(model.bg) : model.bg
+                textColor: model.fg
+                onClicked: {
+                    root.acc = model.fn == 6 ? (root.op == 0 ? root.acc : (root.op == 1 ? root.acc + root.entry : (root.op == 2 ? root.acc - root.entry : (root.op == 3 ? root.acc * root.entry : root.acc / root.entry)))) : (model.fn == 7 ? (root.op == 0 ? root.entry : (root.op == 1 ? root.acc + root.entry : (root.op == 2 ? root.acc - root.entry : (root.op == 3 ? root.acc * root.entry : root.acc / root.entry)))) : (model.fn == 1 ? 0 : ((model.fn == 2 && !root.editing) ? -root.acc : ((model.fn == 3 && !root.editing) ? root.acc / 100 : root.acc))))
+                    root.entry = model.digit >= 0 ? (root.fresh ? model.digit : (root.dot > 0 ? root.entry + model.digit / root.dot : root.entry * 10 + model.digit)) : (model.fn == 1 ? 0 : (model.fn == 5 ? (root.fresh ? 0 : root.entry) : (model.fn == 4 ? (root.editing ? (root.dot > 0 ? root.entry - root.entry % (100 / (root.dot > 10 ? root.dot : 100)) : (root.entry - root.entry % 10) / 10) : root.entry) : ((model.fn == 6 || model.fn == 7) ? 0 : ((model.fn == 2 && root.editing) ? -root.entry : ((model.fn == 3 && root.editing) ? root.entry / 100 : root.entry))))))
+                    root.dot = model.digit >= 0 ? (root.dot > 0 ? root.dot * 10 : root.dot) : (model.fn == 5 ? (root.dot > 0 ? root.dot : 10) : (model.fn == 4 ? (root.dot > 10 ? root.dot / 10 : 0) : ((model.fn == 1 || model.fn == 6 || model.fn == 7) ? 0 : root.dot)))
+                    root.op = model.fn == 7 ? model.op : ((model.fn == 1 || model.fn == 6) ? 0 : root.op)
+                    root.fresh = (model.digit >= 0 || model.fn == 2 || model.fn == 3 || model.fn == 4 || model.fn == 5) ? false : true
+                    root.editing = (model.digit >= 0 || model.fn == 1 || model.fn == 4 || model.fn == 5) ? true : ((model.fn == 6 || model.fn == 7) ? false : root.editing)
+                }
+            }
         }
     }
 }
+

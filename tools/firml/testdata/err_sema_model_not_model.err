@@ -1,0 +1,1 @@
+err_sema_model_not_model.fml:10:9: error: the Repeater model 'notAModel' is a 'Rectangle', expected a ListModel

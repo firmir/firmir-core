@@ -171,9 +171,31 @@ private:
         info->parent = parent;
         if (info->type->kind == TypeKind::Window && parent)
             throw Error(node.loc, "'Window' is only allowed as the root object");
-        if (parent && parent->type->kind == TypeKind::Timer)
-            throw Error(node.loc, "'" + parent->type->name +
-                                      "' cannot contain objects");
+        if (parent) {
+            const TypeKind parentKind = parent->type->kind;
+            if (parentKind == TypeKind::Timer || parentKind == TypeKind::ModelElement)
+                throw Error(node.loc, "'" + parent->type->name +
+                                          "' cannot contain objects");
+            if (parentKind == TypeKind::Model &&
+                info->type->kind != TypeKind::ModelElement)
+                throw Error(node.loc,
+                            "'ListModel' can only contain ListElement objects");
+            if (info->type->kind == TypeKind::ModelElement &&
+                parentKind != TypeKind::Model)
+                throw Error(node.loc,
+                            "'ListElement' is only allowed inside a ListModel");
+            // The direct child of a Repeater is its delegate template; deeper
+            // objects inherit the delegate scope.
+            if (parent->type == builtinType("Repeater"))
+                info->delegateScope = parent;
+            else
+                info->delegateScope = parent->delegateScope;
+            if (info->delegateScope && info->type == builtinType("Repeater"))
+                throw Error(node.loc, "a Repeater cannot be nested inside a delegate");
+            if (info->delegateScope && info->type->kind == TypeKind::Model)
+                throw Error(node.loc,
+                            "a ListModel cannot be declared inside a delegate");
+        }
         info->declIndex = m_declCounter++;
         info->internalName = "_obj_" + std::to_string(info->declIndex);
         ObjectInfo* result = info.get();
@@ -196,10 +218,56 @@ private:
         for (const MemberNode& member : node.members)
             if (const auto* child = std::get_if<ObjectPtr>(&member))
                 registerObject(**child, result);
+        if (result->type->kind == TypeKind::Model)
+            collectModelRoles(*result);
         return result;
     }
 
+    /// Fills the role table of a ListModel from its ListElement children.
+    /// Runs in pass 1 so `model.<role>` checks work regardless of the
+    /// declaration order of the model and the repeater referencing it.
+    void collectModelRoles(ObjectInfo& obj) {
+        for (const ObjectInfo* child : obj.children) {
+            for (const MemberNode& member : child->node->members) {
+                const auto* prop = std::get_if<PropertyStmt>(&member);
+                if (!prop)
+                    throw Error(child->node->loc,
+                                "'ListElement' can only contain role assignments");
+                if (prop->name == "id")
+                    continue; // already rejected by registerId
+                ValueType type;
+                if (std::get_if<NumberLit>(&prop->value.node)) {
+                    type = ValueType::Number;
+                } else if (const auto* unary =
+                               std::get_if<UnaryExpr>(&prop->value.node)) {
+                    // A signed number literal (-1 / +2).
+                    if ((unary->op != '-' && unary->op != '+') ||
+                        !std::get_if<NumberLit>(&unary->operand->node))
+                        throw Error(prop->loc,
+                                    "ListElement role '" + prop->name +
+                                        "' must be a literal (number, string or bool)");
+                    type = ValueType::Number;
+                } else if (const auto* lit =
+                               std::get_if<StringLit>(&prop->value.node)) {
+                    type = isColorLiteral(lit->value) ? ValueType::Color
+                                                      : ValueType::String;
+                } else if (std::get_if<BoolLit>(&prop->value.node)) {
+                    type = ValueType::Bool;
+                } else {
+                    throw Error(prop->loc,
+                                "ListElement role '" + prop->name +
+                                    "' must be a literal (number, string or bool)");
+                }
+                obj.roles.emplace(prop->name, type); // the first element wins
+            }
+        }
+    }
+
     void registerId(ObjectInfo& obj, const PropertyStmt& stmt) {
+        if (obj.delegateScope)
+            throw Error(stmt.loc, "'id' is not allowed inside a Repeater delegate");
+        if (obj.type->kind == TypeKind::ModelElement)
+            throw Error(stmt.loc, "'ListElement' cannot have an id");
         if (!obj.id.empty())
             throw Error(stmt.loc, "the object already has id '" + obj.id + "'");
         const auto* ident = std::get_if<IdentExpr>(&stmt.value.node);
@@ -223,30 +291,97 @@ private:
     // ---------------------- pass 2: members, anchors ----------------------
 
     void processObject(ObjectInfo& obj) {
+        // A ListModel's members were fully processed in pass 1 (roles); the
+        // ListElement children never get a member pass of their own.
+        if (obj.type->kind == TypeKind::Model) {
+            for (const MemberNode& member : obj.node->members) {
+                if (std::get_if<ObjectPtr>(&member))
+                    continue;
+                const auto* prop = std::get_if<PropertyStmt>(&member);
+                if (prop && prop->name == "id")
+                    continue;
+                throw Error(obj.node->loc,
+                            "'ListModel' members must be ListElement objects");
+            }
+            return;
+        }
+        const bool isRepeater = obj.type == builtinType("Repeater");
         for (const MemberNode& member : obj.node->members) {
             if (const auto* prop = std::get_if<PropertyStmt>(&member)) {
-                if (prop->name != "id")
+                if (prop->name != "id" && !(isRepeater && prop->name == "model"))
                     processProperty(obj, *prop);
             } else if (const auto* decl = std::get_if<PropertyDecl>(&member)) {
+                if (obj.delegateScope)
+                    throw Error(decl->loc, "custom properties are not supported "
+                                           "inside a Repeater delegate");
                 processPropertyDecl(obj, *decl);
             } else if (const auto* anchor = std::get_if<AnchorStmt>(&member)) {
                 if (obj.type->kind != TypeKind::Item)
                     throw Error(anchor->loc, "anchors are only valid on items, not on '" +
                                                  obj.type->name + "'");
+                if (obj.delegateScope)
+                    throw Error(anchor->loc, "anchors are not supported inside a "
+                                             "Repeater delegate yet");
                 processAnchor(obj, *anchor);
             } else if (const auto* behavior = std::get_if<BehaviorStmt>(&member)) {
                 if (obj.type->kind != TypeKind::Item)
                     throw Error(behavior->loc,
                                 "behaviors are only valid on items, not on '" +
                                     obj.type->name + "'");
+                if (obj.delegateScope)
+                    throw Error(behavior->loc, "behaviors are not supported inside a "
+                                               "Repeater delegate yet");
                 processBehavior(obj, *behavior);
             } else if (const auto* handler = std::get_if<HandlerStmt>(&member)) {
                 processHandler(obj, *handler);
             }
         }
+        if (isRepeater)
+            validateRepeater(obj);
         checkOverconstrained(obj);
         for (ObjectInfo* child : obj.children)
             processObject(*child);
+    }
+
+    /// Repeater: resolves the `model` property (a ListModel id or a delegate
+    /// count) and requires exactly one delegate child object.
+    void validateRepeater(ObjectInfo& obj) {
+        bool hasModel = false;
+        for (const MemberNode& member : obj.node->members) {
+            const auto* prop = std::get_if<PropertyStmt>(&member);
+            if (!prop || prop->name != "model")
+                continue;
+            hasModel = true;
+            resolveRepeaterModel(obj, *prop);
+        }
+        if (!hasModel)
+            throw Error(obj.node->loc, "'Repeater' requires a 'model' property");
+        if (obj.children.size() != 1)
+            throw Error(obj.node->loc,
+                        "'Repeater' requires exactly one delegate child object");
+    }
+
+    void resolveRepeaterModel(ObjectInfo& obj, const PropertyStmt& stmt) {
+        if (const auto* ident = std::get_if<IdentExpr>(&stmt.value.node)) {
+            const auto it = m_result.byId.find(ident->name);
+            if (it == m_result.byId.end())
+                throw Error(stmt.loc, "unknown model '" + ident->name +
+                                          "' (expected a ListModel id)");
+            if (it->second->type->kind != TypeKind::Model)
+                throw Error(stmt.loc, "the Repeater model '" + ident->name + "' is a '" +
+                                          it->second->type->name +
+                                          "', expected a ListModel");
+            obj.modelObject = it->second;
+            return;
+        }
+        if (const auto* lit = std::get_if<NumberLit>(&stmt.value.node)) {
+            if (lit->text.find_first_not_of("0123456789") != std::string::npos)
+                throw Error(stmt.loc,
+                            "a numeric Repeater model must be a non-negative integer");
+            obj.modelCount = std::stoi(lit->text);
+            return;
+        }
+        throw Error(stmt.loc, "the Repeater 'model' must be a ListModel id or a number");
     }
 
     /// `property <type> <name>[: <expr>]`: validates the declaration and
@@ -269,8 +404,11 @@ private:
         if (decl.name.empty() || decl.name[0] < 'a' || decl.name[0] > 'z')
             throw Error(decl.loc, "property name '" + decl.name +
                                       "' must start with a lowercase letter");
-        if (obj.type->kind == TypeKind::Timer)
-            throw Error(decl.loc, "'Timer' does not support custom properties");
+        if (obj.type->kind == TypeKind::Timer ||
+            obj.type->kind == TypeKind::Model ||
+            obj.type->kind == TypeKind::ModelElement)
+            throw Error(decl.loc, "'" + obj.type->name +
+                                      "' does not support custom properties");
         if (decl.name == "id")
             throw Error(decl.loc, "a custom property cannot be named 'id'");
         if (obj.type->findProperty(decl.name))
@@ -414,6 +552,13 @@ private:
         if (const auto local = m_expressionLocals.find(ident.name);
             local != m_expressionLocals.end())
             return local->second;
+        if (scope.delegateScope) {
+            // Inside a Repeater delegate: the row index and model roles.
+            if (ident.name == "index")
+                return ValueType::Number;
+            if (ident.name == "model")
+                throw Error(loc, "'model' must be used as model.<role>");
+        }
         if (ident.name == "parent")
             throw Error(loc, "'parent' must be used as parent.<property>");
         if (const PropertyInfo* prop = scope.type->findProperty(ident.name)) {
@@ -460,6 +605,18 @@ private:
                 return ValueType::Number;
             throw Error(loc, "member access is only supported on ids, 'parent', "
                              "singletons and Rect.x/y/width/height");
+        }
+        if (base->name == "model" && scope.delegateScope) {
+            // Role access inside a Repeater delegate: model.<role>.
+            const ObjectInfo* repeater = scope.delegateScope;
+            if (!repeater->modelObject)
+                throw Error(loc, "the Repeater model is a plain number; 'model." +
+                                 member.name + "' is unavailable");
+            const auto role = repeater->modelObject->roles.find(member.name);
+            if (role == repeater->modelObject->roles.end())
+                throw Error(loc, "ListModel '" + repeater->modelObject->id +
+                                     "' has no role '" + member.name + "'");
+            return role->second; // a static model: no dependency to track
         }
         const ObjectInfo* target = nullptr;
         if (base->name == "parent") {

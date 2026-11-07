@@ -1,0 +1,13 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Repeater.hpp>
+
+Rectangle {
+    id: root
+    Repeater {
+        model: 2
+        Rectangle {
+        }
+        Rectangle {
+        }
+    }
+}
