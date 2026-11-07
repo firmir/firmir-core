@@ -169,6 +169,11 @@ private:
         info->resolvedTypeName = typeName;
         info->type = typeIt->second;
         info->parent = parent;
+        if (info->type->kind == TypeKind::Window && parent)
+            throw Error(node.loc, "'Window' is only allowed as the root object");
+        if (parent && parent->type->kind == TypeKind::Timer)
+            throw Error(node.loc, "'" + parent->type->name +
+                                      "' cannot contain objects");
         info->declIndex = m_declCounter++;
         info->internalName = "_obj_" + std::to_string(info->declIndex);
         ObjectInfo* result = info.get();
@@ -223,8 +228,15 @@ private:
                 if (prop->name != "id")
                     processProperty(obj, *prop);
             } else if (const auto* anchor = std::get_if<AnchorStmt>(&member)) {
+                if (obj.type->kind != TypeKind::Item)
+                    throw Error(anchor->loc, "anchors are only valid on items, not on '" +
+                                                 obj.type->name + "'");
                 processAnchor(obj, *anchor);
             } else if (const auto* behavior = std::get_if<BehaviorStmt>(&member)) {
+                if (obj.type->kind != TypeKind::Item)
+                    throw Error(behavior->loc,
+                                "behaviors are only valid on items, not on '" +
+                                    obj.type->name + "'");
                 processBehavior(obj, *behavior);
             } else if (const auto* handler = std::get_if<HandlerStmt>(&member)) {
                 processHandler(obj, *handler);
@@ -256,6 +268,8 @@ private:
             return;
         }
         const ValueType actual = checkExpr(stmt.value, obj, deps);
+        if (obj.type->kind == TypeKind::Timer && !deps.empty())
+            throw Error(stmt.loc, "Timer properties do not support bindings");
         if (prop)
             checkAssignable(stmt.loc, stmt.name, prop->type, actual, stmt.value);
         recordBinding(obj, stmt, deps);
@@ -342,6 +356,8 @@ private:
         }
         if (std::get_if<MethodCallExpr>(&expr.node))
             throw Error(expr.loc, "method calls are only allowed in signal/property handlers");
+        if (std::get_if<AssignExpr>(&expr.node))
+            throw Error(expr.loc, "assignments are only allowed in signal/property handlers");
         throw Error(expr.loc, "unsupported expression");
     }
 
@@ -362,17 +378,36 @@ private:
         throw Error(loc, "unknown identifier '" + ident.name + "'");
     }
 
+    /// Resolves a `<singleton>.<property>` read (e.g. Firmir.Gui.App.screenWidth).
+    /// The dependency is registered under the canonical singleton name.
+    ValueType checkSingletonMember(const std::string& writtenName,
+                                   const std::string& property,
+                                   const TypeInfo* singleton, const SourceLoc& loc,
+                                   std::vector<std::string>& deps) {
+        const PropertyInfo* prop = singleton->findProperty(property);
+        if (!prop)
+            throw Error(loc, "unknown property '" + property + "' of singleton '" +
+                                 writtenName + "'");
+        m_result.usesAppSingleton = true;
+        addDep(deps, "Firmir.Gui.App." + property);
+        return prop->type;
+    }
+
     ValueType checkMember(const MemberExpr& member, const SourceLoc& loc,
                           ObjectInfo& scope, std::vector<std::string>& deps) {
         const auto* base = std::get_if<IdentExpr>(&member.object->node);
         if (!base) {
+            // A dotted singleton reference like Firmir.Gui.App.screenWidth.
+            const std::string dotted = dottedName(*member.object);
+            if (const TypeInfo* singleton = builtinSingleton(dotted))
+                return checkSingletonMember(dotted, member.name, singleton, loc, deps);
             const ValueType objectType = checkExpr(*member.object, scope, deps);
             if (objectType == ValueType::Rect &&
                 (member.name == "x" || member.name == "y" ||
                  member.name == "width" || member.name == "height"))
                 return ValueType::Number;
-            throw Error(loc, "member access is only supported on ids, 'parent' "
-                             "and Rect.x/y/width/height");
+            throw Error(loc, "member access is only supported on ids, 'parent', "
+                             "singletons and Rect.x/y/width/height");
         }
         const ObjectInfo* target = nullptr;
         if (base->name == "parent") {
@@ -382,6 +417,10 @@ private:
         } else {
             const auto it = m_result.byId.find(base->name);
             if (it == m_result.byId.end()) {
+                // The short singleton form: App.screenWidth.
+                if (const TypeInfo* singleton = builtinSingleton(base->name))
+                    return checkSingletonMember(base->name, member.name, singleton, loc,
+                                                deps);
                 if (scope.type->findProperty(base->name))
                     throw Error(loc, "'" + base->name +
                                          "' is a property, not an object id (use plain '" +
@@ -701,6 +740,68 @@ private:
                                    "' (supported: int, double, float, string, bool, color)");
     }
 
+    /// Validates a `<target> = <value>` handler command: the target resolves
+    /// to a writable property of an id / parent / the handler's own object.
+    void checkAssignCommand(ObjectInfo& obj, const AssignExpr& assign) {
+        const Expr& targetExpr = *assign.target;
+        const ObjectInfo* targetObj = nullptr;
+        std::string propName;
+        if (const auto* ident = std::get_if<IdentExpr>(&targetExpr.node)) {
+            if (ident->name == "parent")
+                throw Error(targetExpr.loc,
+                            "invalid assignment target 'parent' (use parent.<property>)");
+            targetObj = &obj;
+            propName = ident->name;
+        } else if (const auto* member = std::get_if<MemberExpr>(&targetExpr.node)) {
+            const auto* base = std::get_if<IdentExpr>(&member->object->node);
+            if (!base) {
+                if (builtinSingleton(dottedName(*member->object)))
+                    throw Error(targetExpr.loc, "singleton properties are read-only");
+                throw Error(targetExpr.loc, "the assignment target must be a property "
+                                            "name or <id>.<property>");
+            }
+            if (base->name == "parent") {
+                if (!obj.parent)
+                    throw Error(targetExpr.loc, "the root object has no 'parent'");
+                targetObj = obj.parent;
+            } else {
+                const auto it = m_result.byId.find(base->name);
+                if (it == m_result.byId.end()) {
+                    if (builtinSingleton(base->name))
+                        throw Error(targetExpr.loc, "singleton properties are read-only");
+                    throw Error(targetExpr.loc,
+                                "unknown identifier '" + base->name + "'");
+                }
+                targetObj = it->second;
+            }
+            propName = member->name;
+        } else {
+            throw Error(targetExpr.loc, "the assignment target must be a property "
+                                        "name or <id>.<property>");
+        }
+        if (targetObj->type->kind == TypeKind::Timer)
+            throw Error(targetExpr.loc, "Timer properties cannot be assigned in "
+                                        "handlers (use start/stop methods)");
+        const PropertyInfo* prop = targetObj->type->findProperty(propName);
+        if (!prop) {
+            if (targetObj->type->opaque)
+                warn(targetExpr.loc, "cannot verify property '" + propName +
+                                         "' of opaque type '" + targetObj->type->name +
+                                         "' (no meta information)");
+            else
+                throw Error(targetExpr.loc, "unknown property '" + propName +
+                                                "' of type '" + targetObj->type->name +
+                                                "'");
+        }
+        if (prop && prop->readOnly)
+            throw Error(targetExpr.loc, "property '" + propName + "' of type '" +
+                                            targetObj->type->name + "' is read-only");
+        std::vector<std::string> ignoredDeps;
+        const ValueType actual = checkExpr(*assign.value, obj, ignoredDeps);
+        if (prop)
+            checkAssignable(targetExpr.loc, propName, prop->type, actual, *assign.value);
+    }
+
     void processHandler(ObjectInfo& obj, const HandlerStmt& stmt) {
         if (stmt.name.size() <= 2)
             throw Error(stmt.loc, "invalid handler name '" + stmt.name + "'");
@@ -746,14 +847,20 @@ private:
                 break;
         }
         for (const Expr& command : stmt.commands) {
+            if (const auto* assign = std::get_if<AssignExpr>(&command.node)) {
+                checkAssignCommand(obj, *assign);
+                continue;
+            }
             const auto* call = std::get_if<MethodCallExpr>(&command.node);
             if (!call)
                 throw Error(command.loc,
-                            "a handler command must be a method call (id.method(...))");
+                            "a handler command must be a method call (id.method(...)) "
+                            "or a property assignment (id.prop = ...)");
             const std::string receiver = dottedName(*call->object);
             const TypeInfo* receiverType = nullptr;
             if (const TypeInfo* singleton = builtinSingleton(receiver)) {
                 receiverType = singleton;
+                m_result.usesAppSingleton = true;
             } else if (receiver == "parent") {
                 if (!obj.parent)
                     throw Error(command.loc, "the root object has no 'parent'");

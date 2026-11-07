@@ -1,0 +1,43 @@
+// E2E fixture for Window-rooted codegen (M8): the generated function creates
+// the window and the Firmir.Gui.App singleton, binds the window size to the
+// primary screen, and a Timer moves the box via handler assignments
+// (animated by the behavior). Driven by window_app_main.cpp.
+#include <firmir/items/Window.hpp>
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Timer.hpp>
+
+Firmir.Gui.Window {
+    id: root
+    title: "window app e2e"
+    width: Firmir.Gui.App.screenWidth / 2
+    height: Firmir.Gui.App.screenHeight / 2
+
+    Firmir.Gui.Rectangle {
+        anchors.fill: parent
+        color: "#000000"
+    }
+
+    Firmir.Gui.Rectangle {
+        id: box
+        color: "#FF0000"
+        width: 40
+        height: 40
+        x: 5
+        y: 5
+
+        behavior on x {
+            NumberAnimation { duration: 20ms }
+        }
+    }
+
+    Timer {
+        id: ticker
+        running: true
+        singleShot: false
+        interval: 50
+
+        onTimeout: {
+            box.x = box.x + 10
+        }
+    }
+}

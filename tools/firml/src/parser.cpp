@@ -266,6 +266,15 @@ HandlerStmt Parser::parseHandler() {
     expect(TokenKind::Colon, "':' after the handler name");
     auto parseCommand = [this, &handler] {
         Expr command = parseExpression();
+        if (m_cur.kind == TokenKind::Equal) {
+            // Property assignment command: `<target> = <expr>`; the target
+            // shape (id.prop / parent.prop / own property) is checked by sema.
+            const SourceLoc loc = command.loc;
+            advance();
+            Expr value = parseExpression();
+            command = Expr(loc, AssignExpr{makeExpr(std::move(command)),
+                                           makeExpr(std::move(value))});
+        }
         accept(TokenKind::Semicolon);
         handler.commands.push_back(std::move(command));
     };

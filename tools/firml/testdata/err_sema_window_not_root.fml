@@ -1,0 +1,8 @@
+#include <firmir/items/Window.hpp>
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+    Firmir.Gui.Window {
+    }
+}

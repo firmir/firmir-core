@@ -71,6 +71,13 @@ void dumpExpr(const Expr& expr, std::ostream& out) {
             }
             out << ")";
         }
+        void operator()(const AssignExpr& assign) const {
+            out << "(assign ";
+            dumpExpr(*assign.target, out);
+            out << " ";
+            dumpExpr(*assign.value, out);
+            out << ")";
+        }
         void operator()(const UnaryExpr& unary) const {
             out << "(unary " << unary.op << " ";
             dumpExpr(*unary.operand, out);

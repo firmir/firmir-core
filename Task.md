@@ -163,6 +163,18 @@ ctest --test-dir build --output-on-failure
       M7 готов — `using`, typed signal handlers, `on<Property>Changed`,
       method-call commands, `ROOT_DIR`/`--root-dir`, singleton App и Button;
       snapshot `40_handlers` + headless e2e `firmlc.handlers.app`.
+      M8 готов — корневой `Window` (`create<Stem>(Screen*)`: окно + App-
+      singleton создаются генератором, `show()` в конце), невизуальный
+      `Timer` (`interval`/`singleShot`/`running`, сигнал `timeout`, методы
+      start/stop), присваивания в обработчиках (`id.prop = expr` — пишут
+      через setProperty, поведения анимируют), свойства синглтона
+      `Firmir.Gui.App.screenWidth/screenHeight` (read-only, обновляются при
+      hotplug экрана); у `Window` зарегистрированные свойства
+      `width`/`height`/`title`. Snapshot `50_window_timer` + err-кейсы +
+      headless e2e `firmlc.window.app`; example_gui переписан на Firml.
+- [x] firmir-wayland-generator переписан на C++ (tools/wayland,
+      парсинг XML через firmir-xml, вывод байт-в-байт совместим с
+      Python-версией; Python-зависимость сборки удалена).
 - [x] Property/anchors/animate рантайм: у `Firmir::Object` зарегистрированные
       свойства (`registerProperty`, конверсия типов, `propertyChanged`,
       `propertyMetaList`, сигнал `destroyed`) + динамический bag; у

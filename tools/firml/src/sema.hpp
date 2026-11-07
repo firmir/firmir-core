@@ -92,6 +92,10 @@ struct SemaResult {
     std::vector<HandlerInfo> handlers;
     std::vector<DependencyEdge> edges; // bindings + anchors, in file order
     std::vector<SemaWarning> warnings;
+    /// True when the file references the Firmir.Gui.App singleton (handler
+    /// method calls or screenWidth/screenHeight reads). A Window-rooted
+    /// generated function then creates and registers the App instance itself.
+    bool usesAppSingleton = false;
 };
 
 /// Runs semantic analysis on a parsed file: resolves the #include directives

@@ -57,13 +57,39 @@ const TypeInfo buttonType{"Button",
 
 const TypeInfo appType{"App",
                        nullptr,
-                       {},
+                       {{"screenWidth", ValueType::Number, true},
+                        {"screenHeight", ValueType::Number, true}},
                        {{"show", {}},
                         {"hide", {}},
                         {"quit", {}},
                         {"setTitle", {ValueType::String}}},
                        {},
                        false};
+
+// Window: root-only object hosting the item tree (Firmir::Gui::Window).
+const TypeInfo windowType{"Window",
+                          nullptr,
+                          {{"title", ValueType::String},
+                           {"width", ValueType::Number},
+                           {"height", ValueType::Number}},
+                          {{"show", {}}, {"hide", {}}, {"close", {}}},
+                          {},
+                          false,
+                          TypeKind::Window,
+                          "Firmir::Gui::Window"};
+
+// Timer: non-visual Firmir::Timer child; `interval` is in milliseconds,
+// `running: true` starts the timer after the other settings are applied.
+const TypeInfo timerType{"Timer",
+                         nullptr,
+                         {{"interval", ValueType::Number},
+                          {"singleShot", ValueType::Bool},
+                          {"running", ValueType::Bool}},
+                         {{"start", {}}, {"stop", {}}},
+                         {{"timeout", {}}},
+                         false,
+                         TypeKind::Timer,
+                         "Firmir::Timer"};
 
 } // namespace
 
@@ -112,6 +138,10 @@ const TypeInfo* builtinType(const std::string& name) {
         return &textType;
     if (name == "Button")
         return &buttonType;
+    if (name == "Window")
+        return &windowType;
+    if (name == "Timer")
+        return &timerType;
     return nullptr;
 }
 

@@ -37,6 +37,7 @@ if(FIRMIR_BUILD_TESTS)
         12_comments_semicolons
         13_dotted_types
         40_handlers
+        50_window_timer
         err_bad_token
         err_two_roots
         err_unclosed_brace
@@ -58,12 +59,15 @@ if(FIRMIR_BUILD_TESTS)
         23_unused_include
         24_quoted_include
         40_handlers
+        50_window_timer
         err_sema_anchor_axis_conflict
         err_sema_anchor_center_conflict
         err_sema_anchor_fill_conflict
         err_sema_anchor_late_sibling
         err_sema_anchor_overconstrained
         err_sema_animation_type
+        err_sema_assign_readonly
+        err_sema_assign_unknown
         err_sema_bad_easing
         err_sema_behavior_bool
         err_sema_color_on_number
@@ -73,11 +77,15 @@ if(FIRMIR_BUILD_TESTS)
         err_sema_handler_property_lowercase
         err_sema_include_not_found
         err_sema_missing_type_include
+        err_sema_timer_binding
+        err_sema_timer_children
         err_sema_type_mismatch
         err_sema_undefined_property
         err_sema_unknown_function
         err_sema_unknown_identifier
         err_sema_unknown_property
+        err_sema_window_anchor
+        err_sema_window_not_root
     )
     foreach(case IN LISTS FIRML_AST_CASES)
         add_test(
@@ -114,6 +122,7 @@ if(FIRMIR_BUILD_TESTS)
         33_codegen_bindings
         34_codegen_behavior
         40_handlers
+        50_window_timer
     )
     foreach(case IN LISTS FIRML_GEN_CASES)
         add_test(
@@ -172,6 +181,23 @@ if(FIRMIR_BUILD_TESTS)
             else()
                 add_test(NAME firmlc.handlers.app
                          COMMAND $<TARGET_FILE:firmlc_handlers_app>)
+            endif()
+        endif()
+
+        # M8 e2e: Window root, App singleton auto-registration, Timer-driven
+        # handler assignments and behavior animations on the headless stack.
+        if(TARGET firmir-gui-headless)
+            firml_add_target(firmlc_window_codegen
+                SOURCES testdata/e2e/window_app.fml)
+            add_executable(firmlc_window_app testdata/e2e/window_app_main.cpp)
+            target_link_libraries(firmlc_window_app PRIVATE
+                firmlc_window_codegen firmir-gui-headless)
+            if(FIRMIR_SANITIZER STREQUAL "thread")
+                add_test(NAME firmlc.window.app
+                         COMMAND setarch -R $<TARGET_FILE:firmlc_window_app>)
+            else()
+                add_test(NAME firmlc.window.app
+                         COMMAND $<TARGET_FILE:firmlc_window_app>)
             endif()
         endif()
 

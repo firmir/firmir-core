@@ -97,6 +97,16 @@ private:
     void dispatchTouch(TouchEvent& event);
     void dispatchKey(KeyEvent& event);
 
+    /// Registered property adapters: Firml-generated code reads/writes the
+    /// window geometry and title through the Object property system
+    /// ("width"/"height" in pixels as double, "title" as std::string).
+    double widthProperty() const;
+    double heightProperty() const;
+    void setWidthProperty(double width);
+    void setHeightProperty(double height);
+    std::string titleProperty() const;
+    void setTitleProperty(std::string title);
+
     class Impl;
     std::unique_ptr<Impl> d;
 

@@ -1,0 +1,7 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+    width: 100
+    onWidthChanged: nope = 1
+}

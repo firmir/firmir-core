@@ -20,6 +20,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -30,6 +31,7 @@
 #include <string>
 #include <sys/mman.h>
 #include <thread>
+#include <time.h>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -39,6 +41,37 @@ using namespace Firmir::Gui;
 namespace {
 
 bool verbose() { return std::getenv("FIRMIR_WAYLAND_VERBOSE") != nullptr; }
+
+// Detailed frame-path tracing; enable with FIRMIR_WAYLAND_DEBUG=1. Every line
+// carries a CLOCK_MONOTONIC timestamp (seconds.microseconds) so the client
+// commit cadence can be compared with the compositor's release / frame-done
+// replies. All traced points run under the backend api mutex (present/commit
+// on the render thread, release/frame-done/configure on the dispatch thread).
+bool debugTrace() {
+    static const bool enabled = std::getenv("FIRMIR_WAYLAND_DEBUG") != nullptr;
+    return enabled;
+}
+
+std::uint64_t monoNs() {
+    timespec ts{};
+    ::clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<std::uint64_t>(ts.tv_sec) * 1000000000ull +
+           static_cast<std::uint64_t>(ts.tv_nsec);
+}
+
+void trace(const char* fmt, ...) {
+    if (!debugTrace())
+        return;
+    const std::uint64_t now = monoNs();
+    std::fprintf(stderr, "firmir-wayland: [t=%llu.%06llu] ",
+                 static_cast<unsigned long long>(now / 1000000000ull),
+                 static_cast<unsigned long long>((now / 1000ull) % 1000000ull));
+    va_list ap;
+    va_start(ap, fmt);
+    std::vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    std::fputc('\n', stderr);
+}
 
 class WaylandBackend;
 
@@ -186,6 +219,19 @@ private:
     static const xdg_surface_listener surfaceListener;
     static const xdg_toplevel_listener toplevelListener;
 
+    // Debug-only frame-done probe (FIRMIR_WAYLAND_DEBUG): at most one
+    // wl_surface_frame callback in flight, requested just before a commit;
+    // its "done" event carries the compositor's presentation timestamp.
+    struct FrameProbe {
+        WaylandWindow* owner;
+        wl_callback* callback;
+        std::uint64_t seq;
+        std::uint64_t commitNs;
+    };
+    static void onFrameProbeDone(void* data, wl_callback* callback,
+                                 std::uint32_t time);
+    static const wl_callback_listener frameProbeListener;
+
     WaylandBackend* m_backend;
     wl_surface* m_surface = nullptr;
     xdg_surface* m_xdgSurface = nullptr;
@@ -198,6 +244,9 @@ private:
     bool m_configured = false;
     int m_shmCounter = 0;
     bool m_loggedFirstFrame = false;
+    FrameProbe* m_frameProbe = nullptr;
+    std::uint64_t m_commitSeq = 0;
+    std::uint64_t m_lastPresentNs = 0;
 
     friend class WaylandBackend;
 };
@@ -515,7 +564,10 @@ void WaylandBackend::threadMain() {
             m_clientDisplay->readEvents();
         else
             m_clientDisplay->cancelRead();
-        m_clientDisplay->dispatchPending();
+        const int dispatched = m_clientDisplay->dispatchPending();
+        if (debugTrace() && dispatched > 0)
+            trace("dispatch: ret=%d revents=0x%x dispatched=%d", ret,
+                  pfd.revents, dispatched);
     }
 }
 
@@ -543,6 +595,8 @@ void WaylandWindow::onSurfaceConfigure(void* data, xdg_surface* surface,
     auto* self = static_cast<WaylandWindow*>(data);
     xdg_surface_ack_configure(surface, serial);
     self->m_configured = true;
+    trace("configure serial=%u pending=%d visible=%d", serial,
+          self->m_pending != nullptr, self->m_visible);
     if (self->m_pending && self->m_visible)
         self->commitBuffer(*self->m_pending);
 }
@@ -554,15 +608,34 @@ void WaylandWindow::onToplevelClose(void*, xdg_toplevel*) {
     Firmir::Thread::mainThread()->quit();
 }
 
-void WaylandWindow::onBufferRelease(void* data, wl_buffer*) {
+void WaylandWindow::onBufferRelease(void* data, wl_buffer* handle) {
     // Runs on the dispatch thread with the backend api mutex held (all buffer
     // state is guarded by it).
     auto* buffer = static_cast<Buffer*>(data);
     buffer->busy = false;
+    trace("buffer-release buf=%p", static_cast<void*>(handle));
     buffer->owner->m_backend->bufferReleased.notify_all();
 }
 
+void WaylandWindow::onFrameProbeDone(void* data, wl_callback* callback,
+                                     std::uint32_t time) {
+    // Dispatch thread, api held. `time` is the compositor's presentation
+    // timestamp (ms); latency is measured against our commit.
+    auto* probe = static_cast<FrameProbe*>(data);
+    WaylandWindow* self = probe->owner;
+    trace("frame-done seq=%llu time=%u latency=%.3fms%s",
+          static_cast<unsigned long long>(probe->seq), time,
+          (monoNs() - probe->commitNs) / 1e6,
+          callback == probe->callback ? "" : " (mismatched callback!)");
+    wl_callback_destroy(probe->callback);
+    delete probe;
+    self->m_frameProbe = nullptr;
+}
+
 const wl_buffer_listener WaylandWindow::bufferListener = {onBufferRelease};
+const wl_callback_listener WaylandWindow::frameProbeListener = {
+    onFrameProbeDone
+};
 const xdg_surface_listener WaylandWindow::surfaceListener = {onSurfaceConfigure};
 const xdg_toplevel_listener WaylandWindow::toplevelListener = {
     onToplevelConfigure, onToplevelClose,
@@ -571,6 +644,11 @@ const xdg_toplevel_listener WaylandWindow::toplevelListener = {
 };
 
 WaylandWindow::~WaylandWindow() {
+    if (m_frameProbe) {
+        wl_callback_destroy(m_frameProbe->callback);
+        delete m_frameProbe;
+        m_frameProbe = nullptr;
+    }
     for (auto& buffer : m_buffers)
         destroyBuffer(buffer);
     if (m_toplevel)
@@ -633,6 +711,13 @@ void WaylandWindow::present(const std::uint32_t* pixels, const Size& size) {
     if (!m_surface || !pixels || size.width <= 0 || size.height <= 0)
         return;
 
+    if (debugTrace()) {
+        const std::uint64_t now = monoNs();
+        if (m_lastPresentNs)
+            trace("present: dt=%.3fms", (now - m_lastPresentNs) / 1e6);
+        m_lastPresentNs = now;
+    }
+
     Buffer* buf = nullptr;
     for (auto& b : m_buffers)
         if (!b.busy && b.width == size.width && b.height == size.height) {
@@ -651,6 +736,7 @@ void WaylandWindow::present(const std::uint32_t* pixels, const Size& size) {
     if (!buf) {
         // Both buffers are held by the compositor: wait for a release
         // (wait_for releases the api mutex so the dispatch thread can run).
+        const std::uint64_t waitStart = monoNs();
         m_backend->bufferReleased.wait_for(lock, std::chrono::milliseconds(100));
         for (auto& b : m_buffers)
             if (!b.busy) {
@@ -662,14 +748,25 @@ void WaylandWindow::present(const std::uint32_t* pixels, const Size& size) {
                 buf = &b;
                 break;
             }
+        if (debugTrace())
+            trace("present: waited %.3fms for free buffer (%s)",
+                  (monoNs() - waitStart) / 1e6, buf ? "ok" : "timeout");
     }
-    if (!buf)
+    if (!buf) {
+        trace("present: frame dropped, no free buffer");
         return; // frame dropped
+    }
 
+    const std::uint64_t copyStart = monoNs();
     std::memcpy(buf->data, pixels, buf->bytes);
+    if (debugTrace())
+        trace("present: memcpy %.3fms", (monoNs() - copyStart) / 1e6);
     m_pending = buf;
     if (m_configured && m_visible)
         commitBuffer(*buf);
+    else
+        trace("present: commit deferred (configured=%d visible=%d)",
+              m_configured, m_visible);
     if (!m_loggedFirstFrame) {
         m_loggedFirstFrame = true;
         std::fprintf(stderr, "firmir-wayland: first frame presented (%dx%d)\n",
@@ -678,11 +775,31 @@ void WaylandWindow::present(const std::uint32_t* pixels, const Size& size) {
 }
 
 void WaylandWindow::commitBuffer(Buffer& buffer) {
+    // Debug probe: sample the compositor's presentation timestamp for this
+    // commit (at most one wl_surface_frame request in flight).
+    bool probing = false;
+    if (debugTrace() && !m_frameProbe) {
+        auto* probe = new FrameProbe{this, nullptr, m_commitSeq, monoNs()};
+        probe->callback = wl_surface_frame(m_surface);
+        wl_callback_add_listener(probe->callback, &frameProbeListener, probe);
+        m_frameProbe = probe;
+        probing = true;
+    }
     wl_surface_attach(m_surface, buffer.handle, 0, 0);
     wl_surface_damage_buffer(m_surface, 0, 0, buffer.width, buffer.height);
     wl_surface_commit(m_surface);
+    // Flush right away: the dispatch loop only flushes before entering poll(),
+    // so without this a commit can sit in the outgoing buffer for up to the
+    // 100ms poll timeout (measured: ~96ms extra latency per frame, locking the
+    // whole pipeline to ~9fps). wl_display_flush is thread-safe.
+    m_backend->m_clientDisplay->flush();
     buffer.busy = true;
     m_pending = nullptr;
+    if (debugTrace())
+        trace("commit seq=%llu buf=%p %dx%d%s",
+              static_cast<unsigned long long>(m_commitSeq++),
+              static_cast<void*>(buffer.handle), buffer.width, buffer.height,
+              probing ? " probe-armed" : "");
 }
 
 } // namespace

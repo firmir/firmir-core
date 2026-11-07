@@ -50,6 +50,8 @@ std::string cppTypeName(const ObjectInfo& obj) {
         }
         return out;
     }
+    if (obj.type && !obj.type->cppName.empty())
+        return obj.type->cppName;
     if (builtinType(typeName))
         return "Firmir::Gui::" + typeName;
     return typeName;
@@ -146,6 +148,23 @@ std::string cppValueType(ValueType type) {
     return "double";
 }
 
+/// The dotted name of an identifier/member chain ("Firmir.Gui.App"), or ""
+/// for anything else.
+std::string dottedExprName(const Expr& expr) {
+    if (const auto* ident = std::get_if<IdentExpr>(&expr.node))
+        return ident->name;
+    if (const auto* member = std::get_if<MemberExpr>(&expr.node)) {
+        const std::string base = dottedExprName(*member->object);
+        return base.empty() ? std::string() : base + "." + member->name;
+    }
+    return {};
+}
+
+/// The C++ expression evaluating to the Firmir.Gui.App singleton instance.
+std::string appSingletonAccess() {
+    return "Firmir::Object::singleton<Firmir::Gui::App>(\"Firmir.Gui.App\")";
+}
+
 /// Emits an expression as C++. `type` is the context type of the expression
 /// (property type; Number/Bool for sub-expressions); `scope` is the object
 /// the expression belongs to (needed for id/parent/own-property references).
@@ -179,10 +198,16 @@ public:
         if (const auto* member = std::get_if<MemberExpr>(&expr.node)) {
             const auto* base = std::get_if<IdentExpr>(&member->object->node);
             if (!base) {
+                // A dotted singleton reference: Firmir.Gui.App.screenWidth.
+                if (builtinSingleton(dottedExprName(*member->object)))
+                    return memberAccess(appSingletonAccess(), member->name, type);
                 // childrenRect.x/y/width/height
                 return emit(*member->object, ValueType::Rect, scope) + "." +
                        member->name;
             }
+            // The short singleton form: App.screenWidth.
+            if (builtinSingleton(base->name))
+                return memberAccess(appSingletonAccess(), member->name, type);
             std::string var;
             if (base->name == "parent") {
                 if (!scope.parent)
@@ -299,15 +324,29 @@ public:
         const std::string funcName = "create" + base;
 
         // The body is emitted first; it collects the include flags.
+        const ObjectInfo* rootInfo = m_sema.objects.front();
+        const bool windowRoot = rootInfo->type->kind == TypeKind::Window;
         std::ostringstream body;
-        body << structName << " " << funcName << "(Firmir::Gui::Item* parent) {\n";
+        if (windowRoot)
+            body << structName << " " << funcName << "(Firmir::Gui::Screen* screen) {\n";
+        else
+            body << structName << " " << funcName << "(Firmir::Gui::Item* parent) {\n";
         body << "    " << structName << " objects;\n";
         for (const ObjectInfo* obj : m_sema.objects)
             emitObject(*obj, body);
+        if (windowRoot && m_sema.usesAppSingleton) {
+            // The singleton must exist before the bindings below evaluate it.
+            body << "\n    auto* app = new Firmir::Gui::App(" << rootInfo->internalName
+                 << ", " << rootInfo->internalName << ");\n";
+            body << "    Firmir::Object::registerSingleton(\"Firmir.Gui.App\", app);\n";
+            body << "    objects.app = app;\n";
+        }
         emitBindings(body);
         emitAnchors(body);
         emitBehaviors(body);
         emitHandlers(body);
+        if (windowRoot)
+            body << "\n    " << rootInfo->internalName << "->show();\n";
         body << "    return objects;\n";
         body << "}\n";
 
@@ -322,8 +361,13 @@ public:
 private:
     void emitObject(const ObjectInfo& obj, std::ostringstream& body) {
         const std::string& var = obj.internalName;
-        const std::string parentVar =
-            obj.parent ? obj.parent->internalName : "parent";
+        std::string parentVar;
+        if (!obj.parent)
+            parentVar = obj.type->kind == TypeKind::Window ? "screen" : "parent";
+        else if (obj.parent->type->kind == TypeKind::Window)
+            parentVar = obj.parent->internalName + "->contentItem()";
+        else
+            parentVar = obj.parent->internalName;
         body << "\n    auto* " << var << " = new " << cppTypeName(obj) << "("
              << parentVar << ");\n";
         if (!obj.parent || !obj.id.empty()) {
@@ -335,6 +379,10 @@ private:
         if (!obj.id.empty())
             body << "    " << var << "->setName(\"" << obj.id << "\");\n";
 
+        if (obj.type->kind == TypeKind::Timer) {
+            emitTimerSettings(obj, body);
+            return;
+        }
         for (const BindingInfo& binding : m_sema.bindings) {
             if (binding.object != &obj || !binding.isStatic)
                 continue;
@@ -359,6 +407,41 @@ private:
         }
     }
 
+    /// Timer settings are applied through the native Firmir::Timer API (no
+    /// registered properties); `running` is applied last, after interval and
+    /// singleShot. Sema guarantees the values are static.
+    void emitTimerSettings(const ObjectInfo& obj, std::ostringstream& body) {
+        m_usesTimer = true;
+        const BindingInfo* running = nullptr;
+        for (const BindingInfo& binding : m_sema.bindings) {
+            if (binding.object != &obj || !binding.isStatic)
+                continue;
+            if (binding.property == "interval") {
+                body << "    " << obj.internalName
+                     << "->setInterval(std::chrono::milliseconds(static_cast<long long>("
+                     << m_expr.emit(binding.stmt->value, ValueType::Number, obj)
+                     << ")));\n";
+            } else if (binding.property == "singleShot") {
+                body << "    " << obj.internalName << "->setSingleShot("
+                     << m_expr.emit(binding.stmt->value, ValueType::Bool, obj) << ");\n";
+            } else if (binding.property == "running") {
+                running = &binding;
+            }
+        }
+        if (running) {
+            const auto* lit = std::get_if<BoolLit>(&running->stmt->value.node);
+            if (lit && !lit->value)
+                return; // running: false is the default
+            if (lit) {
+                body << "    " << obj.internalName << "->start();\n";
+                return;
+            }
+            body << "    if ("
+                 << m_expr.emit(running->stmt->value, ValueType::Bool, obj) << ")\n"
+                 << "        " << obj.internalName << "->start();\n";
+        }
+    }
+
     /// Emits one bound assignment: the initial set plus a propertyChanged
     /// subscription per dependency. `assignPrefix` is the statement up to the
     /// value expression, e.g. `title->setProperty("x", ` or
@@ -374,6 +457,8 @@ private:
         std::vector<std::string> captures{var};
         for (const std::string& dep : deps) {
             const std::string depObj = dep.substr(0, dep.rfind('.'));
+            if (depObj == "Firmir.Gui.App")
+                continue; // the singleton is accessed inline; nothing to capture
             if (std::find(captures.begin(), captures.end(), depObj) == captures.end())
                 captures.push_back(depObj);
         }
@@ -385,7 +470,9 @@ private:
         }
         for (const std::string& dep : deps) {
             const size_t dot = dep.rfind('.');
-            body << "    " << dep.substr(0, dot)
+            const std::string depObj = dep.substr(0, dot);
+            body << "    "
+                 << (depObj == "Firmir.Gui.App" ? appSingletonAccess() : depObj)
                  << "->connect<std::string, std::any>(\n"
                  << "        " << var << ", Firmir::Object::signalPropertyChanged,\n"
                  << "        [" << captureList
@@ -462,18 +549,13 @@ private:
     std::string targetVar(const AnchorInfo& anchor) const {
         if (!anchor.target)
             return "nullptr";
+        // Anchors reference items; a Window target means its content item.
+        if (anchor.target->type->kind == TypeKind::Window)
+            return anchor.target->internalName + "->contentItem()";
         return anchor.target->internalName;
     }
 
-    static std::string dottedName(const Expr& expr) {
-        if (const auto* ident = std::get_if<IdentExpr>(&expr.node))
-            return ident->name;
-        if (const auto* member = std::get_if<MemberExpr>(&expr.node)) {
-            const std::string base = dottedName(*member->object);
-            return base.empty() ? std::string() : base + "." + member->name;
-        }
-        return {};
-    }
+    static std::string dottedName(const Expr& expr) { return dottedExprName(expr); }
 
     static std::string handlerCppType(const std::string& type) {
         if (type == "int") return "int";
@@ -523,6 +605,30 @@ private:
         return inferType(expr);
     }
 
+    /// Emits a `<target> = <value>` handler command as a property write; the
+    /// write goes through setProperty(), so behaviors on the target property
+    /// animate the change. The target shape was validated by sema.
+    void emitAssignCommand(std::ostringstream& body, const ObjectInfo& scope,
+                           const AssignExpr& assign) {
+        const ObjectInfo* targetObj = &scope;
+        std::string propName;
+        if (const auto* ident = std::get_if<IdentExpr>(&assign.target->node)) {
+            propName = ident->name;
+        } else {
+            const auto& member = std::get<MemberExpr>(assign.target->node);
+            const auto& base = std::get<IdentExpr>(member.object->node);
+            targetObj =
+                base.name == "parent" ? scope.parent : m_sema.byId.at(base.name);
+            propName = member.name;
+        }
+        const PropertyInfo* prop =
+            targetObj->type ? targetObj->type->findProperty(propName) : nullptr;
+        const ValueType type = prop ? prop->type : inferType(*assign.value);
+        body << "        " << targetObj->internalName << "->setProperty(\""
+             << propName << "\", " << m_expr.emit(*assign.value, type, scope)
+             << ");\n";
+    }
+
     void emitHandlers(std::ostringstream& body) {
         for (const HandlerInfo& handler : m_sema.handlers) {
             const HandlerStmt& stmt = *handler.stmt;
@@ -552,6 +658,10 @@ private:
             for (const HandlerParam& param : stmt.params)
                 body << "        (void)" << param.name << ";\n";
             for (const Expr& command : stmt.commands) {
+                if (const auto* assign = std::get_if<AssignExpr>(&command.node)) {
+                    emitAssignCommand(body, *handler.object, *assign);
+                    continue;
+                }
                 const auto& call = std::get<MethodCallExpr>(command.node);
                 body << "        " << methodReceiver(*call.object) << "->" << call.method << "(";
                 for (std::size_t i = 0; i < call.args.size(); ++i) {
@@ -614,8 +724,18 @@ private:
                 << (inc.angled ? "<" + inc.path + ">" : "\"" + inc.path + "\"")
                 << "\n";
         }
-        out << "\nnamespace Firmir::Gui { class Item; }\n\n";
-        out << "/// Pointers into the created item tree (owned by the parent).\n";
+        const bool windowRoot =
+            m_sema.objects.front()->type->kind == TypeKind::Window;
+        out << "\nnamespace Firmir::Gui { class Item;";
+        if (windowRoot)
+            out << " class Screen;";
+        if (windowRoot && m_sema.usesAppSingleton)
+            out << " class App;";
+        out << " }\n\n";
+        out << (windowRoot
+                    ? "/// Pointers into the created window and object tree (owned\n"
+                      "/// by the window).\n"
+                    : "/// Pointers into the created item tree (owned by the parent).\n");
         out << "struct " << structName << " {\n";
         for (const ObjectInfo* obj : m_sema.objects) {
             if (obj->parent && obj->id.empty())
@@ -624,10 +744,18 @@ private:
                 obj->parent ? obj->id : (obj->id.empty() ? "root" : obj->id);
             out << "    " << cppTypeName(*obj) << "* " << field << " = nullptr;\n";
         }
+        if (windowRoot && m_sema.usesAppSingleton)
+            out << "    Firmir::Gui::App* app = nullptr;\n";
         out << "};\n\n";
-        out << "/// Builds the item tree under @p parent (call before showing the\n"
-               "/// window, on the GUI thread).\n";
-        out << structName << " " << funcName << "(Firmir::Gui::Item* parent);\n";
+        if (windowRoot) {
+            out << "/// Creates the window on @p screen, builds the object tree and\n"
+                   "/// shows the window (call on the GUI thread).\n";
+            out << structName << " " << funcName << "(Firmir::Gui::Screen* screen);\n";
+        } else {
+            out << "/// Builds the item tree under @p parent (call before showing the\n"
+                   "/// window, on the GUI thread).\n";
+            out << structName << " " << funcName << "(Firmir::Gui::Item* parent);\n";
+        }
         return out.str();
     }
 
@@ -644,7 +772,9 @@ private:
             out << "#include <firmir/gui/painter.hpp>\n";
         if (m_usesAnimation)
             out << "#include <chrono>\n#include <firmir/gui/animation.hpp>\n";
-        if (m_usesAppSingleton)
+        else if (m_usesTimer)
+            out << "#include <chrono>\n";
+        if (m_usesAppSingleton || m_sema.usesAppSingleton)
             out << "#include <firmir/gui/app.hpp>\n";
         out << "\n" << body;
         return out.str();
@@ -656,6 +786,7 @@ private:
     ExprEmitter m_expr;
     int m_animationCounter = 0;
     bool m_usesAnimation = false;
+    bool m_usesTimer = false;
     bool m_usesAppSingleton = false;
 };
 

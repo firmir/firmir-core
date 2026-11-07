@@ -24,7 +24,16 @@ public:
     void quit();
     void setTitle(String title);
 
+    /// Primary screen size in pixels (0 when no screen is connected).
+    /// Exposed to Firml as the read-only Number properties "screenWidth" and
+    /// "screenHeight"; a propertyChanged is emitted on screen hotplug.
+    double screenWidth() const;
+    double screenHeight() const;
+
 private:
+    void rejectScreenSizeWrite(double); // the properties are read-only
+    void notifyScreenSizeChanged();
+
     Window* m_window;
 };
 

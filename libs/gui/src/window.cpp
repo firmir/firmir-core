@@ -170,6 +170,13 @@ void Window::Impl::renderFrame() {
 Window::Window(Screen* screen, Object* parent)
     : Object(parent), d(std::make_unique<Impl>(this, screen)) {
     d->content = new Item(this);
+    // Firml-facing properties (bindings/handlers go through setProperty).
+    registerProperty<double>("width", &Window::widthProperty,
+                             &Window::setWidthProperty);
+    registerProperty<double>("height", &Window::heightProperty,
+                             &Window::setHeightProperty);
+    registerProperty<std::string>("title", &Window::titleProperty,
+                                  &Window::setTitleProperty);
     Platform::instance()->addWindow(this);
     if (screen) {
         screen->connect(this, Screen::signalRemoved, [this] {
@@ -196,21 +203,45 @@ Screen* Window::screen() const { return d->screen; }
 std::string Window::title() const { return d->title; }
 
 void Window::setTitle(const std::string& title) {
+    if (d->title == title)
+        return;
     d->title = title;
     if (d->platformWindow)
         d->platformWindow->setTitle(title);
+    notifyPropertyChanged("title");
 }
+
+double Window::widthProperty() const { return d->geometry.width; }
+double Window::heightProperty() const { return d->geometry.height; }
+
+void Window::setWidthProperty(double width) {
+    resize(static_cast<int>(width), d->geometry.height); // setGeometry notifies
+}
+
+void Window::setHeightProperty(double height) {
+    resize(d->geometry.width, static_cast<int>(height)); // setGeometry notifies
+}
+
+std::string Window::titleProperty() const { return d->title; }
+void Window::setTitleProperty(std::string title) { setTitle(title); }
 
 Rect Window::geometry() const { return d->geometry; }
 
 void Window::setGeometry(const Rect& geometry) {
     std::lock_guard<std::recursive_mutex> lock(d->sceneMutex);
+    const bool widthChanged = geometry.width != d->geometry.width;
+    const bool heightChanged = geometry.height != d->geometry.height;
     d->geometry = geometry;
     // The content item always covers the whole window.
     d->content->setGeometry(0, 0, geometry.width, geometry.height);
     if (d->platformWindow)
         d->platformWindow->setGeometry(geometry);
     update();
+    // Firml bindings on the window size re-evaluate through these.
+    if (widthChanged)
+        notifyPropertyChanged("width");
+    if (heightChanged)
+        notifyPropertyChanged("height");
 }
 
 void Window::resize(int width, int height) {

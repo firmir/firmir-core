@@ -45,6 +45,12 @@ struct MethodCallExpr {
     std::string method;
     std::vector<Expr> args;
 };
+/// `target = value` — a property assignment command inside a handler body;
+/// target is an IdentExpr (own property) or MemberExpr (id.prop / parent.prop).
+struct AssignExpr {
+    ExprPtr target;
+    ExprPtr value;
+};
 struct UnaryExpr {
     char op; // '-' or '!'
     ExprPtr operand;
@@ -62,7 +68,7 @@ struct ConditionalExpr {
 
 using ExprNode = std::variant<NumberLit, StringLit, BoolLit, UndefinedLit,
                               IdentExpr, MemberExpr, CallExpr, MethodCallExpr,
-                              UnaryExpr, BinaryExpr, ConditionalExpr>;
+                              AssignExpr, UnaryExpr, BinaryExpr, ConditionalExpr>;
 
 struct Expr {
     SourceLoc loc;
