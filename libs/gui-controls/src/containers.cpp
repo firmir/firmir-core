@@ -36,6 +36,14 @@ ScrollView::ScrollView(Object* parent)
     m_scrollBar->setAnchorRight({this, AnchorLine::Right});
     m_scrollBar->setAnchorTop({this, AnchorLine::Top});
     m_scrollBar->setAnchorBottom({this, AnchorLine::Bottom});
+    // Keep the scrollbar in sync while the content moves (drag, wheel, flick).
+    m_flickable->connect<std::string, std::any>(
+        this, signalPropertyChanged,
+        [this](const std::string& name, const std::any&) {
+            if (name == "contentY" || name == "contentX")
+                m_scrollBar->update();
+        },
+        ConnectionMode::Direct);
 }
 ScrollView::~ScrollView() = default;
 Item* ScrollView::contentItem() const { return m_flickable->contentItem(); }

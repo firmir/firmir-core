@@ -170,6 +170,20 @@ private:
             return;
         }
         if (e.type == EV_REL) {
+            if (e.code == REL_WHEEL || e.code == REL_HWHEEL) {
+                // evdev: positive REL_WHEEL = wheel up, REL_HWHEEL = right —
+                // the same convention as MouseEvent::delta (in detents).
+                InputEvent event;
+                event.type = InputEvent::Type::Mouse;
+                event.mouse.action = MouseEvent::Action::Wheel;
+                event.mouse.pos = {m_mouseX, m_mouseY};
+                event.mouse.delta =
+                    e.code == REL_WHEEL
+                        ? Point{0.0f, static_cast<float>(e.value)}
+                        : Point{static_cast<float>(e.value), 0.0f};
+                eventCallback(event);
+                return;
+            }
             if (e.code == REL_X)
                 m_mouseX += static_cast<float>(e.value);
             else if (e.code == REL_Y)

@@ -312,6 +312,17 @@ public:
         eventCallback(event);
     }
 
+    void emitWheel(Point pos, float deltaX, float deltaY) {
+        if (!eventCallback)
+            return;
+        InputEvent event;
+        event.type = InputEvent::Type::Mouse;
+        event.mouse.action = MouseEvent::Action::Wheel;
+        event.mouse.pos = pos;
+        event.mouse.delta = {deltaX, deltaY};
+        eventCallback(event);
+    }
+
 private:
     WaylandBackend();
     ~WaylandBackend() override;
@@ -341,8 +352,8 @@ private:
     static void onPointerButton(void* data, wl_pointer*, std::uint32_t,
                                 std::uint32_t, std::uint32_t button,
                                 std::uint32_t state);
-    static void onPointerAxis(void*, wl_pointer*, std::uint32_t, std::uint32_t,
-                              wl_fixed_t) {}
+    static void onPointerAxis(void* data, wl_pointer*, std::uint32_t,
+                              std::uint32_t axis, wl_fixed_t value);
 
     static const xdg_wm_base_listener wmBaseListener;
     static const wl_seat_listener seatListener;
@@ -495,6 +506,19 @@ void WaylandBackend::onPointerMotion(void* data, wl_pointer*, std::uint32_t,
     self->m_pointerPos = Point{static_cast<float>(wl_fixed_to_double(sx)),
                                static_cast<float>(wl_fixed_to_double(sy))};
     self->emitMouse(MouseEvent::Action::Move, self->m_pointerPos, 0);
+}
+
+void WaylandBackend::onPointerAxis(void* data, wl_pointer*, std::uint32_t,
+                                   std::uint32_t axis, wl_fixed_t value) {
+    auto* self = static_cast<WaylandBackend*>(data);
+    // Compositors report axis scroll in wl_fixed units (10 per wheel detent
+    // in practice), positive = down/right; MouseEvent::delta is in detents,
+    // positive = up/right.
+    const float steps = static_cast<float>(wl_fixed_to_double(value)) / 10.0f;
+    if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL)
+        self->emitWheel(self->m_pointerPos, 0.0f, -steps);
+    else if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL)
+        self->emitWheel(self->m_pointerPos, steps, 0.0f);
 }
 
 void WaylandBackend::onPointerButton(void* data, wl_pointer*, std::uint32_t,

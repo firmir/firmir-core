@@ -53,10 +53,13 @@ struct RectF {
 
 /// Mouse input event delivered to windows and items.
 struct MouseEvent {
-    enum class Action { Move, Press, Release };
+    enum class Action { Move, Press, Release, Wheel };
     Action action = Action::Move;
     Point pos;      ///< position in window coordinates
     int button = 0; ///< 0 = none, 1 = left, 2 = right, 3 = middle
+    /// Wheel steps (Action::Wheel only): delta.y > 0 means the wheel rotated
+    /// up (away from the user), delta.x > 0 means right; 1.0 = one detent.
+    Point delta;
     bool accepted = false;
 };
 

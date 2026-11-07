@@ -30,8 +30,15 @@ const TypeInfo itemType{"Item",
                         {},
                         false};
 
-const TypeInfo rectangleType{"Rectangle", &itemType, {{"color", ValueType::Color}},
-                             {}, {}, false};
+const TypeInfo rectangleType{"Rectangle",
+                             &itemType,
+                             {{"color", ValueType::Color},
+                              {"radius", ValueType::Number},
+                              {"border.color", ValueType::Color},
+                              {"border.width", ValueType::Number}},
+                             {},
+                             {},
+                             false};
 
 const TypeInfo textType{"Text",
                         &itemType,

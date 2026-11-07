@@ -47,6 +47,7 @@ private:
     void parseAnchorsBlock(Object& object); // anchors { ... } (flattened)
     AnchorStmt parseAnchorEntry();          // key: expr (block entry)
     AnchorStmt parseAnchorShorthand();      // anchors.<key>: expr
+    PropertyStmt parseBorderProperty();     // border.<key>: expr
     BehaviorStmt parseBehavior();           // behavior on <prop> { <anim> }
     PropertyStmt parseProperty();           // name: expr
     PropertyDecl parsePropertyDecl();       // property <type> <name>[: expr]

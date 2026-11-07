@@ -3,6 +3,7 @@
 #include "test_framework.hpp"
 
 #include <firmir/gui/animation.hpp>
+#include <firmir/gui/flickable.hpp>
 #include <firmir/gui/item.hpp>
 #include <firmir/gui/painter.hpp>
 #include <firmir/gui/platform.hpp>
@@ -10,6 +11,10 @@
 #include <firmir/gui/screen.hpp>
 #include <firmir/gui/text.hpp>
 #include <firmir/gui/window.hpp>
+#if __has_include(<firmir/gui-controls/containers.hpp>)
+#include <firmir/gui-controls/containers.hpp>
+#define FIRMIR_TEST_HAVE_CONTROLS 1
+#endif
 #include <firmir/thread.hpp>
 #include <firmir/timer.hpp>
 
@@ -301,6 +306,109 @@ TEST_CASE(gui_input_mouse_keyboard_focus) {
 
     firmir_gui_headless_remove_screen("INPUT-1");
 }
+
+TEST_CASE(gui_focus_cleared_when_focused_subtree_deleted) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("DEL-FOCUS", 200, 200);
+    Screen* screen = Platform::instance()->screen("DEL-FOCUS");
+    Window window(screen);
+    window.setGeometry(Rect{0, 0, 200, 200});
+    window.show();
+
+    // A page with a focusable child, plus a surviving focusable sibling.
+    auto* page = window.createItem<Item>(window.contentItem());
+    page->setGeometry(0, 0, 200, 200);
+    auto* button = page->createChild<HandlerItem>();
+    button->setGeometry(10, 10, 50, 50);
+    auto* survivor = window.createItem<HandlerItem>(window.contentItem());
+    survivor->setGeometry(100, 100, 50, 50);
+
+    firmir_gui_headless_inject_mouse(
+        static_cast<int>(MouseEvent::Action::Press), 20, 20, 1);
+    CHECK_EQ(window.focusItem(), button);
+
+    // Delete the whole subtree deferred (the gallery's "back to menu" flow):
+    // the focused button dies inside ~Object, when the page is already
+    // detached from the window and the button's window() lookup fails.
+    page->deleteLater();
+    Timer::singleShot(std::chrono::milliseconds(50), &window,
+                      [] { Thread::mainThread()->quit(); });
+    Thread::mainThread()->exec();
+    CHECK_EQ(window.focusItem(), nullptr);
+
+    // Clicking another item must not touch the dangling focus pointer (the
+    // gallery segfaulted here on the first click after returning to menu).
+    firmir_gui_headless_inject_mouse(
+        static_cast<int>(MouseEvent::Action::Press), 110, 110, 1);
+    CHECK_EQ(window.focusItem(), survivor);
+    firmir_gui_headless_inject_mouse(
+        static_cast<int>(MouseEvent::Action::Release), 110, 110, 1);
+
+    firmir_gui_headless_remove_screen("DEL-FOCUS");
+}
+
+TEST_CASE(gui_flickable_wheel_scroll) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("WHEEL-1", 200, 200);
+    Screen* screen = Platform::instance()->screen("WHEEL-1");
+    Window window(screen);
+    window.setGeometry(Rect{0, 0, 200, 200});
+    window.show();
+
+    auto* flickable = window.createItem<Flickable>(window.contentItem());
+    flickable->setGeometry(0, 0, 200, 200);
+    flickable->setContentWidth(200);
+    flickable->setContentHeight(1000);
+
+    // Wheel up at the top: nothing to scroll, position stays at the bound.
+    firmir_gui_headless_inject_wheel(100, 100, 0, 1);
+    CHECK_EQ(flickable->contentY(), 0.0f);
+
+    // Wheel down: one detent scrolls 48 px.
+    firmir_gui_headless_inject_wheel(100, 100, 0, -1);
+    CHECK_EQ(flickable->contentY(), 48.0f);
+    firmir_gui_headless_inject_wheel(100, 100, 0, -1);
+    CHECK_EQ(flickable->contentY(), 96.0f);
+
+    // Clamped at the bottom bound (contentHeight - height).
+    for (int i = 0; i < 20; ++i)
+        firmir_gui_headless_inject_wheel(100, 100, 0, -1);
+    CHECK_EQ(flickable->contentY(), 800.0f);
+
+    // Horizontal wheel is ignored while the content fits horizontally...
+    firmir_gui_headless_inject_wheel(100, 100, 1, 0);
+    CHECK_EQ(flickable->contentX(), 0.0f);
+    // ...and scrolls once there is something to scroll.
+    flickable->setContentWidth(600);
+    firmir_gui_headless_inject_wheel(100, 100, 1, 0);
+    CHECK_EQ(flickable->contentX(), 48.0f);
+
+    firmir_gui_headless_remove_screen("WHEEL-1");
+}
+
+#ifdef FIRMIR_TEST_HAVE_CONTROLS
+TEST_CASE(gui_scrollview_wheel_scroll) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("WHEEL-2", 200, 200);
+    Screen* screen = Platform::instance()->screen("WHEEL-2");
+    Window window(screen);
+    window.setGeometry(Rect{0, 0, 200, 200});
+    window.show();
+
+    auto* view = window.createItem<Controls::ScrollView>(window.contentItem());
+    view->setGeometry(0, 0, 200, 200);
+    view->setContentSize(200, 1000);
+
+    // The wheel bubbles from the content item to the embedded Flickable.
+    firmir_gui_headless_inject_wheel(100, 100, 0, -2);
+    CHECK_EQ(view->flickable()->contentY(), 96.0f);
+    firmir_gui_headless_inject_wheel(100, 100, 0, 1);
+    CHECK_EQ(view->flickable()->contentY(), 48.0f);
+
+    firmir_gui_headless_remove_screen("WHEEL-2");
+}
+#endif // FIRMIR_TEST_HAVE_CONTROLS
+
 
 TEST_CASE(gui_input_touch) {
     ensurePlatform();
@@ -760,6 +868,54 @@ TEST_CASE(gui_painter_draws_text_glyphs) {
     CHECK_EQ(cpu->pixels()[0 * 32 + 0], 0xFF000000u);
     CHECK_EQ(cpu->pixels()[7 * 32 + 7], 0xFF000000u);
 }
+
+TEST_CASE(gui_rectangle_rounded_border_pixels) {
+    auto device = Render::Render::createDevice("soft");
+    CHECK(device != nullptr);
+    if (!device)
+        return;
+    RenderResources resources(device.get());
+    std::unique_ptr<Render::RenderTarget> target(
+        device->createRenderTarget({40, 40, Render::TextureFormat::Rgba8, false}));
+    std::unique_ptr<Render::RenderCommandBuffer> commands(
+        device->createCommandBuffer());
+    CHECK(target && commands);
+    if (!target || !commands)
+        return;
+
+    struct TestRect : Rectangle {
+        using Rectangle::paint;
+    } rect;
+    rect.setGeometry(0, 0, 40, 40);
+    rect.setColor(Color::rgb(0, 255, 0));
+    rect.setBorderColor(Color::rgb(255, 0, 0));
+    rect.setBorderWidth(4);
+    rect.setRadius(12);
+
+    commands->begin();
+    Render::ClearValue clear; // opaque black
+    clear.a = 1;
+    commands->beginRenderPass(target.get(), clear);
+    {
+        Painter painter(resources, commands.get(), target.get());
+        rect.paint(painter);
+    }
+    commands->endRenderPass();
+    commands->end();
+    device->submit(commands.get());
+    const auto* cpu = dynamic_cast<Render::CpuRenderTarget*>(target.get());
+    CHECK(cpu != nullptr);
+    if (!cpu)
+        return;
+    const std::uint32_t* px = cpu->pixels(); // 0xAARRGGBB
+    CHECK_EQ(px[0 * 40 + 0], 0xFF000000u);  // corner: outside the radius
+    CHECK_EQ(px[2 * 40 + 2], 0xFF000000u);  // still outside the corner arc
+    CHECK_EQ(px[0 * 40 + 20], 0xFFFF0000u); // top edge: border
+    CHECK_EQ(px[3 * 40 + 20], 0xFFFF0000u); // border ring (width 4)
+    CHECK_EQ(px[10 * 40 + 20], 0xFF00FF00u); // fill interior
+    CHECK_EQ(px[20 * 40 + 20], 0xFF00FF00u); // center
+    CHECK_EQ(px[39 * 40 + 20], 0xFFFF0000u); // bottom edge: border
+}
 #endif // FIRMIR_RENDER_TEST_SOFT
 
 TEST_CASE(gui_item_qt_extended_properties) {
@@ -826,6 +982,47 @@ TEST_CASE(gui_item_qt_extended_properties) {
     CHECK_EQ(static_cast<int>(item.focusPolicy()), 0);
     delete first;
     delete second;
+}
+
+TEST_CASE(gui_rectangle_radius_border_properties) {
+    Rectangle rect;
+    rect.setGeometry(0, 0, 40, 40);
+    CHECK_EQ(rect.radius(), 0.0f);
+    CHECK_EQ(rect.borderWidth(), 0.0f);
+    rect.setRadius(8);
+    rect.setBorderColor(Color::rgb(255, 0, 0));
+    rect.setBorderWidth(2);
+    CHECK_EQ(rect.radius(), 8.0f);
+    CHECK_EQ(rect.borderWidth(), 2.0f);
+    CHECK(rect.borderColor() == Color::rgb(255, 0, 0));
+
+    // Negative values are clamped to zero.
+    rect.setRadius(-3);
+    rect.setBorderWidth(-1);
+    CHECK_EQ(rect.radius(), 0.0f);
+    CHECK_EQ(rect.borderWidth(), 0.0f);
+
+    // Through the Object property system, as firmlc-generated code does.
+    int borderNotifications = 0;
+    rect.connect<std::string, std::any>(
+        &rect, Object::signalPropertyChanged,
+        [&](const std::string& name, const std::any&) {
+            if (name == "border.width")
+                ++borderNotifications;
+        },
+        ConnectionMode::Direct);
+    rect.setProperty("radius", 6.0);
+    rect.setProperty("border.color", "#00FF00");
+    rect.setProperty("border.width", 3.0);
+    CHECK_EQ(rect.radius(), 6.0f);
+    CHECK(rect.borderColor() == Color::rgb(0, 255, 0));
+    CHECK_EQ(rect.borderWidth(), 3.0f);
+    rect.setProperty("border.width", 3.0); // no change, no notification
+    CHECK_EQ(borderNotifications, 1);
+    rect.setProperty("border.width", 5.0);
+    CHECK_EQ(borderNotifications, 2);
+    CHECK_EQ(std::any_cast<float>(rect.getProperty("radius")), 6.0f);
+    CHECK_EQ(std::any_cast<float>(rect.getProperty("border.width")), 5.0f);
 }
 
 TEST_CASE(gui_item_active_focus_and_tab) {

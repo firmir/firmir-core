@@ -187,15 +187,27 @@ void Gallery::showPage(int index) {
         page = newPage("StackView");
         auto* stack = new C::StackView(page);
         stack->setGeometry(20, 100, contentWidth - 20, contentHeight - 55);
-        auto* first = new Item(stack);
-        rectangle(first, RectF{0, 0, 300, 180}, Color::rgb(40, 85, 105))->fill(first);
-        label(first, "Stack depth: 1", 20, 20, 20, Color::rgb(255, 255, 255), true);
-        auto* second = new Item(stack);
-        rectangle(second, RectF{0, 0, 300, 180}, Color::rgb(105, 65, 45))->fill(second);
-        label(second, "Stack depth: 2", 20, 20, 20, Color::rgb(255, 255, 255), true);
-        stack->push(first);
-        button(page, "Push", RectF{20, 55, 110, 34}, [stack, second] { stack->push(second); });
-        button(page, "Pop", RectF{140, 55, 110, 34}, [stack] { stack->pop(); });
+        auto* depthLabel = label(page, "Depth: 1", 270, 62, 16);
+        const Color palette[] = {Color::rgb(40, 85, 105), Color::rgb(105, 65, 45),
+                                 Color::rgb(45, 105, 75), Color::rgb(85, 55, 110)};
+        const auto pushPage = [stack, depthLabel, palette] {
+            const int depth = stack->depth() + 1;
+            auto* item = new Item(stack);
+            rectangle(item, RectF{0, 0, 300, 180},
+                      palette[(depth - 1) % 4])->fill(item);
+            label(item, "Page " + std::to_string(depth), 20, 20, 20,
+                  Color::rgb(255, 255, 255), true);
+            stack->push(item);
+            depthLabel->setText(String("Depth: " + std::to_string(stack->depth())));
+        };
+        pushPage();
+        button(page, "Push", RectF{20, 55, 110, 34}, [pushPage] { pushPage(); });
+        button(page, "Pop", RectF{140, 55, 110, 34}, [stack, depthLabel] {
+            if (stack->depth() <= 1)
+                return; // keep the initial page
+            stack->pop()->deleteLater();
+            depthLabel->setText(String("Depth: " + std::to_string(stack->depth())));
+        });
         break;
     }
     case 5: {

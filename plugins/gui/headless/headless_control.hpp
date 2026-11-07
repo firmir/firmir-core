@@ -32,6 +32,9 @@ void firmir_gui_headless_remove_screen(const char* name);
 /// Injects input events (delivered to the currently visible windows).
 void firmir_gui_headless_inject_mouse(int action, float x, float y,
                                       int button);
+/// Injects a mouse wheel event at (x, y); deltas are in wheel detents
+/// (dy > 0 = wheel up, dx > 0 = wheel right).
+void firmir_gui_headless_inject_wheel(float x, float y, float dx, float dy);
 void firmir_gui_headless_inject_key(bool pressed, int key, const char* text);
 void firmir_gui_headless_inject_touch(int action, int id, float x, float y);
 

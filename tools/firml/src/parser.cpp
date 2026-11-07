@@ -168,6 +168,11 @@ void Parser::parseMember(Object& object) {
         object.members.push_back(parseAnchorShorthand());
         return;
     }
+    if (m_cur.text == "border" && peekKind() == TokenKind::Dot) {
+        // Grouped border properties: border.color / border.width.
+        object.members.push_back(parseBorderProperty());
+        return;
+    }
     if (m_cur.text == "behavior" && peekKind() == TokenKind::Identifier &&
         m_peek.text == "on") {
         object.members.push_back(parseBehavior());
@@ -229,6 +234,17 @@ AnchorStmt Parser::parseAnchorShorthand() {
     Expr value = parseExpression();
     accept(TokenKind::Semicolon);
     return AnchorStmt{keyTok.loc, keyTok.text, std::move(value)};
+}
+
+PropertyStmt Parser::parseBorderProperty() {
+    advance(); // 'border'
+    advance(); // '.'
+    const Token keyTok =
+        expect(TokenKind::Identifier, "'color' or 'width' after 'border.'");
+    expect(TokenKind::Colon, "':' after 'border.<name>'");
+    Expr value = parseExpression();
+    accept(TokenKind::Semicolon);
+    return PropertyStmt{keyTok.loc, "border." + keyTok.text, std::move(value)};
 }
 
 BehaviorStmt Parser::parseBehavior() {

@@ -41,6 +41,7 @@ if(FIRMIR_BUILD_TESTS)
         60_custom_props
         70_positioners
         71_repeater
+        80_rectangle_border
         err_bad_token
         err_two_roots
         err_unclosed_brace
@@ -66,6 +67,7 @@ if(FIRMIR_BUILD_TESTS)
         60_custom_props
         70_positioners
         71_repeater
+        80_rectangle_border
         err_sema_anchor_axis_conflict
         err_sema_anchor_center_conflict
         err_sema_anchor_fill_conflict
@@ -144,6 +146,7 @@ if(FIRMIR_BUILD_TESTS)
         60_custom_props
         70_positioners
         71_repeater
+        80_rectangle_border
     )
     foreach(case IN LISTS FIRML_GEN_CASES)
         add_test(

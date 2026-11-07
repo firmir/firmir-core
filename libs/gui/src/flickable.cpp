@@ -54,6 +54,25 @@ void Flickable::setMoving(bool moving) {
     emitSignal(moving ? signalMovementStarted : signalMovementEnded);
 }
 void Flickable::mouseEvent(MouseEvent& event) {
+    if (event.action == MouseEvent::Action::Wheel) {
+        // One wheel detent scrolls roughly three text lines. The event stays
+        // unaccepted when the content cannot move, so it bubbles to an outer
+        // Flickable (if any).
+        constexpr float step = 48.0f;
+        const float maximumX = std::max(0.0f, m_contentWidth - width());
+        const float maximumY = std::max(0.0f, m_contentHeight - height());
+        const float targetX =
+            std::clamp(m_contentX + event.delta.x * step, 0.0f, maximumX);
+        const float targetY =
+            std::clamp(m_contentY - event.delta.y * step, 0.0f, maximumY);
+        if (targetX != m_contentX || targetY != m_contentY) {
+            stop();
+            setContentX(targetX);
+            setContentY(targetY);
+            event.accepted = true;
+        }
+        return;
+    }
     if (event.action == MouseEvent::Action::Press && event.button == 1) {
         stop();
         m_dragging = true;

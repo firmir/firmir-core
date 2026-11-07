@@ -166,6 +166,15 @@ void firmir_gui_headless_inject_mouse(int action, float x, float y,
     HeadlessBackend::instance().inject(event);
 }
 
+void firmir_gui_headless_inject_wheel(float x, float y, float dx, float dy) {
+    InputEvent event;
+    event.type = InputEvent::Type::Mouse;
+    event.mouse.action = MouseEvent::Action::Wheel;
+    event.mouse.pos = {x, y};
+    event.mouse.delta = {dx, dy};
+    HeadlessBackend::instance().inject(event);
+}
+
 void firmir_gui_headless_inject_key(bool pressed, int key, const char* text) {
     InputEvent event;
     event.type = InputEvent::Type::Key;

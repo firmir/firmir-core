@@ -182,7 +182,19 @@ Item::~Item() {
     // never observe a half-destroyed item.
     if (Window* w = window()) {
         std::lock_guard<std::recursive_mutex> lock(detail::sceneMutex(w));
-        detail::clearFocusItem(w, this);
+        // Clear the window bookkeeping for the whole subtree, not just this
+        // item: the children are destroyed later by ~Object, when this item
+        // has already been detached and their window() lookup can no longer
+        // reach the window (a focused child would otherwise dangle in
+        // Window::d->focusItem).
+        std::vector<Item*> pending{this};
+        while (!pending.empty()) {
+            Item* item = pending.back();
+            pending.pop_back();
+            detail::clearFocusItem(w, item);
+            for (Item* child : item->childItems())
+                pending.push_back(child);
+        }
         setParent(nullptr);
     }
 }
