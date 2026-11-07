@@ -1,0 +1,10 @@
+(file 10_builtins.fml
+  (include <firmir/items/Rectangle.hpp> 1:1)
+  (object Rectangle 3:1
+    (property id 4:5 (ident root))
+    (property width 5:5 (number 640))
+    (property height 6:5 (call max (number 480) (call min (number 720) (member (ident root) width))))
+    (property color 7:5 (call lighter (string "#202020")))
+    (property borderColor 8:5 (call darker (call lighter (string "#404040"))))
+  )
+)

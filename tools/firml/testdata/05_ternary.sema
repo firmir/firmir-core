@@ -1,0 +1,7 @@
+(sema 05_ternary.fml
+  (symbol root Rectangle 3:1)
+  (set root.width)
+  (bind root.visible -> root.width)
+  (bind root.opacity -> root.width)
+  (bind root.x -> root.width)
+)

@@ -1,0 +1,21 @@
+(file 06_anchors_block.fml
+  (include <firmir/items/Rectangle.hpp> 1:1)
+  (object Rectangle 3:1
+    (property id 4:5 (ident root))
+    (property width 5:5 (number 640))
+    (property height 6:5 (number 480))
+    (object Rectangle 8:5
+      (property id 9:9 (ident header))
+      (property height 10:9 (number 48))
+      (anchor left 12:13 (member (ident parent) left))
+      (anchor right 13:13 (member (ident parent) right))
+      (anchor top 14:13 (member (ident parent) top))
+    )
+    (object Rectangle 18:5
+      (property id 19:9 (ident content))
+      (anchor fill 21:13 (ident parent))
+      (anchor topMargin 22:13 (member (ident header) height))
+      (anchor margins 23:13 (number 8))
+    )
+  )
+)

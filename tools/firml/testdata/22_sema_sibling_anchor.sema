@@ -1,0 +1,13 @@
+(sema 22_sema_sibling_anchor.fml
+  (symbol root Rectangle 3:1)
+  (symbol left1 Rectangle 8:5)
+  (symbol right1 Rectangle 14:5)
+  (set root.width)
+  (set root.height)
+  (set left1.width)
+  (anchor left1.left parent.left -> root.x)
+  (anchor left1.top parent.top -> root.y)
+  (anchor right1.left left1.right -> left1.x left1.width)
+  (anchor right1.top left1.top -> left1.y)
+  (anchor right1.bottom parent.bottom -> root.y root.height)
+)

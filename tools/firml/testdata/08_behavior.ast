@@ -1,0 +1,38 @@
+(file 08_behavior.fml
+  (include <firmir/items/Rectangle.hpp> 1:1)
+  (object Rectangle 3:1
+    (property id 4:5 (ident root))
+    (property width 5:5 (number 640))
+    (behavior width 7:5
+      (object SequentialAnimation 8:9
+        (object NumberAnimation 9:13
+          (property duration 9:31 (number 300ms))
+          (property easing 9:48 (ident OutCubic))
+        )
+        (object PauseAnimation 10:13
+          (property duration 10:30 (number 50ms))
+        )
+        (object NumberAnimation 11:13
+          (property duration 11:31 (number 100ms))
+          (property easing 11:48 (ident Linear))
+        )
+      )
+    )
+    (behavior opacity 15:5
+      (object ParallelAnimation 16:9
+        (object NumberAnimation 17:13
+          (property duration 17:31 (number 150ms))
+        )
+        (object PauseAnimation 18:13
+          (property duration 18:30 (number 80ms))
+        )
+      )
+    )
+    (behavior color 22:5
+      (object ColorAnimation 23:9
+        (property duration 23:26 (number 200ms))
+        (property easing 23:43 (ident InOutQuad))
+      )
+    )
+  )
+)

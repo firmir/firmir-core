@@ -1,0 +1,1 @@
+err_sema_unknown_property.fml:5:5: error: unknown property 'widt' of type 'Rectangle'

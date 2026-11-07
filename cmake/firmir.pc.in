@@ -1,0 +1,11 @@
+prefix=@CMAKE_INSTALL_PREFIX@
+exec_prefix=${prefix}
+libdir=${prefix}/@FIRMIR_INSTALL_LIBDIR@
+includedir=${prefix}/@FIRMIR_INSTALL_INCLUDEDIR@
+
+Name: firmir-@FIRMIR_PC_MODULE@
+Description: Firmir @FIRMIR_PC_MODULE@ library
+Version: @PROJECT_VERSION@
+Requires: @FIRMIR_PC_REQUIRES@
+Libs: -L${libdir} -l@FIRMIR_PC_TARGET@
+Cflags: -I${includedir}

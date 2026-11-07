@@ -1,0 +1,7 @@
+#include <firmir/items/Rectangle.hpp>
+
+Firmir.Gui.Rectangle {
+    id: root
+    property number count: 0
+    property number count: 1
+}

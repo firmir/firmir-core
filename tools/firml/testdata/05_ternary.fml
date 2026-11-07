@@ -1,0 +1,9 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+    width: 640
+    visible: width > 100 && root.width != 0 || false
+    opacity: width > 100 ? 1.0 : 0.5
+    x: width <= 200 ? width >= 100 ? 10 : 20 : 30
+}

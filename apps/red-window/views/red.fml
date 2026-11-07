@@ -1,0 +1,30 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+#include <firmir/items/Button.hpp>
+using FGRectangle = Firmir.Gui.Rectangle
+
+FGRectangle {
+    id: root
+    width: 300
+    height: 300
+    color: "#FF0000"
+    onWidthChanged: { root.update() }
+    onSomeSignal(int code, string message): { Firmir.Gui.App.setTitle(message) }
+
+    Firmir.Gui.Text {
+        text: "Hello, Firml!"
+        color: "#FFFFFF"
+        fontSize: 16
+        anchors.centerIn: parent
+    }
+
+    Firmir.Gui.Button {
+        id: closeButton
+        text: "Close btn"
+        fontSize: 16
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: 20
+        onClicked: Firmir.Gui.App.hide()
+    }
+}

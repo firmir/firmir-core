@@ -1,0 +1,41 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+
+Rectangle {
+    id: root
+    width: 640
+    height: 480
+    color: "#202020"
+
+    Rectangle {
+        id: header
+        height: 48
+        anchors { left: parent.left; right: parent.right; top: parent.top }
+
+        Text {
+            id: title
+            text: "Hello, Firml"
+            x: root.width / 2 - width / 2
+            y: 40
+
+            behavior on x {
+                NumberAnimation {
+                    duration: 300ms
+                    easing: OutCubic
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        id: content
+        anchors { fill: parent; topMargin: header.height }
+    }
+
+    Text {
+        id: badge
+        text: width > 100 ? "wide" : "narrow"
+        anchors.centerIn: parent
+        anchors.verticalCenterOffset: -20
+    }
+}

@@ -1,0 +1,38 @@
+// M4 codegen: property bindings through propertyChanged subscriptions.
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+
+Firmir.Gui.Rectangle {
+    id: root
+    width: 400
+    height: 300
+
+    Firmir.Gui.Rectangle {
+        id: left
+        width: 40
+        height: 20
+    }
+
+    Firmir.Gui.Rectangle {
+        id: right
+        width: left.width * 2
+        height: 20
+        x: root.width > 300 ? 100 : 10
+    }
+
+    Firmir.Gui.Text {
+        id: badge
+        text: badge.width > 100 ? "wide" : "narrow" // self-dependency
+        anchors.leftMargin: left.width / 2          // margin binding
+    }
+
+    Firmir.Gui.Rectangle {
+        id: forward
+        width: late.width + 5 // forward reference to a later sibling
+    }
+
+    Firmir.Gui.Rectangle {
+        id: late
+        width: 7
+    }
+}

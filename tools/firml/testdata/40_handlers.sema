@@ -1,0 +1,12 @@
+(sema 40_handlers.fml
+  (symbol root Rectangle 5:1)
+  (symbol closeButton Button 13:5)
+  (set root.width)
+  (set root.height)
+  (set root.color)
+  (set closeButton.text)
+  (anchor closeButton.centerIn parent -> root.x root.width root.y root.height)
+  (property-handler root.width)
+  (signal-handler root.someSignal (int code) (string message))
+  (signal-handler closeButton.clicked)
+)

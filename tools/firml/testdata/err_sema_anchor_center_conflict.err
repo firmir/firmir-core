@@ -1,0 +1,1 @@
+err_sema_anchor_center_conflict.fml:10:37: error: anchor 'left' conflicts with 'anchors.centerIn'

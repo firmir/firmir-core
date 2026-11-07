@@ -1,0 +1,6 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    width: 640
+    visible: 42
+}

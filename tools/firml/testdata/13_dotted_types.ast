@@ -1,0 +1,8 @@
+(file 13_dotted_types.fml
+  (include <firmir/items/Rectangle.hpp> 2:1)
+  (object Firmir.Gui.Rectangle 4:1
+    (object Firmir.Gui.Rectangle 5:5
+      (property width 6:9 (number 10))
+    )
+  )
+)

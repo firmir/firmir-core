@@ -1,0 +1,9 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+    width: 640
+    height: max(480, min(720, root.width))
+    color: lighter("#202020")
+    borderColor: darker(lighter("#404040"))
+}

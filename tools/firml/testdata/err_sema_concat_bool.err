@@ -1,0 +1,1 @@
+err_sema_concat_bool.fml:5:11: error: operator '+' cannot concatenate String and Bool (only String and Number operands)

@@ -1,0 +1,8 @@
+(sema 12_comments_semicolons.fml
+  (symbol root Rectangle 6:1)
+  (symbol child Rectangle 11:5)
+  (set root.width)
+  (set root.height)
+  (anchor child.left parent.left -> root.x)
+  (anchor child.right parent.right -> root.x root.width)
+)

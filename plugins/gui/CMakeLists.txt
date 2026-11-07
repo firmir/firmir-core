@@ -1,0 +1,40 @@
+# Backend plugins for firmir-gui. Each plugin builds into
+# ${CMAKE_BINARY_DIR}/plugins as firmir-gui-<name>.so (no "lib" prefix) so
+# that the base library finds it via FIRMIR_GUI_PLUGIN_PATH.
+set(FIRMIR_GUI_PLUGIN_DIR ${CMAKE_BINARY_DIR}/plugins)
+
+if(FIRMIR_BUILD_PLUGIN_GUI_HEADLESS)
+    add_subdirectory(headless)
+endif()
+
+include(CheckIncludeFileCXX)
+if(FIRMIR_BUILD_PLUGIN_GUI_EVDEV)
+    check_include_file_cxx(linux/input.h FIRMIR_HAVE_LINUX_INPUT_H)
+    if(FIRMIR_HAVE_LINUX_INPUT_H)
+        add_subdirectory(evdev)
+    else()
+        message(STATUS "linux/input.h not found, skipping the evdev backend")
+    endif()
+endif()
+if(FIRMIR_BUILD_PLUGIN_GUI_DRM)
+    check_include_file_cxx(drm/drm.h FIRMIR_HAVE_DRM_H)
+    if(FIRMIR_HAVE_DRM_H)
+        add_subdirectory(drm)
+    else()
+        message(STATUS "drm/drm.h not found, skipping the drm backend")
+    endif()
+endif()
+if(FIRMIR_BUILD_PLUGIN_GUI_WAYLAND)
+    if(TARGET firmir-wayland-client)
+        add_subdirectory(wayland)
+    else()
+        message(STATUS "firmir-wayland-client is unavailable; skipping the wayland backend")
+    endif()
+endif()
+
+# Installed GUI backends live in lib/firmir/plugins/gui/.
+foreach(backend headless evdev drm wayland)
+    if(TARGET firmir-gui-${backend})
+        firmir_install_plugin(firmir-gui-${backend} gui)
+    endif()
+endforeach()

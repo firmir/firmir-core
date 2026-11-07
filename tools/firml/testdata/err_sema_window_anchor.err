@@ -1,0 +1,1 @@
+err_sema_window_anchor.fml:5:13: error: anchors are only valid on items, not on 'Window'

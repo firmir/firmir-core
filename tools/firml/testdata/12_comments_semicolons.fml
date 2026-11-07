@@ -1,0 +1,15 @@
+// Line comment before the include.
+#include <firmir/items/Rectangle.hpp> // trailing comment
+
+/* Block comment
+   spanning lines. */
+Rectangle {
+    id: root;           // semicolon after id
+    width: 640;
+    height: 480;        /* inline block comment */
+
+    Rectangle {
+        id: child;
+        anchors { left: parent.left; right: parent.right; };
+    };
+}

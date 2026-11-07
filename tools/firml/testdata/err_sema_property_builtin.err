@@ -1,0 +1,1 @@
+err_sema_property_builtin.fml:5:5: error: type 'Rectangle' already has a property 'width'

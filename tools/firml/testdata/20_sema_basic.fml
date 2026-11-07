@@ -1,0 +1,34 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+
+Rectangle {
+    id: root
+    width: 640
+    height: max(480, 320)
+    color: lighter("#202020")
+
+    Rectangle {
+        id: header
+        height: 48
+        anchors { left: parent.left; right: parent.right; top: parent.top }
+    }
+
+    Rectangle {
+        id: content
+        anchors { fill: parent; topMargin: header.height }
+    }
+
+    Text {
+        id: badge
+        text: root.width > 100 ? "wide" : "narrow"
+        anchors.centerIn: parent
+        anchors.verticalCenterOffset: -20
+
+        behavior on opacity {
+            NumberAnimation {
+                duration: 300ms
+                easing: OutCubic
+            }
+        }
+    }
+}

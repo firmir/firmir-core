@@ -1,0 +1,17 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+    width: 640
+    height: 480
+
+    Rectangle {
+        id: a
+        width: b.width + 1
+    }
+
+    Rectangle {
+        id: b
+        width: a.width + 1
+    }
+}

@@ -1,0 +1,6 @@
+(sema 24_quoted_include.fml
+  (symbol button MyButton 3:1)
+  (set button.width)
+  (set button.height)
+  (set button.label)
+)

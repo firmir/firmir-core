@@ -1,0 +1,10 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Timer.hpp>
+
+Rectangle {
+    id: root
+    width: 100
+    Timer {
+        interval: root.width
+    }
+}

@@ -1,0 +1,22 @@
+(file 40_handlers.fml
+  (include <firmir/items/Rectangle.hpp> 1:1)
+  (include <firmir/items/Button.hpp> 2:1)
+  (using FGRectangle Firmir.Gui.Rectangle 3:1)
+  (object FGRectangle 5:1
+    (property id 6:5 (ident root))
+    (property width 7:5 (number 300))
+    (property height 8:5 (number 300))
+    (property color 9:5 (string "#FF0000"))
+    (handler onWidthChanged 10:5
+(method (ident root) update)    )
+    (handler onSomeSignal 11:5 (param int code) (param string message)
+(method (member (member (ident Firmir) Gui) App) setTitle (ident message))    )
+    (object Firmir.Gui.Button 13:5
+      (property id 14:9 (ident closeButton))
+      (property text 15:9 (string "Close btn"))
+      (anchor centerIn 16:17 (ident parent))
+      (handler onClicked 17:9
+(method (member (member (ident Firmir) Gui) App) hide)      )
+    )
+  )
+)

@@ -1,0 +1,18 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+    width: 640
+    height: 480
+
+    Rectangle {
+        id: left1
+        width: 100
+        anchors { left: parent.left; top: parent.top }
+    }
+
+    Rectangle {
+        id: right1
+        anchors { left: left1.right; top: left1.top; bottom: parent.bottom }
+    }
+}

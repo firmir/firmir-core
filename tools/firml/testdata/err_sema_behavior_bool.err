@@ -1,0 +1,1 @@
+err_sema_behavior_bool.fml:6:5: error: cannot animate property 'visible' of type Bool (Number or Color only)

@@ -1,0 +1,1 @@
+24_quoted_include.fml:7:5: warning: cannot verify property 'label' of opaque type 'MyButton' (no meta information)

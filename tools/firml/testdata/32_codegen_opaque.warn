@@ -1,0 +1,1 @@
+32_codegen_opaque.fml:8:5: warning: cannot verify property 'label' of opaque type 'MyButton' (no meta information)

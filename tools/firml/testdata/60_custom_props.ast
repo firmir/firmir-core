@@ -1,0 +1,31 @@
+(file 60_custom_props.fml
+  (include <firmir/items/Rectangle.hpp> 3:1)
+  (include <firmir/items/Text.hpp> 4:1)
+  (include <firmir/items/Button.hpp> 5:1)
+  (object Firmir.Gui.Rectangle 7:1
+    (property id 8:5 (ident root))
+    (property width 9:5 (number 200))
+    (property height 10:5 (number 100))
+    (decl number count 12:5 (number 0))
+    (decl string label 13:5 (binary + (string "count: ") (ident count)))
+    (decl bool toggled 14:5)
+    (decl color tint 15:5 (call darker (string "#404040")))
+    (handler onCountChanged 17:5
+(assign (member (ident root) toggled) (unary ! (member (ident root) toggled)))    )
+    (object Firmir.Gui.Text 21:5
+      (property id 22:9 (ident labelText))
+      (property width 23:9 (member (ident root) width))
+      (property text 24:9 (member (ident root) label))
+      (property color 25:9 (member (ident root) tint))
+    )
+    (object Firmir.Gui.Button 28:5
+      (property id 29:9 (ident bump))
+      (property text 30:9 (binary + (string "+") (number 1)))
+      (property y 31:9 (number 50))
+      (property width 32:9 (number 40))
+      (property height 33:9 (number 20))
+      (handler onClicked 34:9
+(assign (member (ident root) count) (binary + (member (ident root) count) (number 1)))(assign (member (ident labelText) text) (binary + (binary + (string "clicked ") (member (ident root) count)) (string " time(s)")))      )
+    )
+  )
+)

@@ -1,0 +1,6 @@
+#include <firmir/items/Rectangle.hpp>
+
+Firmir.Gui.Rectangle {
+    id: root
+    on_widthChanged: root.update()
+}

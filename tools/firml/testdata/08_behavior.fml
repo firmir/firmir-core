@@ -1,0 +1,25 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+    width: 640
+
+    behavior on width {
+        SequentialAnimation {
+            NumberAnimation { duration: 300ms; easing: OutCubic }
+            PauseAnimation { duration: 50ms }
+            NumberAnimation { duration: 100ms; easing: Linear }
+        }
+    }
+
+    behavior on opacity {
+        ParallelAnimation {
+            NumberAnimation { duration: 150ms }
+            PauseAnimation { duration: 80ms }
+        }
+    }
+
+    behavior on color {
+        ColorAnimation { duration: 200ms; easing: InOutQuad }
+    }
+}

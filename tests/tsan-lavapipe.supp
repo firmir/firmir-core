@@ -1,0 +1,3 @@
+# Mesa llvmpipe uses internal lock-free queues which are intentionally opaque
+# to ThreadSanitizer. This applies only to the isolated Vulkan pixel test.
+race:libvulkan_lvp.so

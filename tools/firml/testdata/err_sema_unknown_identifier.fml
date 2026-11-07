@@ -1,0 +1,11 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+    width: 640
+
+    Rectangle {
+        id: a
+        x: nosuch.prop
+    }
+}

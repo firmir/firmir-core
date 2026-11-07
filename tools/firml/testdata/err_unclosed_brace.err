@@ -1,0 +1,1 @@
+err_unclosed_brace.fml:3:1: error: unexpected end of file, expected a member or '}' to close 'Rectangle'

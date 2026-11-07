@@ -1,0 +1,1 @@
+err_sema_anchor_overconstrained.fml:10:9: error: anchors 'left' + 'right' conflict with an explicit 'width'

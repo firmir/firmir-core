@@ -1,0 +1,39 @@
+// M9: script-declared properties (`property <type> <name>[: <expr>]`) and
+// string concatenation in expressions.
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+#include <firmir/items/Button.hpp>
+
+Firmir.Gui.Rectangle {
+    id: root
+    width: 200
+    height: 100
+
+    property number count: 0
+    property string label: "count: " + count
+    property bool toggled
+    property color tint: darker("#404040")
+
+    onCountChanged: {
+        root.toggled = !root.toggled
+    }
+
+    Firmir.Gui.Text {
+        id: labelText
+        width: root.width
+        text: root.label
+        color: root.tint
+    }
+
+    Firmir.Gui.Button {
+        id: bump
+        text: "+" + 1
+        y: 50
+        width: 40
+        height: 20
+        onClicked: {
+            root.count = root.count + 1
+            labelText.text = "clicked " + root.count + " time(s)"
+        }
+    }
+}

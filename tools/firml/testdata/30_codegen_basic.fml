@@ -1,0 +1,53 @@
+// M3 codegen: dotted types, static properties of every kind, all anchor forms.
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+
+Firmir.Gui.Rectangle {
+    id: root
+    width: 400
+    height: 300
+    color: "#1A1B1C"
+    opacity: 0.9
+    visible: true
+    enabled: false
+
+    Firmir.Gui.Rectangle {
+        id: panel
+        height: 40
+        color: darker("#404040")
+        anchors {
+            left: parent.left
+            right: parent.right
+            top: parent.top
+            leftMargin: 4
+            rightMargin: 4
+        }
+    }
+
+    Firmir.Gui.Text {
+        id: caption
+        text: "Panel"
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.verticalCenter: panel.verticalCenter
+    }
+
+    Firmir.Gui.Rectangle {
+        width: 10
+        height: 10
+        anchors.left: undefined
+    }
+
+    Firmir.Gui.Rectangle {
+        id: filler
+        anchors.fill: parent
+        anchors.margins: 2
+    }
+
+    Firmir.Gui.Rectangle {
+        id: centered
+        width: 20
+        height: 20
+        anchors.centerIn: parent
+        anchors.horizontalCenterOffset: 3
+    }
+}

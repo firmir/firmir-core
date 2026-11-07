@@ -1,0 +1,51 @@
+// End-to-end fixture: generated C++ is compiled against the real firmir-gui
+// and run by the firmlc.e2e.app test.
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+
+Firmir.Gui.Rectangle {
+    id: root
+    width: 200
+    height: 100
+    color: "#102030"
+
+    Firmir.Gui.Rectangle {
+        id: left
+        x: 10
+        y: 10
+        width: 40
+        height: 20
+        color: "#FF0000"
+
+        behavior on x {
+            NumberAnimation { duration: 30ms; easing: Linear }
+        }
+    }
+
+    Firmir.Gui.Rectangle {
+        id: right
+        width: left.width * 2
+        height: 20
+        anchors.left: left.right
+        anchors.leftMargin: 10
+        anchors.verticalCenter: left.verticalCenter
+    }
+
+    Firmir.Gui.Text {
+        id: label
+        width: 50
+        height: 10
+        text: root.width > 250 ? "wide" : "narrow"
+        anchors.right: parent.right
+        anchors.rightMargin: 5
+        anchors.bottom: parent.bottom
+    }
+
+    Firmir.Gui.Rectangle {
+        id: filler
+        color: "#00FF00"
+        anchors.fill: parent
+        anchors.margins: 4
+        anchors.topMargin: left.height
+    }
+}

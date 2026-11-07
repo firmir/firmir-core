@@ -1,0 +1,6 @@
+#include <firmir/items/Window.hpp>
+
+Firmir.Gui.Window {
+    id: root
+    anchors.fill: parent
+}

@@ -1,0 +1,9 @@
+(sema 04_expressions.fml
+  (symbol root Rectangle 3:1)
+  (symbol label Rectangle 7:5)
+  (set root.width)
+  (bind label.x -> root.width label.width)
+  (set label.y)
+  (bind label.width -> root.width)
+  (bind label.height -> root.height)
+)

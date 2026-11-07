@@ -1,0 +1,1 @@
+err_sema_property_type.fml:5:5: error: unknown property type 'real' (supported: number, string, bool, color)

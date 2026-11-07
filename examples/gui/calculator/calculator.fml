@@ -1,0 +1,402 @@
+// firmir-gui calculator: the whole UI *and* the calculator logic are declared
+// in Firml and compiled to C++ by firmlc at build time (see CMakeLists.txt);
+// main.cpp only picks the screen and runs the event loop.
+//
+// State lives in script-declared dynamic properties on the root window; every
+// write emits propertyChanged, so the display binding re-evaluates itself.
+#include <firmir/items/Window.hpp>
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+#include <firmir/items/Button.hpp>
+
+using CalcButton = Firmir.Gui.Button;
+
+Firmir.Gui.Window {
+    id: root
+    title: "Calculator"
+    width: 340
+    height: 470
+
+    // ------------------------- calculator state -------------------------
+    property number acc: 0      // accumulated result / left operand
+    property number entry: 0    // the value currently being typed
+    property number dot: 0      // decimal divisor while typing the fraction (0 = integer part)
+    property number op: 0       // pending operation: 0 none, 1 +, 2 -, 3 *, 4 /
+    property bool fresh: true   // the next digit starts a new entry
+    property bool editing: true // the display shows `entry` (false: shows `acc`)
+
+    // --------------------------- layout metrics --------------------------
+    property number gap: 8
+    property number displayH: 80
+    property number colW: (width - 5 * gap) / 4
+    property number rowH: (height - displayH - 7 * gap) / 5
+
+    Rectangle {
+        anchors.fill: parent
+        color: "#1c1c1e"
+    }
+
+    Rectangle {
+        id: displayBg
+        x: root.gap
+        y: root.gap
+        width: parent.width - 2 * root.gap
+        height: root.displayH
+        color: "#000000"
+    }
+
+    Text {
+        id: display
+        x: root.gap + 12
+        y: root.gap + (root.displayH - 40) / 2
+        width: displayBg.width - 24
+        height: 40
+        fontSize: 34
+        color: "#ffffff"
+        text: root.editing ? "" + root.entry : "" + root.acc
+    }
+
+    // Row 0: C  +/-  %  /
+    CalcButton {
+        id: btnC
+        text: "C"
+        fontSize: 22
+        color: btnC.pressed ? "#6a6a72" : "#8e8e96"
+        textColor: "#101012"
+        x: root.gap
+        y: root.displayH + 2 * root.gap
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.acc = 0
+            root.entry = 0
+            root.dot = 0
+            root.op = 0
+            root.fresh = true
+            root.editing = true
+        }
+    }
+    CalcButton {
+        id: btnSign
+        text: "+/-"
+        fontSize: 22
+        color: btnSign.pressed ? "#6a6a72" : "#8e8e96"
+        textColor: "#101012"
+        x: root.gap + (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.entry = root.editing ? -root.entry : root.entry
+            root.acc = root.editing ? root.acc : -root.acc
+        }
+    }
+    CalcButton {
+        id: btnPercent
+        text: "%"
+        fontSize: 22
+        color: btnPercent.pressed ? "#6a6a72" : "#8e8e96"
+        textColor: "#101012"
+        x: root.gap + 2 * (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.entry = root.editing ? root.entry / 100 : root.entry
+            root.acc = root.editing ? root.acc : root.acc / 100
+        }
+    }
+    CalcButton {
+        id: btnDiv
+        text: "/"
+        fontSize: 22
+        color: btnDiv.pressed ? "#c07a08" : "#ff9f0a"
+        textColor: "#ffffff"
+        x: root.gap + 3 * (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.acc = root.op == 0 ? root.entry : (root.op == 1 ? root.acc + root.entry : (root.op == 2 ? root.acc - root.entry : (root.op == 3 ? root.acc * root.entry : root.acc / root.entry)))
+            root.entry = 0
+            root.dot = 0
+            root.op = 4
+            root.fresh = true
+            root.editing = false
+        }
+    }
+
+
+    // Row 1: 7 8 9 *
+    CalcButton {
+        id: btn7
+        text: "7"
+        fontSize: 22
+        color: btn7.pressed ? "#3a3a3e" : "#505054"
+        textColor: "#ffffff"
+        x: root.gap
+        y: root.displayH + 2 * root.gap + (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.entry = root.fresh ? 7 : (root.dot > 0 ? root.entry + 7 / root.dot : root.entry * 10 + 7)
+            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    CalcButton {
+        id: btn8
+        text: "8"
+        fontSize: 22
+        color: btn8.pressed ? "#3a3a3e" : "#505054"
+        textColor: "#ffffff"
+        x: root.gap + (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap + (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.entry = root.fresh ? 8 : (root.dot > 0 ? root.entry + 8 / root.dot : root.entry * 10 + 8)
+            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    CalcButton {
+        id: btn9
+        text: "9"
+        fontSize: 22
+        color: btn9.pressed ? "#3a3a3e" : "#505054"
+        textColor: "#ffffff"
+        x: root.gap + 2 * (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap + (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.entry = root.fresh ? 9 : (root.dot > 0 ? root.entry + 9 / root.dot : root.entry * 10 + 9)
+            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    CalcButton {
+        id: btnMul
+        text: "*"
+        fontSize: 22
+        color: btnMul.pressed ? "#c07a08" : "#ff9f0a"
+        textColor: "#ffffff"
+        x: root.gap + 3 * (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap + (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.acc = root.op == 0 ? root.entry : (root.op == 1 ? root.acc + root.entry : (root.op == 2 ? root.acc - root.entry : (root.op == 3 ? root.acc * root.entry : root.acc / root.entry)))
+            root.entry = 0
+            root.dot = 0
+            root.op = 3
+            root.fresh = true
+            root.editing = false
+        }
+    }
+
+    // Row 2: 4 5 6 -
+    CalcButton {
+        id: btn4
+        text: "4"
+        fontSize: 22
+        color: btn4.pressed ? "#3a3a3e" : "#505054"
+        textColor: "#ffffff"
+        x: root.gap
+        y: root.displayH + 2 * root.gap + 2 * (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.entry = root.fresh ? 4 : (root.dot > 0 ? root.entry + 4 / root.dot : root.entry * 10 + 4)
+            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    CalcButton {
+        id: btn5
+        text: "5"
+        fontSize: 22
+        color: btn5.pressed ? "#3a3a3e" : "#505054"
+        textColor: "#ffffff"
+        x: root.gap + (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap + 2 * (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.entry = root.fresh ? 5 : (root.dot > 0 ? root.entry + 5 / root.dot : root.entry * 10 + 5)
+            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    CalcButton {
+        id: btn6
+        text: "6"
+        fontSize: 22
+        color: btn6.pressed ? "#3a3a3e" : "#505054"
+        textColor: "#ffffff"
+        x: root.gap + 2 * (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap + 2 * (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.entry = root.fresh ? 6 : (root.dot > 0 ? root.entry + 6 / root.dot : root.entry * 10 + 6)
+            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    CalcButton {
+        id: btnSub
+        text: "-"
+        fontSize: 22
+        color: btnSub.pressed ? "#c07a08" : "#ff9f0a"
+        textColor: "#ffffff"
+        x: root.gap + 3 * (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap + 2 * (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.acc = root.op == 0 ? root.entry : (root.op == 1 ? root.acc + root.entry : (root.op == 2 ? root.acc - root.entry : (root.op == 3 ? root.acc * root.entry : root.acc / root.entry)))
+            root.entry = 0
+            root.dot = 0
+            root.op = 2
+            root.fresh = true
+            root.editing = false
+        }
+    }
+
+    // Row 3: 1 2 3 +
+    CalcButton {
+        id: btn1
+        text: "1"
+        fontSize: 22
+        color: btn1.pressed ? "#3a3a3e" : "#505054"
+        textColor: "#ffffff"
+        x: root.gap
+        y: root.displayH + 2 * root.gap + 3 * (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.entry = root.fresh ? 1 : (root.dot > 0 ? root.entry + 1 / root.dot : root.entry * 10 + 1)
+            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    CalcButton {
+        id: btn2
+        text: "2"
+        fontSize: 22
+        color: btn2.pressed ? "#3a3a3e" : "#505054"
+        textColor: "#ffffff"
+        x: root.gap + (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap + 3 * (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.entry = root.fresh ? 2 : (root.dot > 0 ? root.entry + 2 / root.dot : root.entry * 10 + 2)
+            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    CalcButton {
+        id: btn3
+        text: "3"
+        fontSize: 22
+        color: btn3.pressed ? "#3a3a3e" : "#505054"
+        textColor: "#ffffff"
+        x: root.gap + 2 * (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap + 3 * (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.entry = root.fresh ? 3 : (root.dot > 0 ? root.entry + 3 / root.dot : root.entry * 10 + 3)
+            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    CalcButton {
+        id: btnAdd
+        text: "+"
+        fontSize: 22
+        color: btnAdd.pressed ? "#c07a08" : "#ff9f0a"
+        textColor: "#ffffff"
+        x: root.gap + 3 * (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap + 3 * (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.acc = root.op == 0 ? root.entry : (root.op == 1 ? root.acc + root.entry : (root.op == 2 ? root.acc - root.entry : (root.op == 3 ? root.acc * root.entry : root.acc / root.entry)))
+            root.entry = 0
+            root.dot = 0
+            root.op = 1
+            root.fresh = true
+            root.editing = false
+        }
+    }
+
+
+
+    // Row 4: 0 (double width)  .  =
+    CalcButton {
+        id: btn0
+        text: "0"
+        fontSize: 22
+        color: btn0.pressed ? "#3a3a3e" : "#505054"
+        textColor: "#ffffff"
+        x: root.gap
+        y: root.displayH + 2 * root.gap + 4 * (root.rowH + root.gap)
+        width: 2 * root.colW + root.gap
+        height: root.rowH
+        onClicked: {
+            root.entry = root.fresh ? 0 : (root.dot > 0 ? root.entry + 0 / root.dot : root.entry * 10)
+            root.dot = root.dot > 0 ? root.dot * 10 : root.dot
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    CalcButton {
+        id: btnDot
+        text: "."
+        fontSize: 22
+        color: btnDot.pressed ? "#3a3a3e" : "#505054"
+        textColor: "#ffffff"
+        x: root.gap + 2 * (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap + 4 * (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.entry = root.fresh ? 0 : root.entry
+            root.dot = root.dot > 0 ? root.dot : 10
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    CalcButton {
+        id: btnEq
+        text: "="
+        fontSize: 22
+        color: btnEq.pressed ? "#c07a08" : "#ff9f0a"
+        textColor: "#ffffff"
+        x: root.gap + 3 * (root.colW + root.gap)
+        y: root.displayH + 2 * root.gap + 4 * (root.rowH + root.gap)
+        width: root.colW
+        height: root.rowH
+        onClicked: {
+            root.acc = root.op == 0 ? root.acc : (root.op == 1 ? root.acc + root.entry : (root.op == 2 ? root.acc - root.entry : (root.op == 3 ? root.acc * root.entry : root.acc / root.entry)))
+            root.entry = 0
+            root.dot = 0
+            root.op = 0
+            root.fresh = true
+            root.editing = false
+        }
+    }
+}

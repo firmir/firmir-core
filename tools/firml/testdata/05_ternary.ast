@@ -1,0 +1,10 @@
+(file 05_ternary.fml
+  (include <firmir/items/Rectangle.hpp> 1:1)
+  (object Rectangle 3:1
+    (property id 4:5 (ident root))
+    (property width 5:5 (number 640))
+    (property visible 6:5 (binary || (binary && (binary > (ident width) (number 100)) (binary != (member (ident root) width) (number 0))) (bool false)))
+    (property opacity 7:5 (cond (binary > (ident width) (number 100)) (number 1.0) (number 0.5)))
+    (property x 8:5 (cond (binary <= (ident width) (number 200)) (cond (binary >= (ident width) (number 100)) (number 10) (number 20)) (number 30)))
+  )
+)

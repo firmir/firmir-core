@@ -1,0 +1,42 @@
+// M8: Window root object, App singleton properties, Timer, property
+// assignments in handlers (the example_gui shape).
+#include <firmir/items/Window.hpp>
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Timer.hpp>
+
+Firmir.Gui.Window {
+    id: root
+    title: "demo"
+    width: Firmir.Gui.App.screenWidth / 2
+    height: 300
+
+    Firmir.Gui.Rectangle {
+        id: background
+        anchors.fill: parent
+        color: "#000000"
+    }
+
+    Firmir.Gui.Rectangle {
+        id: box
+        color: "#FF0000"
+        width: parent.width / 4
+        height: 20
+        x: 5
+
+        behavior on x {
+            NumberAnimation { duration: 100ms }
+        }
+    }
+
+    Timer {
+        id: ticker
+        running: true
+        singleShot: false
+        interval: 50
+
+        onTimeout: {
+            box.x = root.width - box.x
+            ticker.stop()
+        }
+    }
+}

@@ -1,0 +1,6 @@
+#include <firmir/items/Text.hpp>
+
+Firmir.Gui.Text {
+    id: root
+    text: "flag: " + true
+}

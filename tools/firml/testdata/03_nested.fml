@@ -1,0 +1,23 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+
+Rectangle {
+    id: root
+    width: 640
+    height: 480
+
+    Rectangle {
+        id: header
+        height: 48
+
+        Text {
+            id: title
+            text: "Header"
+        }
+    }
+
+    Text {
+        id: footer
+        text: "Footer"
+    }
+}

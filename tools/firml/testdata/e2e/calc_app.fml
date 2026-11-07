@@ -1,0 +1,116 @@
+// E2E for script-declared properties + string concatenation (M9): a minimal
+// calculator (digits 1/2/3, +, =, C) driven headlessly by emitting "clicked".
+#include <firmir/items/Window.hpp>
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+#include <firmir/items/Button.hpp>
+
+Firmir.Gui.Window {
+    id: root
+    title: "calc e2e"
+    width: 200
+    height: 300
+
+    property number acc: 0
+    property number entry: 0
+    property number op: 0 // 0 none, 1 +
+    property bool fresh: true
+    property bool editing: true
+
+    Rectangle {
+        anchors.fill: parent
+        color: "#202020"
+    }
+
+    Text {
+        id: display
+        width: root.width
+        height: 40
+        fontSize: 20
+        color: "#ffffff"
+        text: root.editing ? "" + root.entry : "" + root.acc
+    }
+
+    Firmir.Gui.Button {
+        id: btn1
+        text: "1"
+        y: 50
+        width: 40
+        height: 30
+        onClicked: {
+            root.entry = root.fresh ? 1 : root.entry * 10 + 1
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    Firmir.Gui.Button {
+        id: btn2
+        text: "2"
+        x: 50
+        y: 50
+        width: 40
+        height: 30
+        onClicked: {
+            root.entry = root.fresh ? 2 : root.entry * 10 + 2
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    Firmir.Gui.Button {
+        id: btn3
+        text: "3"
+        x: 90
+        y: 50
+        width: 40
+        height: 30
+        onClicked: {
+            root.entry = root.fresh ? 3 : root.entry * 10 + 3
+            root.fresh = false
+            root.editing = true
+        }
+    }
+    Firmir.Gui.Button {
+        id: btnPlus
+        text: "+"
+        y: 90
+        width: 40
+        height: 30
+        onClicked: {
+            root.acc = root.op == 1 ? root.acc + root.entry : root.entry
+            root.entry = 0
+            root.op = 1
+            root.fresh = true
+            root.editing = false
+        }
+    }
+    Firmir.Gui.Button {
+        id: btnEq
+        text: "="
+        x: 50
+        y: 90
+        width: 40
+        height: 30
+        onClicked: {
+            root.acc = root.op == 1 ? root.acc + root.entry : root.acc
+            root.entry = 0
+            root.op = 0
+            root.fresh = true
+            root.editing = false
+        }
+    }
+    Firmir.Gui.Button {
+        id: btnC
+        text: "C"
+        x: 90
+        y: 90
+        width: 40
+        height: 30
+        onClicked: {
+            root.acc = 0
+            root.entry = 0
+            root.op = 0
+            root.fresh = true
+            root.editing = true
+        }
+    }
+}
