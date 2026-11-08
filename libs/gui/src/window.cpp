@@ -9,6 +9,7 @@
 #include <firmir/gui/painter.hpp>
 #include <firmir/gui/platform.hpp>
 #include <firmir/gui/screen.hpp>
+#include <firmir/gui/theme.hpp>
 #include <firmir/log.hpp>
 #include <firmir/render/render.hpp>
 #include <firmir/thread.hpp>
@@ -98,6 +99,8 @@ public:
     Rect geometry;
     bool visible = false;
     Item* focusItem = nullptr;
+    Item* hoverItem = nullptr;   // deepest item under the cursor (moves)
+    Item* mouseGrabber = nullptr; // item that accepted the current press
 };
 
 void Window::Impl::renderFrame() {
@@ -184,6 +187,15 @@ Window::Window(Screen* screen, Object* parent)
             d->screen = nullptr;
         });
     }
+    // Controls resolve their colors/metrics from the Theme singleton at paint
+    // time; a theme change must repaint the whole window.
+    Theme::instance()->connect<std::string, std::any>(
+        this, Theme::signalPropertyChanged,
+        [this](const std::string&, const std::any&) {
+            if (d->content)
+                d->content->update();
+        },
+        ConnectionMode::Queued);
     d->renderThread = new RenderThread;
     d->renderThread->renderFrame = [this] { d->renderFrame(); };
     d->renderThread->start();
@@ -346,17 +358,67 @@ void Window::dispatchMouse(MouseEvent& event) {
     std::lock_guard<std::recursive_mutex> sceneLock(d->sceneMutex);
     Item* target =
         d->content ? d->content->itemAt(event.pos.x, event.pos.y) : nullptr;
-    if (event.action == MouseEvent::Action::Press && target &&
-        (static_cast<int>(target->focusPolicy()) &
-         static_cast<int>(FocusPolicy::ClickFocus)))
-        setFocusItem(target);
+
+    // While a button is held, the item that accepted the press grabs the
+    // pointer: moves and the release go to it (drag semantics) even when
+    // the cursor leaves its geometry.
+    if (event.action != MouseEvent::Action::Press && d->mouseGrabber)
+        target = d->mouseGrabber;
+
+    // Hover tracking: the item under the cursor changes on moves; the
+    // previous one gets one last move event (its position is outside its
+    // bounds) so hoverEnabled MouseAreas clear containsMouse and emit
+    // exited() instead of staying hovered forever.
+    if (event.action == MouseEvent::Action::Move && !d->mouseGrabber &&
+        target != d->hoverItem) {
+        if (d->hoverItem) {
+            MouseEvent leave = event;
+            leave.pos = d->hoverItem->mapFromScene(event.pos);
+            d->hoverItem->mouseEvent(leave);
+        }
+        d->hoverItem = target;
+        if (d->hoverItem)
+            watchGrabbedItem(d->hoverItem); // clears both pointers on death
+    }
+
+    // Click-to-focus: the deepest hit item is often a non-focusable
+    // decoration child (e.g. the Text inside an EditableText) — walk up to
+    // the nearest ancestor that accepts click focus.
+    if (event.action == MouseEvent::Action::Press) {
+        for (Item* focusable = target; focusable;
+             focusable = focusable->parentItem()) {
+            if (static_cast<int>(focusable->focusPolicy()) &
+                static_cast<int>(FocusPolicy::ClickFocus)) {
+                setFocusItem(focusable);
+                break;
+            }
+        }
+    }
+    Item* acceptedBy = nullptr;
     while (target && !event.accepted) {
         MouseEvent local = event;
         local.pos = target->mapFromScene(event.pos);
         target->mouseEvent(local);
         event.accepted = local.accepted;
+        acceptedBy = event.accepted ? target : nullptr;
         target = target->parentItem();
     }
+    if (event.action == MouseEvent::Action::Press) {
+        d->mouseGrabber = acceptedBy;
+        if (d->mouseGrabber)
+            watchGrabbedItem(d->mouseGrabber);
+    } else if (event.action == MouseEvent::Action::Release) {
+        d->mouseGrabber = nullptr;
+    }
+}
+
+/// Clears the grabber/hover pointers when the pointed-at item dies (e.g. a
+/// Repeater rebuild deleting the delegate under the cursor).
+void Window::watchGrabbedItem(Item* item) {
+    item->connect(this, Object::signalDestroyed, [this] {
+        d->mouseGrabber = nullptr;
+        d->hoverItem = nullptr;
+    });
 }
 
 void Window::dispatchTouch(TouchEvent& event) {

@@ -1,0 +1,13 @@
+(sema 83_property_group.fml
+  (symbol root Rectangle 5:1)
+  (symbol child Rectangle 16:5)
+  (set root.width)
+  (set root.height)
+  (set root.color)
+  (set root.border.width)
+  (set root.border.color)
+  (set child.width)
+  (set child.height)
+  (bind child.border.width -> root.width)
+  (set child.border.color)
+)

@@ -15,12 +15,14 @@ protected:
         const float content = m_flickable->contentHeight();
         const float viewport = m_flickable->height();
         if (content <= viewport || viewport <= 0) return;
-        painter.fillRect(RectF{0, 0, width(), height()}, Color::rgba(25, 30, 38, 160));
+        const float radius = width() / 2.0f;
+        painter.fillRoundedRect(RectF{0, 0, width(), height()}, radius,
+                                Color::rgba(25, 30, 38, 160));
         const float barHeight = std::max(20.0f, height() * viewport / content);
         const float maximum = content - viewport;
         const float y = maximum > 0 ? (height() - barHeight) * m_flickable->contentY() / maximum : 0;
-        painter.fillRect(RectF{1, y, std::max(1.0f, width() - 2), barHeight},
-                         Color::rgba(100, 180, 235, 220));
+        painter.fillRoundedRect(RectF{1, y, std::max(1.0f, width() - 2), barHeight},
+                                radius - 1.0f, Color::rgba(100, 180, 235, 220));
     }
 private:
     Flickable* m_flickable;

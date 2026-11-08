@@ -1,0 +1,36 @@
+// Theme singleton reads/writes and trId() translation calls.
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+#include <firmir/items/Button.hpp>
+
+Firmir.Gui.Rectangle {
+    id: root
+    width: 400
+    height: 300
+    color: Theme.darkPrimaryColor
+
+    Firmir.Gui.Text {
+        id: label
+        x: Theme.horizontalPageMargin
+        y: Theme.paddingMedium
+        fontSize: Theme.fontSizeLarge
+        color: Theme.primaryColor
+        text: trId("hello-text")
+    }
+
+    Firmir.Gui.Text {
+        id: schemeLabel
+        x: 10
+        y: 60
+        color: Theme.secondaryColor
+        text: Theme.colorScheme
+    }
+
+    Firmir.Gui.Button {
+        id: accentButton
+        x: 10
+        y: 100
+        text: trId("accent-button")
+        onClicked: Theme.highlightColor = "#FFA000"
+    }
+}

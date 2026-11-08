@@ -1,6 +1,7 @@
 #include <firmir/gui/painter.hpp>
 
 #include "detail/font8x8.h"
+#include "detail/rounded_rect.hpp"
 
 #include <firmir/render/device.hpp>
 #ifdef FIRMIR_HAVE_SHADERC
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <deque>
 #include <map>
 #include <stdexcept>
 #include <vector>
@@ -558,6 +560,52 @@ void Painter::fillRect(const RectF& rect, Color color) {
         {q[3].x, q[3].y, {rgba[0], rgba[1], rgba[2], rgba[3]}},
     };
     d->emitQuad(verts, d->resources.pipeline(false, true), nullptr);
+}
+
+void Painter::fillRoundedRect(const RectF& rect, float radius, Color color) {
+    if (radius <= 0.0f || rect.width <= 0 || rect.height <= 0) {
+        fillRect(rect, color);
+        return;
+    }
+    // Rasterize the rounded rect once per (size, radius, color) and draw it
+    // as a texture. The cache is process-wide and append-only: entry/bitmap
+    // addresses double as device texture cache keys, so they must stay stable
+    // (a UI uses a bounded set of distinct control geometries in practice).
+    struct CacheKey {
+        int w, h, r;
+        std::uint32_t rgba;
+        bool operator==(const CacheKey& o) const {
+            return w == o.w && h == o.h && r == o.r && rgba == o.rgba;
+        }
+    };
+    struct CacheEntry {
+        CacheKey key;
+        std::vector<std::uint8_t> bitmap;
+    };
+    static std::deque<CacheEntry> cache;
+    const int w = std::max(1, static_cast<int>(std::lround(rect.width)));
+    const int h = std::max(1, static_cast<int>(std::lround(rect.height)));
+    const int r = static_cast<int>(std::lround(
+        std::min(radius, std::min(rect.width, rect.height) / 2.0f)));
+    const CacheKey key{w, h, r,
+                       (std::uint32_t(color.a) << 24) |
+                           (std::uint32_t(color.r) << 16) |
+                           (std::uint32_t(color.g) << 8) | color.b};
+    const CacheEntry* entry = nullptr;
+    for (const auto& candidate : cache)
+        if (candidate.key == key) {
+            entry = &candidate;
+            break;
+        }
+    if (!entry) {
+        CacheEntry created;
+        created.key = key;
+        detail::rasterizeRoundedRect(w, h, radius, 0.0f, color,
+                                     Color::rgba(0, 0, 0, 0), created.bitmap);
+        cache.push_back(std::move(created));
+        entry = &cache.back();
+    }
+    drawRgba(rect, entry->bitmap.data(), w, h, entry->bitmap.data(), 1);
 }
 
 void Painter::clear(Color color) {

@@ -27,7 +27,9 @@ public:
     /// Appends one row of role values (emits itemsAboutToBeInserted/itemsInserted).
     void append(Row row);
     /// Removes all rows (emits itemsAboutToBeRemoved/itemsRemoved when
-    /// non-empty) and forgets the learned role defaults.
+    /// non-empty). The learned role defaults survive: they describe the
+    /// role schema, so sparse-role lookups keep returning typed defaults
+    /// after a clear()+append() cycle.
     void clear();
     /// The value of @p role in row @p index. When the row has no such role
     /// but another row declared it, returns a default-constructed value of the

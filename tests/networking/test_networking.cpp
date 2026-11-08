@@ -70,6 +70,9 @@ public:
 
     std::string lastRequest() const { return lastRequest_; }
 
+    /// Raw acceptor for tests that need a custom (e.g. silent) connection.
+    int listenFdForTest() const { return listenFd_; }
+
 private:
     int listenFd_ = -1;
     int port_ = 0;
@@ -283,6 +286,100 @@ TEST_CASE(networking_current_thread_socket_notifier) {
     CHECK_EQ(Thread::mainThread()->exec(), 0);
     watchdog.stop();
     serverThread.join();
+    CHECK(finished);
+}
+
+TEST_CASE(networking_transfer_timeout) {
+    // The server accepts the connection but never answers: the request
+    // must finish with Error::Timeout instead of hanging forever.
+    TestHttpServer server;
+    std::thread silentThread([&server] {
+        struct sockaddr_in peer {};
+        socklen_t len = sizeof(peer);
+        const int conn = ::accept(server.listenFdForTest(),
+                                  reinterpret_cast<struct sockaddr*>(&peer),
+                                  &len);
+        if (conn == -1)
+            return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+        ::close(conn);
+    });
+
+    NetworkAccessManager manager;
+    NetworkRequest request("http://127.0.0.1:" + String::number(server.port()) +
+                           "/silent");
+    request.setTransferTimeout(std::chrono::milliseconds(400));
+    const auto started = std::chrono::steady_clock::now();
+    auto* reply = manager.get(request);
+
+    CHECK(waitFinished(reply, 5000)); // the 3 s silence would fail without a timeout
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    CHECK(elapsed < std::chrono::milliseconds(2500));
+    CHECK_EQ(reply->error(), NetworkReply::Error::Timeout);
+    silentThread.join();
+}
+
+TEST_CASE(networking_connect_timeout) {
+    // 192.0.2.0/24 (TEST-NET-1, RFC 5737) is unroutable: the connect either
+    // times out via our deadline or fails immediately — never hangs.
+    NetworkAccessManager manager;
+    NetworkRequest request("http://192.0.2.1:81/nowhere");
+    request.setConnectTimeout(std::chrono::milliseconds(300));
+    request.setTransferTimeout(std::chrono::milliseconds(2000));
+    const auto started = std::chrono::steady_clock::now();
+    auto* reply = manager.get(request);
+
+    CHECK(waitFinished(reply, 6000));
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    CHECK(elapsed < std::chrono::milliseconds(5000));
+    CHECK(reply->error() != NetworkReply::Error::NoError);
+}
+
+TEST_CASE(networking_current_thread_timeout) {
+    // Same silent-server scenario through the SocketNotifier path: the
+    // watchdog timer must finish the reply with Error::Timeout.
+    TestHttpServer server;
+    std::thread silentThread([&server] {
+        struct sockaddr_in peer {};
+        socklen_t len = sizeof(peer);
+        const int conn = ::accept(server.listenFdForTest(),
+                                  reinterpret_cast<struct sockaddr*>(&peer),
+                                  &len);
+        if (conn == -1)
+            return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(3000));
+        ::close(conn);
+    });
+
+    NetworkAccessManager manager;
+    manager.setRequestMode(NetworkAccessManager::RequestMode::CurrentThread);
+    NetworkRequest request("http://127.0.0.1:" + String::number(server.port()) +
+                           "/silent");
+    request.setTransferTimeout(std::chrono::milliseconds(400));
+    auto* reply = manager.get(request);
+    CHECK(!reply->isFinished());
+
+    Object context;
+    bool finished = false;
+    reply->connect(
+        &context, NetworkReply::signalFinished(),
+        [&] {
+            finished = true;
+            CHECK(reply->isFinished());
+            CHECK_EQ(reply->error(), NetworkReply::Error::Timeout);
+            Thread::mainThread()->quit();
+        },
+        ConnectionMode::Direct);
+    Timer watchdog;
+    watchdog.setSingleShot(true);
+    watchdog.setInterval(std::chrono::milliseconds(2500));
+    watchdog.connect(&context, "timeout",
+                     [] { Thread::mainThread()->exit(9); },
+                     ConnectionMode::Direct);
+    watchdog.start();
+    CHECK_EQ(Thread::mainThread()->exec(), 0);
+    watchdog.stop();
+    silentThread.join();
     CHECK(finished);
 }
 

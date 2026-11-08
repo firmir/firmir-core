@@ -78,6 +78,75 @@ const TypeInfo appType{"App",
                        {},
                        false};
 
+// Theme: process-wide visual constants (Firmir::Gui::Theme singleton).
+// All properties are writable; changes emit propertyChanged so bindings
+// re-evaluate and the affected controls repaint.
+const TypeInfo themeType{"Theme",
+                         nullptr,
+                         {
+                          { "buttonWidthExtraSmall", ValueType::Number },
+                          { "buttonWidthLarge", ValueType::Number },
+                          { "buttonWidthMedium", ValueType::Number },
+                          { "buttonWidthSmall", ValueType::Number },
+                          { "buttonWidthTiny", ValueType::Number },
+                          { "horizontalPageMargin", ValueType::Number },
+                          { "opacityFaint", ValueType::Number },
+                          { "opacityHigh", ValueType::Number },
+                          { "opacityLow", ValueType::Number },
+                          { "paddingLarge", ValueType::Number },
+                          { "paddingMedium", ValueType::Number },
+                          { "paddingSmall", ValueType::Number },
+                          { "pixelRatio", ValueType::Number },
+                          { "iconSizeExtraLarge", ValueType::Number },
+                          { "iconSizeExtraSmall", ValueType::Number },
+                          { "iconSizeLarge", ValueType::Number },
+                          { "iconSizeMedium", ValueType::Number },
+                          { "iconSizeSmall", ValueType::Number },
+                          { "iconSizeSmallPlus", ValueType::Number },
+                          { "itemSizeExtraLarge", ValueType::Number },
+                          { "itemSizeExtraSmall", ValueType::Number },
+                          { "itemSizeHuge", ValueType::Number },
+                          { "itemSizeLarge", ValueType::Number },
+                          { "itemSizeMedium", ValueType::Number },
+                          { "itemSizeSmall", ValueType::Number },
+                          { "darkPrimaryColor", ValueType::Color },
+                          { "darkSecondaryColor", ValueType::Color },
+                          { "errorColor", ValueType::Color },
+                          { "highlightBackgroundColor", ValueType::Color },
+                          { "highlightColor", ValueType::Color },
+                          { "highlightDimmerColor", ValueType::Color },
+                          { "lightPrimaryColor", ValueType::Color },
+                          { "lightSecondaryColor", ValueType::Color },
+                          { "primaryColor", ValueType::Color },
+                          { "secondaryColor", ValueType::Color },
+                          { "secondaryHighlightColor", ValueType::Color },
+                          { "colorScheme", ValueType::String },
+                          { "fontFamily", ValueType::String },
+                          { "fontFamilyHeading", ValueType::String },
+                          { "fontSizeExtraLarge", ValueType::Number },
+                          { "fontSizeExtraSmall", ValueType::Number },
+                          { "fontSizeHuge", ValueType::Number },
+                          { "fontSizeLarge", ValueType::Number },
+                          { "fontSizeMedium", ValueType::Number },
+                          { "fontSizeSmall", ValueType::Number },
+                          { "fontSizeTiny", ValueType::Number },
+                          { "highlightBackgroundOpacity", ValueType::Number }
+                         },
+                         {},
+                         {},
+                         false};
+
+// Translator: runtime string translation (Firmir::Gui::Translator singleton).
+// trId() bindings depend on "language"; the methods manage the file set.
+const TypeInfo translatorType{"Translator",
+                              nullptr,
+                              {{"language", ValueType::String}},
+                              {{"setLanguage", {ValueType::String}},
+                               {"addTranslationFile", {ValueType::String}},
+                               {"removeTranslationFile", {ValueType::String}}},
+                              {},
+                              false};
+
 // Window: root-only object hosting the item tree (Firmir::Gui::Window).
 const TypeInfo windowType{"Window",
                           nullptr,
@@ -161,12 +230,15 @@ const TypeInfo listElementType{"ListElement",
                                {}};
 
 // Image: raster image item (Firmir::Gui::Image); fillMode is the string
-// form ("Stretch", "PreserveAspectFit", "PreserveAspectCrop", "Pad").
+// form ("Stretch", "PreserveAspectFit", "PreserveAspectCrop", "Pad");
+// status is the numeric read-only load state (0 = Null, 2 = Ready,
+// 3 = Error).
 const TypeInfo imageType{"Image",
                          &itemType,
                          {{"source", ValueType::String},
                           {"fillMode", ValueType::String},
-                          {"smooth", ValueType::Bool}},
+                          {"smooth", ValueType::Bool},
+                          {"status", ValueType::Number}},
                          {},
                          {},
                          false,
@@ -217,16 +289,16 @@ const TypeInfo shaderEffectType{"ShaderEffect",
                                 TypeKind::Item,
                                 "Firmir::Gui::ShaderEffect"};
 
-// LineEdit: single/multi-line text input (Firmir::Gui::LineEdit).
-const TypeInfo lineEditType{"LineEdit",
-                            &itemType,
-                            {{"text", ValueType::String},
-                             {"multiline", ValueType::Bool}},
-                            {},
-                            {{"accepted", {}}},
-                            false,
-                            TypeKind::Item,
-                            "Firmir::Gui::LineEdit"};
+// EditableText: single/multi-line text input (Firmir::Gui::EditableText).
+const TypeInfo editableTextType{"EditableText",
+                                &itemType,
+                                {{"text", ValueType::String},
+                                 {"multiline", ValueType::Bool}},
+                                {},
+                                {{"accepted", {}}},
+                                false,
+                                TypeKind::Item,
+                                "Firmir::Gui::EditableText"};
 
 // ---- Controls (Firmir::Gui::Controls, the gui-controls library) ----
 
@@ -409,8 +481,8 @@ const TypeInfo* builtinType(const std::string& name) {
         return &flickableType;
     if (name == "ShaderEffect")
         return &shaderEffectType;
-    if (name == "LineEdit")
-        return &lineEditType;
+    if (name == "EditableText")
+        return &editableTextType;
     if (name == "CheckBox")
         return &checkBoxType;
     if (name == "RadioButton")
@@ -441,7 +513,23 @@ const TypeInfo* builtinType(const std::string& name) {
 const TypeInfo* builtinSingleton(const std::string& name) {
     if (name == "Firmir.Gui.App" || name == "App")
         return &appType;
+    if (name == "Firmir.Gui.Theme" || name == "Theme")
+        return &themeType;
+    if (name == "Firmir.Gui.Translator" || name == "Translator")
+        return &translatorType;
     return nullptr;
+}
+
+/// The canonical dotted singleton name ("Firmir.Gui.Theme" for both "Theme"
+/// and the dotted form), or "" when @p name is not a singleton.
+std::string canonicalSingletonName(const std::string& name) {
+    if (name == "Firmir.Gui.App" || name == "App")
+        return "Firmir.Gui.App";
+    if (name == "Firmir.Gui.Theme" || name == "Theme")
+        return "Firmir.Gui.Theme";
+    if (name == "Firmir.Gui.Translator" || name == "Translator")
+        return "Firmir.Gui.Translator";
+    return {};
 }
 
 bool lookupBuiltinFunction(const std::string& name, BuiltinFunction& out) {
@@ -459,6 +547,10 @@ bool lookupBuiltinFunction(const std::string& name, BuiltinFunction& out) {
     }
     if (name == "darker") {
         out = BuiltinFunction::Darker;
+        return true;
+    }
+    if (name == "trId") {
+        out = BuiltinFunction::TrId;
         return true;
     }
     return false;

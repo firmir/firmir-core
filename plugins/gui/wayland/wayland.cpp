@@ -13,8 +13,11 @@
 #include <firmir/wayland/client/display.hpp>
 #include <firmir/wayland/client/registry.hpp>
 
+#include "keytranslate.hpp"
+
 #include <wayland-client.h>
 #include <xdg-shell-client-protocol.h>
+#include <xkbcommon/xkbcommon.h>
 
 #include <algorithm>
 #include <atomic>
@@ -323,6 +326,88 @@ public:
         eventCallback(event);
     }
 
+    void emitKey(bool pressed, std::uint32_t wlKey) {
+        if (!eventCallback)
+            return;
+        InputEvent event;
+        event.type = InputEvent::Type::Key;
+        event.key.pressed = pressed;
+        // wl_keyboard delivers evdev keycodes on the wire (the +8 offset to
+        // XKB keycodes is a client-side convention), and the rest of Firmir
+        // speaks evdev too — see WaylandInput::translateKey.
+        const Firmir::WaylandInput::KeyTranslation key =
+            Firmir::WaylandInput::translateKey(m_xkbState, wlKey, pressed);
+        event.key.key = key.key;
+        event.key.text = key.text;
+        eventCallback(event);
+    }
+
+    // ---- keyboard (xkbcommon state fed from wl_keyboard events) ----
+
+    void setupKeymap(std::uint32_t format, std::int32_t fd, std::uint32_t size) {
+        if (format != WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
+            std::fprintf(stderr, "firmir-wayland: unsupported keymap format %u\n",
+                         format);
+            return;
+        }
+        char* map = static_cast<char*>(
+            ::mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, 0));
+        if (map == MAP_FAILED)
+            return;
+        if (!m_xkbContext)
+            m_xkbContext = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+        xkb_keymap* newKeymap = nullptr;
+        if (m_xkbContext)
+            newKeymap = xkb_keymap_new_from_string(
+                m_xkbContext, map, XKB_KEYMAP_FORMAT_TEXT_V1,
+                XKB_KEYMAP_COMPILE_NO_FLAGS);
+        ::munmap(map, size);
+        if (!newKeymap)
+            return;
+        xkb_state* newState = xkb_state_new(newKeymap);
+        if (!newState) {
+            xkb_keymap_unref(newKeymap);
+            return;
+        }
+        if (m_xkbState)
+            xkb_state_unref(m_xkbState);
+        if (m_xkbKeymap)
+            xkb_keymap_unref(m_xkbKeymap);
+        m_xkbKeymap = newKeymap;
+        m_xkbState = newState;
+        if (verbose())
+            std::fprintf(stderr, "firmir-wayland: xkb keymap installed\n");
+    }
+
+    static void keymapCb(void* data, wl_keyboard*, std::uint32_t format,
+                         std::int32_t fd, std::uint32_t size) {
+        static_cast<WaylandBackend*>(data)->setupKeymap(format, fd, size);
+        ::close(fd);
+    }
+    static void keyboardEnterCb(void*, wl_keyboard*, std::uint32_t, wl_surface*,
+                                wl_array*) {}
+    static void keyboardLeaveCb(void*, wl_keyboard*, std::uint32_t,
+                                wl_surface*) {}
+    static void keyCb(void* data, wl_keyboard*, std::uint32_t, std::uint32_t,
+                      std::uint32_t wlKey, std::uint32_t state) {
+        static_cast<WaylandBackend*>(data)->emitKey(
+            state == WL_KEYBOARD_KEY_STATE_PRESSED, wlKey);
+    }
+    static void modifiersCb(void* data, wl_keyboard*, std::uint32_t,
+                            std::uint32_t depressed, std::uint32_t latched,
+                            std::uint32_t locked, std::uint32_t group) {
+        WaylandBackend* self = static_cast<WaylandBackend*>(data);
+        if (self->m_xkbState)
+            xkb_state_update_mask(self->m_xkbState, depressed, latched, locked,
+                                  0, 0, group);
+    }
+    static void repeatInfoCb(void*, wl_keyboard*, std::int32_t, std::int32_t) {}
+
+    inline static const wl_keyboard_listener keyboardListener = {
+        keymapCb, keyboardEnterCb, keyboardLeaveCb, keyCb, modifiersCb,
+        repeatInfoCb,
+    };
+
 private:
     WaylandBackend();
     ~WaylandBackend() override;
@@ -370,6 +455,10 @@ private:
 
     wl_seat* m_seat = nullptr;
     wl_pointer* m_pointer = nullptr;
+    wl_keyboard* m_keyboard = nullptr;
+    xkb_context* m_xkbContext = nullptr;
+    xkb_keymap* m_xkbKeymap = nullptr;
+    xkb_state* m_xkbState = nullptr;
     Point m_pointerPos{0, 0}; // last pointer position (window coordinates)
 
     friend class WaylandWindow;
@@ -419,10 +508,18 @@ WaylandBackend::~WaylandBackend() {
         std::lock_guard<std::mutex> lock(api);
         m_windows.clear();
         m_screens.clear();
+        if (m_keyboard)
+            wl_keyboard_release(m_keyboard);
         if (m_pointer)
             wl_pointer_release(m_pointer);
         if (m_seat)
             wl_seat_destroy(m_seat);
+        if (m_xkbState)
+            xkb_state_unref(m_xkbState);
+        if (m_xkbKeymap)
+            xkb_keymap_unref(m_xkbKeymap);
+        if (m_xkbContext)
+            xkb_context_unref(m_xkbContext);
         if (m_wmBase)
             xdg_wm_base_destroy(m_wmBase);
         if (m_shm)
@@ -476,6 +573,14 @@ void WaylandBackend::onSeatCapabilities(void* data, wl_seat*,
     } else if (!hasPointer && self->m_pointer) {
         wl_pointer_release(self->m_pointer);
         self->m_pointer = nullptr;
+    }
+    const bool hasKeyboard = capabilities & WL_SEAT_CAPABILITY_KEYBOARD;
+    if (hasKeyboard && !self->m_keyboard) {
+        self->m_keyboard = wl_seat_get_keyboard(self->m_seat);
+        wl_keyboard_add_listener(self->m_keyboard, &keyboardListener, self);
+    } else if (!hasKeyboard && self->m_keyboard) {
+        wl_keyboard_release(self->m_keyboard);
+        self->m_keyboard = nullptr;
     }
 }
 

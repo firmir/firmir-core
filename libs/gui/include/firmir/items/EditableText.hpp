@@ -1,11 +1,11 @@
 #pragma once
 
 // Firml-facing item header (capitalized item name); the implementation
-// lives in <firmir/gui/lineedit.hpp>.
-#include <firmir/gui/lineedit.hpp>
+// lives in <firmir/gui/editabletext.hpp>.
+#include <firmir/gui/editabletext.hpp>
 
 namespace Firmir {
 namespace Gui {
-class LineEdit;
+class EditableText;
 } // namespace Gui
 } // namespace Firmir

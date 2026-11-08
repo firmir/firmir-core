@@ -191,6 +191,14 @@ void Parser::parseMember(Object& object) {
         return;
     }
 
+    if (!isUppercase(m_cur.text) && peekKind() == TokenKind::LBrace) {
+        // Sub-property group: `border { width: 2; color: "#333" }` — entries
+        // desugar to `border.width` / `border.color` property assignments.
+        // ('anchors { ... }' was handled above: anchor entries are AnchorStmt,
+        // not properties. Type names start uppercase, so no ambiguity.)
+        parsePropertyGroup(object);
+        return;
+    }
     if (peekKind() == TokenKind::LBrace || peekKind() == TokenKind::Dot) {
         // `Type { ... }` or a qualified type name `A.B.Type { ... }` ('anchors'
         // with a dot was handled above as the shorthand form).
@@ -245,6 +253,34 @@ PropertyStmt Parser::parseBorderProperty() {
     Expr value = parseExpression();
     accept(TokenKind::Semicolon);
     return PropertyStmt{keyTok.loc, "border." + keyTok.text, std::move(value)};
+}
+
+void Parser::parsePropertyGroup(Object& object) {
+    const Token groupTok = m_cur; // e.g. 'border'
+    advance();                    // group name
+    advance();                    // '{'
+    for (;;) {
+        while (accept(TokenKind::Semicolon)) {
+        }
+        if (m_cur.kind == TokenKind::RBrace) {
+            advance();
+            break;
+        }
+        if (m_cur.kind == TokenKind::EndOfFile)
+            throw Error(m_cur.loc,
+                        "unexpected end of file, expected a sub-property or '}' "
+                        "to close the '" +
+                            groupTok.text + "' group");
+        const Token keyTok =
+            expect(TokenKind::Identifier, "a sub-property name inside the '" +
+                                              groupTok.text + "' group");
+        expect(TokenKind::Colon,
+               "':' after '" + groupTok.text + ".<name>'");
+        Expr value = parseExpression();
+        accept(TokenKind::Semicolon);
+        object.members.push_back(PropertyStmt{
+            keyTok.loc, groupTok.text + "." + keyTok.text, std::move(value)});
+    }
 }
 
 BehaviorStmt Parser::parseBehavior() {

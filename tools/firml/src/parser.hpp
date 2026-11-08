@@ -14,8 +14,11 @@ namespace Fml {
 ///   file        := include* object EOF
 ///   include     := '#' 'include' ('<' path '>' | '"' path '"')
 ///   object      := IdentifierUpper '{' member* '}'
-///   member      := property | anchor | behavior | object
+///   member      := property | group | anchor | behavior | object
 ///   property    := Identifier ':' expr
+///   group       := IdentifierLower '{' (Identifier ':' expr)* '}'
+///                  (sub-property group: `border { width: 2 }` desugars to
+///                  `border.width: 2`; 'anchors { ... }' is special-cased)
 ///   anchor      := 'anchors' ('{' (Identifier ':' expr)* '}' | '.' Identifier ':' expr)
 ///   behavior    := 'behavior' 'on' Identifier '{' object '}'
 ///                  (the object is the animation tree: NumberAnimation/... )
@@ -48,6 +51,7 @@ private:
     AnchorStmt parseAnchorEntry();          // key: expr (block entry)
     AnchorStmt parseAnchorShorthand();      // anchors.<key>: expr
     PropertyStmt parseBorderProperty();     // border.<key>: expr
+    void parsePropertyGroup(Object& object); // name { key: expr ... }
     BehaviorStmt parseBehavior();           // behavior on <prop> { <anim> }
     PropertyStmt parseProperty();           // name: expr
     PropertyDecl parsePropertyDecl();       // property <type> <name>[: expr]

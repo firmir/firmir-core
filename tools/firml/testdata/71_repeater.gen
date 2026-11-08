@@ -28,6 +28,12 @@ F71RepeaterObjects createF71Repeater(Firmir::Gui::Item* parent);
 #include <any>
 #include <firmir/string.hpp>
 #include <firmir/gui/painter.hpp>
+#include <chrono>
+#include <functional>
+#include <memory>
+#include <vector>
+#include <firmir/gui/listmodel.hpp>
+#include <firmir/timer.hpp>
 
 F71RepeaterObjects createF71Repeater(Firmir::Gui::Item* parent) {
     F71RepeaterObjects objects;
@@ -52,7 +58,13 @@ F71RepeaterObjects createF71Repeater(Firmir::Gui::Item* parent) {
     objects.rep = rep;
     rep->setName("rep");
     {
-        const auto* _model_5 = tags;
+        auto* _model_5 = tags;
+        auto _rebuild_5 = std::make_shared<std::function<void()>>();
+        auto _rebuild_pending_5 = std::make_shared<bool>(false);
+        *_rebuild_5 = [=]() {
+            const std::vector<Firmir::Gui::Item*> _old_5 = rep->childItems();
+            for (Firmir::Gui::Item* _child_5 : _old_5)
+                delete _child_5;
         for (int _index_5 = 0; _index_5 < _model_5->count(); ++_index_5) {
 
     auto* _obj_6 = new Firmir::Gui::Button(rep);
@@ -68,6 +80,22 @@ F71RepeaterObjects createF71Repeater(Firmir::Gui::Item* parent) {
         root->setProperty("selected", (double)_index_5);
     });
         }
+        };
+        (*_rebuild_5)();
+        _model_5->connect<std::string, std::any>(
+            rep, Firmir::Object::signalPropertyChanged,
+            [_rebuild_5, _rebuild_pending_5, rep](const std::string& name, const std::any&) {
+                if (name == "count" && !*_rebuild_pending_5) {
+                    *_rebuild_pending_5 = true;
+                    Firmir::Timer::singleShot(
+                        std::chrono::milliseconds(1), rep,
+                        [_rebuild_5, _rebuild_pending_5] {
+                            *_rebuild_pending_5 = false;
+                            (*_rebuild_5)();
+                        });
+                }
+            },
+            Firmir::ConnectionMode::Direct);
     }
     return objects;
 }

@@ -1,0 +1,8 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+    border {
+        widht: 2
+    }
+}

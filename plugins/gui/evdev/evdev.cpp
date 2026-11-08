@@ -164,8 +164,11 @@ private:
             event.type = InputEvent::Type::Key;
             event.key.pressed = e.value != 0;
             event.key.key = e.code;
-            if (const char text = keyText(e.code))
-                event.key.text = std::string(1, text);
+            // Text only on press; a release carrying text would be filtered
+            // by the items anyway, but keeping it empty makes that explicit.
+            if (e.value != 0)
+                if (const char text = keyText(e.code))
+                    event.key.text = std::string(1, text);
             eventCallback(event);
             return;
         }

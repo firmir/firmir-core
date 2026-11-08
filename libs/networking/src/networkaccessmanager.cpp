@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <openssl/ssl.h>
+#include <poll.h>
 #include <stdexcept>
 #include <sys/socket.h>
 #include <thread>
@@ -36,6 +37,8 @@ struct NetworkRequest::Impl {
     String url;
     std::vector<std::pair<String, String>> headers;
     ByteArray body;
+    std::chrono::milliseconds connectTimeout{10000};
+    std::chrono::milliseconds transferTimeout{30000};
 };
 
 namespace {
@@ -85,56 +88,149 @@ bool parseUrl(const std::string& url, UrlParts& out) {
     return !out.host.empty();
 }
 
-/// A tiny blocking TCP socket wrapper.
+/// Result of a socket operation: Timeout is reported separately so the
+/// reply can carry NetworkReply::Error::Timeout.
+enum class IoStatus { Ok, Failed, TimedOut, HostNotFound };
+
+/// Milliseconds left until @p deadline; -1 when there is no deadline
+/// (a zero timeout). Returns 0 once the deadline has passed.
+int remainingMs(const std::chrono::steady_clock::time_point& deadline,
+                bool hasDeadline) {
+    if (!hasDeadline)
+        return -1;
+    const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(
+        deadline - std::chrono::steady_clock::now());
+    return left.count() > 0 ? static_cast<int>(left.count()) : 0;
+}
+
+/// A tiny TCP socket wrapper. All blocking operations poll with a deadline
+/// so a blackholed host cannot hang a request forever.
 class Socket {
 public:
     ~Socket() { close(); }
 
     int fd() const { return fd_; }
 
-    bool connectTo(const std::string& host, int port) {
+    /// Connects to host:port; the TCP connect is bounded by @p timeout
+    /// (milliseconds; 0 = wait indefinitely).
+    IoStatus connectTo(const std::string& host, int port,
+                       std::chrono::milliseconds timeout) {
         struct addrinfo hints {};
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
         struct addrinfo* result = nullptr;
         if (::getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints,
                           &result) != 0)
-            return false;
+            return IoStatus::HostNotFound;
+        const bool hasDeadline = timeout.count() > 0;
+        const auto deadline =
+            std::chrono::steady_clock::now() + timeout;
+        IoStatus status = IoStatus::Failed;
         for (struct addrinfo* rp = result; rp; rp = rp->ai_next) {
             fd_ = ::socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
             if (fd_ == -1)
                 continue;
-            if (::connect(fd_, rp->ai_addr, rp->ai_addrlen) == 0)
+            setNonBlocking();
+            if (::connect(fd_, rp->ai_addr, rp->ai_addrlen) == 0) {
+                status = IoStatus::Ok;
                 break;
+            }
+            if (errno == EINPROGRESS) {
+                const int wait = remainingMs(deadline, hasDeadline);
+                if (wait != 0 && pollFd(POLLOUT, wait)) {
+                    int soError = 0;
+                    socklen_t len = sizeof(soError);
+                    if (::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &soError,
+                                     &len) == 0 &&
+                        soError == 0) {
+                        status = IoStatus::Ok;
+                        break;
+                    }
+                    status = IoStatus::Failed;
+                } else {
+                    // pollFd() returns false on timeout and on error;
+                    // the clock tells them apart.
+                    status = remainingMs(deadline, hasDeadline) == 0
+                                 ? IoStatus::TimedOut
+                                 : IoStatus::Failed;
+                }
+            }
             ::close(fd_);
             fd_ = -1;
+            if (status == IoStatus::TimedOut)
+                break;
         }
         ::freeaddrinfo(result);
-        return fd_ != -1;
+        return status;
     }
 
-    bool writeAll(const std::string& data) {
+    /// Waits for @p events for up to @p timeoutMs (-1 = forever). Returns
+    /// false on error or timeout expiry.
+    bool pollFd(short events, int timeoutMs) {
+        struct pollfd pfd {};
+        pfd.fd = fd_;
+        pfd.events = events;
+        for (;;) {
+            const int rc = ::poll(&pfd, 1, timeoutMs);
+            if (rc > 0)
+                return pfd.revents & (events | POLLERR | POLLHUP);
+            if (rc == 0)
+                return false; // timeout
+            if (errno != EINTR)
+                return false;
+        }
+    }
+
+    IoStatus writeAll(const std::string& data,
+                      const std::chrono::steady_clock::time_point& deadline,
+                      bool hasDeadline) {
         std::size_t sent = 0;
         while (sent < data.size()) {
             const ssize_t n = ::send(fd_, data.data() + sent,
                                      data.size() - sent, MSG_NOSIGNAL);
-            if (n <= 0)
-                return false;
-            sent += static_cast<std::size_t>(n);
+            if (n > 0) {
+                sent += static_cast<std::size_t>(n);
+                continue;
+            }
+            if (n < 0 && errno == EINTR)
+                continue;
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                const int wait = remainingMs(deadline, hasDeadline);
+                if (wait != 0 && pollFd(POLLOUT, wait))
+                    continue;
+                return remainingMs(deadline, hasDeadline) == 0
+                           ? IoStatus::TimedOut
+                           : IoStatus::Failed;
+            }
+            return IoStatus::Failed;
         }
-        return true;
+        return IoStatus::Ok;
     }
 
     /// Reads until EOF; suitable for "Connection: close" responses.
-    bool readAll(std::string& out) {
+    IoStatus readAll(std::string& out,
+                     const std::chrono::steady_clock::time_point& deadline,
+                     bool hasDeadline) {
         char buf[8192];
         for (;;) {
             const ssize_t n = ::recv(fd_, buf, sizeof(buf), 0);
-            if (n < 0)
-                return false;
+            if (n > 0) {
+                out.append(buf, static_cast<std::size_t>(n));
+                continue;
+            }
             if (n == 0)
-                return true;
-            out.append(buf, static_cast<std::size_t>(n));
+                return IoStatus::Ok;
+            if (errno == EINTR)
+                continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                const int wait = remainingMs(deadline, hasDeadline);
+                if (wait != 0 && pollFd(POLLIN, wait))
+                    continue;
+                return remainingMs(deadline, hasDeadline) == 0
+                           ? IoStatus::TimedOut
+                           : IoStatus::Failed;
+            }
+            return IoStatus::Failed;
         }
     }
 
@@ -174,14 +270,18 @@ public:
 private:
     int fd_ = -1;
 };
-/// A minimal TLS wrapper around OpenSSL.
+/// A minimal TLS wrapper around OpenSSL. The underlying socket is
+/// non-blocking; every wait is a poll bounded by a deadline.
 class TlsSocket {
 public:
     ~TlsSocket() { close(); }
 
-    bool connectTo(const std::string& host, int port) {
-        if (!socket_.connectTo(host, port))
-            return false;
+    /// TCP connect + TLS handshake, bounded by @p timeout (0 = forever).
+    IoStatus connectTo(const std::string& host, int port,
+                       std::chrono::milliseconds timeout) {
+        const IoStatus tcpStatus = socket_.connectTo(host, port, timeout);
+        if (tcpStatus != IoStatus::Ok)
+            return tcpStatus;
 
         static SSL_CTX* ctx = [] {
             SSL_library_init();
@@ -190,41 +290,98 @@ public:
             return c;
         }();
         if (!ctx)
-            return false;
+            return IoStatus::Failed;
 
         ssl_ = SSL_new(ctx);
         if (!ssl_)
-            return false;
+            return IoStatus::Failed;
         SSL_set_fd(ssl_, socket_.fd());
         SSL_set_tlsext_host_name(ssl_, host.c_str());
-        if (SSL_connect(ssl_) != 1) {
-            close();
-            return false;
+
+        const bool hasDeadline = timeout.count() > 0;
+        const auto deadline = std::chrono::steady_clock::now() + timeout;
+        for (;;) {
+            const int rc = SSL_connect(ssl_);
+            if (rc == 1)
+                return IoStatus::Ok;
+            const int error = SSL_get_error(ssl_, rc);
+            short events = 0;
+            if (error == SSL_ERROR_WANT_READ)
+                events = POLLIN;
+            else if (error == SSL_ERROR_WANT_WRITE)
+                events = POLLOUT;
+            else {
+                close();
+                return IoStatus::Failed;
+            }
+            const int wait = remainingMs(deadline, hasDeadline);
+            if (wait == 0 || !socket_.pollFd(events, wait)) {
+                close();
+                return remainingMs(deadline, hasDeadline) == 0
+                           ? IoStatus::TimedOut
+                           : IoStatus::Failed;
+            }
         }
-        return true;
     }
 
-    bool writeAll(const std::string& data) {
+    IoStatus writeAll(const std::string& data,
+                      const std::chrono::steady_clock::time_point& deadline,
+                      bool hasDeadline) {
         std::size_t sent = 0;
         while (sent < data.size()) {
             const int n = SSL_write(ssl_, data.data() + sent,
                                     static_cast<int>(data.size() - sent));
-            if (n <= 0)
-                return false;
-            sent += static_cast<std::size_t>(n);
+            if (n > 0) {
+                sent += static_cast<std::size_t>(n);
+                continue;
+            }
+            const int error = SSL_get_error(ssl_, n);
+            short events = 0;
+            if (error == SSL_ERROR_WANT_READ)
+                events = POLLIN;
+            else if (error == SSL_ERROR_WANT_WRITE)
+                events = POLLOUT;
+            else
+                return IoStatus::Failed;
+            const int wait = remainingMs(deadline, hasDeadline);
+            if (wait == 0 || !socket_.pollFd(events, wait))
+                return remainingMs(deadline, hasDeadline) == 0
+                           ? IoStatus::TimedOut
+                           : IoStatus::Failed;
         }
-        return true;
+        return IoStatus::Ok;
     }
 
-    bool readAll(std::string& out) {
+    IoStatus readAll(std::string& out,
+                     const std::chrono::steady_clock::time_point& deadline,
+                     bool hasDeadline) {
         char buf[8192];
         for (;;) {
             const int n = SSL_read(ssl_, buf, sizeof(buf));
-            if (n < 0)
-                return false;
-            if (n == 0)
-                return true;
-            out.append(buf, static_cast<std::size_t>(n));
+            if (n > 0) {
+                out.append(buf, static_cast<std::size_t>(n));
+                continue;
+            }
+            const int error = SSL_get_error(ssl_, n);
+            if (error == SSL_ERROR_ZERO_RETURN)
+                return IoStatus::Ok;
+            short events = 0;
+            if (error == SSL_ERROR_WANT_READ)
+                events = POLLIN;
+            else if (error == SSL_ERROR_WANT_WRITE)
+                events = POLLOUT;
+            else if (error == SSL_ERROR_SYSCALL &&
+                     (errno == EAGAIN || errno == EWOULDBLOCK))
+                events = POLLIN;
+            else if (error == SSL_ERROR_SYSCALL && n == 0)
+                return IoStatus::Ok; // orderly close without close_notify
+            else
+                return IoStatus::Failed;
+            const int wait = remainingMs(deadline, hasDeadline);
+            if (wait == 0 || !socket_.pollFd(events, wait))
+                return remainingMs(deadline, hasDeadline) == 0
+                           ? IoStatus::TimedOut
+                           : IoStatus::Failed;
         }
     }
 
@@ -332,6 +489,19 @@ void NetworkAccessManager::readCurrent(CurrentRequest* state) {
         finishCurrent(state);
 }
 
+void NetworkAccessManager::timeoutCurrent(CurrentRequest* state) {
+    const bool pending = std::any_of(
+        d->currentRequests.begin(), d->currentRequests.end(),
+        [state](const std::unique_ptr<CurrentRequest>& candidate) {
+            return candidate.get() == state;
+        });
+    if (!pending)
+        return;
+    state->reply->d->error = NetworkReply::Error::Timeout;
+    state->reply->d->errorString = "request timed out";
+    finishCurrent(state);
+}
+
 void NetworkAccessManager::finishCurrent(CurrentRequest* state) {
     auto it = std::find_if(
         d->currentRequests.begin(), d->currentRequests.end(),
@@ -422,18 +592,31 @@ void NetworkAccessManager::startCurrent(CurrentRequest* state,
     requestLine += "\r\n";
     requestLine += request.body().toStdString();
 
-    bool ok = false;
+    const auto connectTimeout = request.connectTimeout();
+    const auto transferTimeout = request.transferTimeout();
+    const bool hasDeadline = transferTimeout.count() > 0;
+    const auto deadline = std::chrono::steady_clock::now() + transferTimeout;
+
+    IoStatus status = IoStatus::Failed;
     if (parts.scheme == "https") {
         state->tls = std::make_unique<TlsSocket>();
-        ok = state->tls->connectTo(parts.host, parts.port) &&
-             state->tls->writeAll(requestLine) && state->tls->setNonBlocking();
+        status = state->tls->connectTo(parts.host, parts.port, connectTimeout);
+        if (status == IoStatus::Ok)
+            status = state->tls->writeAll(requestLine, deadline, hasDeadline);
     } else {
         state->socket = std::make_unique<Socket>();
-        ok = state->socket->connectTo(parts.host, parts.port) &&
-             state->socket->writeAll(requestLine) &&
-             state->socket->setNonBlocking();
+        status = state->socket->connectTo(parts.host, parts.port, connectTimeout);
+        if (status == IoStatus::Ok)
+            status = state->socket->writeAll(requestLine, deadline, hasDeadline);
     }
-    if (!ok) {
+    if (status == IoStatus::TimedOut) {
+        state->reply->d->error = NetworkReply::Error::Timeout;
+        state->reply->d->errorString = "request timed out";
+        Timer::singleShot(std::chrono::milliseconds(1), state->reply,
+                          [this, state] { finishCurrent(state); });
+        return;
+    }
+    if (status != IoStatus::Ok) {
         fail("cannot connect to " + String(parts.host.c_str()));
         return;
     }
@@ -447,6 +630,15 @@ void NetworkAccessManager::startCurrent(CurrentRequest* state,
             ConnectionMode::Direct);
     } catch (const std::exception& e) {
         fail(String(e.what()));
+        return;
+    }
+
+    // The response may never arrive (host accepted, then went silent):
+    // bound the wait with a watchdog. timeoutCurrent() first checks the
+    // state is still pending, so an early finish makes this a no-op.
+    if (hasDeadline) {
+        Timer::singleShot(transferTimeout, state->reply,
+                          [this, state] { timeoutCurrent(state); });
     }
 }
 
@@ -499,21 +691,40 @@ NetworkReply* NetworkAccessManager::send(const String& method,
         requestLine += request.body().toStdString();
 
         std::string raw;
-        bool ok = false;
+        const auto connectTimeout = request.connectTimeout();
+        const auto transferTimeout = request.transferTimeout();
+        const bool hasDeadline = transferTimeout.count() > 0;
+        const auto deadline = std::chrono::steady_clock::now() + transferTimeout;
+        IoStatus status = IoStatus::Failed;
         if (parts.scheme == "https") {
             TlsSocket sock;
-            ok = sock.connectTo(parts.host, parts.port) &&
-                 sock.writeAll(requestLine) && sock.readAll(raw);
+            status = sock.connectTo(parts.host, parts.port, connectTimeout);
+            if (status == IoStatus::Ok)
+                status = sock.writeAll(requestLine, deadline, hasDeadline);
+            if (status == IoStatus::Ok)
+                status = sock.readAll(raw, deadline, hasDeadline);
         } else {
             Socket sock;
-            ok = sock.connectTo(parts.host, parts.port) &&
-                 sock.writeAll(requestLine) && sock.readAll(raw);
+            status = sock.connectTo(parts.host, parts.port, connectTimeout);
+            if (status == IoStatus::Ok)
+                status = sock.writeAll(requestLine, deadline, hasDeadline);
+            if (status == IoStatus::Ok)
+                status = sock.readAll(raw, deadline, hasDeadline);
         }
 
-        if (!ok) {
-            reply->d->error = NetworkReply::Error::NetworkError;
-            reply->d->errorString =
-                "cannot connect to " + String(parts.host.c_str());
+        if (status != IoStatus::Ok) {
+            if (status == IoStatus::TimedOut) {
+                reply->d->error = NetworkReply::Error::Timeout;
+                reply->d->errorString = "request timed out";
+            } else if (status == IoStatus::HostNotFound) {
+                reply->d->error = NetworkReply::Error::HostNotFound;
+                reply->d->errorString =
+                    "host not found: " + String(parts.host.c_str());
+            } else {
+                reply->d->error = NetworkReply::Error::NetworkError;
+                reply->d->errorString =
+                    "cannot connect to " + String(parts.host.c_str());
+            }
             Log(lcNetwork(), LogLevel::Warning)
                 << "request failed:" << request.url() << "-"
                 << reply->d->errorString;
@@ -617,5 +828,19 @@ String NetworkRequest::header(const String& name) const {
 
 ByteArray NetworkRequest::body() const { return d->body; }
 void NetworkRequest::setBody(const ByteArray& body) { d->body = body; }
+
+void NetworkRequest::setConnectTimeout(std::chrono::milliseconds timeout) {
+    d->connectTimeout = timeout;
+}
+std::chrono::milliseconds NetworkRequest::connectTimeout() const {
+    return d->connectTimeout;
+}
+
+void NetworkRequest::setTransferTimeout(std::chrono::milliseconds timeout) {
+    d->transferTimeout = timeout;
+}
+std::chrono::milliseconds NetworkRequest::transferTimeout() const {
+    return d->transferTimeout;
+}
 
 } // namespace Firmir

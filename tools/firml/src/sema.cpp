@@ -615,9 +615,19 @@ private:
         if (!prop)
             throw Error(loc, "unknown property '" + property + "' of singleton '" +
                                  writtenName + "'");
-        m_result.usesAppSingleton = true;
-        addDep(deps, "Firmir.Gui.App." + property);
+        noteSingletonUse(writtenName);
+        addDep(deps, canonicalSingletonName(writtenName) + "." + property);
         return prop->type;
+    }
+
+    /// Records which singleton the file uses so codegen can emit the needed
+    /// includes / instance setup.
+    void noteSingletonUse(const std::string& writtenName) {
+        const std::string canonical = canonicalSingletonName(writtenName);
+        if (canonical == "Firmir.Gui.App")
+            m_result.usesAppSingleton = true;
+        else if (canonical == "Firmir.Gui.Theme")
+            m_result.usesThemeSingleton = true;
     }
 
     ValueType checkMember(const MemberExpr& member, const SourceLoc& loc,
@@ -704,7 +714,22 @@ private:
         BuiltinFunction function;
         if (!lookupBuiltinFunction(call.callee, function))
             throw Error(loc, "unknown function '" + call.callee +
-                                 "' (supported: min, max, lighter, darker)");
+                                 "' (supported: min, max, lighter, darker, trId)");
+        if (function == BuiltinFunction::TrId) {
+            // trId("some-id") -> translated text in the active language. The
+            // binding depends on the translator's language property so all
+            // trId() texts switch immediately when the language changes.
+            if (call.args.size() != 1)
+                throw Error(loc, "'trId' expects exactly 1 argument");
+            const ValueType argType = checkExpr(call.args[0], scope, deps);
+            if (argType != ValueType::String && argType != ValueType::Any)
+                throw Error(call.args[0].loc,
+                            "'trId' expects a String id argument, got " +
+                                std::string(valueTypeName(argType)));
+            m_result.usesTranslatorSingleton = true;
+            addDep(deps, "Firmir.Gui.Translator.language");
+            return ValueType::String;
+        }
         if (function == BuiltinFunction::Min || function == BuiltinFunction::Max) {
             if (call.args.empty())
                 throw Error(loc, "'" + call.callee + "' expects at least 1 argument");
@@ -1023,6 +1048,7 @@ private:
     void checkAssignCommand(ObjectInfo& obj, const AssignExpr& assign) {
         const Expr& targetExpr = *assign.target;
         const ObjectInfo* targetObj = nullptr;
+        const TypeInfo* singletonType = nullptr; // set for `Theme.x = ...`
         std::string propName;
         if (const auto* ident = std::get_if<IdentExpr>(&targetExpr.node)) {
             if (ident->name == "parent")
@@ -1033,29 +1059,53 @@ private:
         } else if (const auto* member = std::get_if<MemberExpr>(&targetExpr.node)) {
             const auto* base = std::get_if<IdentExpr>(&member->object->node);
             if (!base) {
-                if (builtinSingleton(dottedName(*member->object)))
-                    throw Error(targetExpr.loc, "singleton properties are read-only");
-                throw Error(targetExpr.loc, "the assignment target must be a property "
-                                            "name or <id>.<property>");
-            }
-            if (base->name == "parent") {
+                if (const TypeInfo* singleton =
+                        builtinSingleton(dottedName(*member->object))) {
+                    singletonType = singleton;
+                    noteSingletonUse(dottedName(*member->object));
+                    propName = member->name;
+                } else {
+                    throw Error(targetExpr.loc,
+                                "the assignment target must be a property "
+                                "name or <id>.<property>");
+                }
+            } else if (base->name == "parent") {
                 if (!obj.parent)
                     throw Error(targetExpr.loc, "the root object has no 'parent'");
                 targetObj = obj.parent;
+                propName = member->name;
+            } else if (const TypeInfo* singleton = builtinSingleton(base->name)) {
+                singletonType = singleton;
+                noteSingletonUse(base->name);
+                propName = member->name;
             } else {
                 const auto it = m_result.byId.find(base->name);
                 if (it == m_result.byId.end()) {
-                    if (builtinSingleton(base->name))
-                        throw Error(targetExpr.loc, "singleton properties are read-only");
                     throw Error(targetExpr.loc,
                                 "unknown identifier '" + base->name + "'");
                 }
                 targetObj = it->second;
+                propName = member->name;
             }
-            propName = member->name;
         } else {
             throw Error(targetExpr.loc, "the assignment target must be a property "
                                         "name or <id>.<property>");
+        }
+        if (singletonType) {
+            // Writable singleton properties (e.g. Theme.highlightColor) may
+            // be assigned in handlers; read-only ones are rejected.
+            const PropertyInfo* prop = singletonType->findProperty(propName);
+            if (!prop)
+                throw Error(targetExpr.loc,
+                            "unknown property '" + propName + "' of singleton");
+            if (prop->readOnly)
+                throw Error(targetExpr.loc, "singleton property '" + propName +
+                                                "' is read-only");
+            std::vector<std::string> ignoredDeps;
+            const ValueType actual = checkExpr(*assign.value, obj, ignoredDeps);
+            checkAssignable(targetExpr.loc, propName, prop->type, actual,
+                            *assign.value);
+            return;
         }
         if (targetObj->type->kind == TypeKind::Timer)
             throw Error(targetExpr.loc, "Timer properties cannot be assigned in "
@@ -1246,7 +1296,7 @@ private:
             const TypeInfo* receiverType = nullptr;
             if (const TypeInfo* singleton = builtinSingleton(receiver)) {
                 receiverType = singleton;
-                m_result.usesAppSingleton = true;
+                noteSingletonUse(receiver);
             } else if (receiver == "parent") {
                 if (!context.parent)
                     throw Error(command.loc, "the root object has no 'parent'");

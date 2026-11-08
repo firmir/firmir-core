@@ -82,11 +82,15 @@ struct TypeInfo {
 const TypeInfo* builtinType(const std::string& name);
 /// Singleton types accessible by a fully-qualified Firml name.
 const TypeInfo* builtinSingleton(const std::string& name);
+/// The canonical dotted singleton name ("Firmir.Gui.Theme" for both "Theme"
+/// and the dotted form), or "" when @p name is not a singleton.
+std::string canonicalSingletonName(const std::string& name);
 
-enum class BuiltinFunction { Min, Max, Lighter, Darker };
+enum class BuiltinFunction { Min, Max, Lighter, Darker, TrId };
 
 /// The builtin expression functions: min/max (Number, ...) -> Number,
-/// lighter/darker (Color) -> Color.
+/// lighter/darker (Color) -> Color, trId (String id) -> String (translated;
+/// re-evaluates when the Translator language property changes).
 bool lookupBuiltinFunction(const std::string& name, BuiltinFunction& out);
 
 } // namespace Fml

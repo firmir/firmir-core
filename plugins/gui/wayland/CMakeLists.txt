@@ -7,6 +7,11 @@ set_target_properties(firmir-gui-wayland PROPERTIES
 target_link_libraries(firmir-gui-wayland
     PRIVATE firmir-gui-backend firmir-core firmir-wayland-client)
 
+# Keymap handling (wl_keyboard -> text) goes through xkbcommon.
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
+target_link_libraries(firmir-gui-wayland PRIVATE PkgConfig::XKBCOMMON)
+
 # shm_open needs -lrt on glibc < 2.34.
 find_library(RT_LIBRARY rt)
 if(RT_LIBRARY)

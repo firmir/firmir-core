@@ -10,6 +10,7 @@
 #include <firmir/object.hpp>
 #include <firmir/string.hpp>
 
+#include <chrono>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -36,6 +37,17 @@ public:
 
     ByteArray body() const;
     void setBody(const ByteArray& body);
+
+    /// Bounds the TCP connect + TLS handshake. The default is 10 s;
+    /// std::chrono::milliseconds(0) disables the timeout. On expiry the
+    /// reply finishes with NetworkReply::Error::Timeout.
+    void setConnectTimeout(std::chrono::milliseconds timeout);
+    std::chrono::milliseconds connectTimeout() const;
+    /// Bounds the whole request (connect, send, receive). The default is
+    /// 30 s; std::chrono::milliseconds(0) disables the timeout. On expiry
+    /// the reply finishes with NetworkReply::Error::Timeout.
+    void setTransferTimeout(std::chrono::milliseconds timeout);
+    std::chrono::milliseconds transferTimeout() const;
 
 private:
     friend class NetworkAccessManager;
@@ -74,6 +86,9 @@ private:
                       const NetworkRequest& request);
     void readCurrent(CurrentRequest* request);
     void finishCurrent(CurrentRequest* request);
+    /// Marks the request as timed out and finishes it; a no-op when the
+    /// request already completed (the watchdog timer may fire late).
+    void timeoutCurrent(CurrentRequest* request);
 
     struct Impl;
     std::unique_ptr<Impl> d;

@@ -1,0 +1,1 @@
+err_sema_group_unknown_property.fml:6:9: error: unknown property 'border.widht' of type 'Rectangle'

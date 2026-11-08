@@ -1,4 +1,7 @@
 #include <firmir/gui-controls/indicators.hpp>
+
+#include <firmir/gui/theme.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -32,9 +35,10 @@ void BusyIndicator::paint(Painter& painter) {
     for (int i = 0; i < 8; ++i) {
         const float angle = (i * 45 - 90) * 3.14159265358979323846f / 180.0f;
         const int alpha = m_running ? 35 + ((i + m_phase) % 8) * 28 : 80;
-        painter.fillRect(RectF{cx + std::cos(angle) * radius - 3,
-                               cy + std::sin(angle) * radius - 3, 6, 6},
-                         Color::rgba(80, 175, 235, static_cast<std::uint8_t>(alpha)));
+        painter.fillRoundedRect(RectF{cx + std::cos(angle) * radius - 3,
+                                      cy + std::sin(angle) * radius - 3, 6, 6},
+                                3.0f,
+                                Color::rgba(80, 175, 235, static_cast<std::uint8_t>(alpha)));
     }
 }
 
@@ -79,14 +83,23 @@ void ProgressBar::timerEvent(int timerId) {
     update();
 }
 void ProgressBar::paint(Painter& painter) {
-    painter.fillRect(RectF{0, 0, width(), height()}, Color::rgb(45, 52, 62));
+    const Theme* theme = Theme::instance();
+    const float radius = std::min(height() / 2.0f,
+                                  static_cast<float>(theme->controlRadius()));
+    painter.fillRoundedRect(RectF{0, 0, width(), height()}, radius,
+                            theme->darkSecondaryColor());
     if (m_indeterminate) {
         const float barWidth = std::max(12.0f, width() * 0.3f);
         const float x = m_phase * (width() + barWidth) - barWidth;
-        painter.fillRect(RectF{x, 0, barWidth, height()}, Color::rgb(65, 165, 225));
+        painter.save();
+        painter.clipRect(RectF{0, 0, width(), height()});
+        painter.fillRoundedRect(RectF{x, 0, barWidth, height()}, radius,
+                                theme->highlightColor());
+        painter.restore();
     } else {
-        painter.fillRect(RectF{0, 0, width() * visualPosition(), height()},
-                         Color::rgb(65, 165, 225));
+        painter.fillRoundedRect(
+            RectF{0, 0, width() * visualPosition(), height()}, radius,
+            theme->highlightColor());
     }
 }
 

@@ -13,6 +13,11 @@ target_include_directories(firmir-multimedia
 
 target_link_libraries(firmir-multimedia PUBLIC firmir-gui ${CMAKE_DL_LIBS})
 
+# Installed binaries fall back to the system plugin directory when neither
+# FIRMIR_MULTIMEDIA_PLUGIN_PATH nor a build-tree layout provides the plugins.
+target_compile_definitions(firmir-multimedia PRIVATE
+    FIRMIR_SYSTEM_PLUGIN_DIR="${FIRMIR_SYSTEM_PLUGIN_DIR}")
+
 firmir_install_library(firmir-multimedia MODULE multimedia REQUIRES firmir-gui)
 
 # The ffmpeg backend e2e (mediatest) is registered from

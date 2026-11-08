@@ -74,7 +74,7 @@ Rectangle {                              // ровно один корневой
 | `ListModel` | нет | `count` (ro) | | |
 | `ListElement` | нет | (только роли-литералы) | | |
 | `Image` | да | `source`, `fillMode` (строка: `Stretch`, `PreserveAspectFit`, `PreserveAspectCrop`, `Pad`), `smooth` | | |
-| `LineEdit` | да | `text`, `multiline` | | `accepted` |
+| `EditableText` | да | `text`, `multiline` | | `accepted` |
 | `MouseArea` | да | `hoverEnabled`; `mouseX`, `mouseY`, `pressed`, `containsMouse` (ro) | | `entered`, `exited` (сигналы с аргументами недоступны — используйте `onMouseXChanged`/`onPressedChanged`/...) |
 | `Flickable` | да | `contentWidth`, `contentHeight` | | |
 | `ShaderEffect` | да | `fragmentShader`, `color` | | |
@@ -108,6 +108,27 @@ Rectangle {                              // ровно один корневой
 `showMinimized()`, `showNormal()`, `showMaximized()`, `toggleMaximized()`,
 `close()`.
 
+Синглтон `Firmir.Gui.Theme` (коротко `Theme`): визуальные константы
+приложения — цвета (`primaryColor`, `highlightColor`, `errorColor`, ...),
+размеры шрифтов (`fontSizeTiny` … `fontSizeHuge`), размеры элементов
+(`itemSizeSmall` … `itemSizeHuge`, `iconSize…`, `buttonWidth…`), отступы
+(`paddingSmall/Medium/Large`, `horizontalPageMargin`), прозрачности
+(`opacityFaint/Low/High`, `highlightBackgroundOpacity`), `pixelRatio`,
+`fontFamily`/`fontFamilyHeading` и `colorScheme` (`"lightOnDark"` /
+`"darkOnLight"`). Все свойства записываемые: и чтение в привязке
+(`color: Theme.highlightColor`), и запись в обработчике
+(`onClicked: Theme.highlightColor = "#FFA000"`). Изменения приходят через
+`propertyChanged`, привязки переоцениваются, контролы перерисовываются
+сами (их paint() читает тему).
+
+Синглтон `Firmir.Gui.Translator` (коротко `Translator`): свойство `language`
+(тег вроде `"en"`/`"ru"`); методы `setLanguage(string)`,
+`addTranslationFile(string path)`, `removeTranslationFile(string path)`.
+Файл перевода — JSON: `{"language": "ru", "strings": {"id": "Текст"}}`.
+Функция выражений `trId("id")` возвращает перевод id на активном языке (или
+сам id, если перевода нет) и зависит от `Translator.language`: при смене
+языка или набора файлов все тексты с `trId(...)` обновляются автоматически.
+
 Ограничения по размещению: `Window` — только корневой объект файла; `Timer` и
 `ListModel` — невизуальные объекты; `ListElement` — только строка внутри
 `ListModel`; `Connections` и `Binding` — только дочерние объекты (не корень),
@@ -124,8 +145,10 @@ Rectangle {                              // ровно один корневой
   children (z-order по умолчанию).
 - `anchors { ... }` и `anchors.<имя>: <выражение>` — якоря.
 - `border.color: <выражение>` и `border.width: <выражение>` — сгруппированные
-  свойства рамки (только у `Rectangle`, см. таблицу типов); как и у якорей,
-  группового блока `border { ... }` нет.
+  свойства рамки (только у `Rectangle`, см. таблицу типов). Любые
+  подсвойства с точкой можно задавать группой: `border { width: 2;
+  color: "#333" }` эквивалентно `border.width: 2; border.color: "#333"`;
+  внутри группы работают выражения и привязки.
 - `behavior on <свойство> { <анимация> }` — поведение.
 - `property <тип> <имя> [: <выражение>]` — своё динамическое свойство.
 - Обработчики `on<Сигнал>` и `on<Свойство>Changed`.
@@ -151,7 +174,8 @@ Rectangle {                              // ровно один корневой
 - Арифметика и сравнения порядка — над `number`; `+` также конкатенирует
   строки (`string + string`, `string + number`, `number + string`).
 - Встроенные функции: `min(a, b)`, `max(a, b)`, `lighter(color, factor)`,
-  `darker(color, factor)`.
+  `darker(color, factor)`, `trId(id)` (перевод строки, см. синглтон
+  `Translator` выше).
 - Доступ к значениям: `свойство` (своё), `id.свойство`, `parent.свойство`,
   `Firmir.Gui.App.screenWidth`, параметры обработчика; в делегате `Repeater` —
   `model.<роль>` и `index`.
@@ -323,13 +347,20 @@ Column {
   ошибка. Роль, отсутствующая в части строк, при чтении даёт дефолт типа
   (`0`, `""`, `false`, `Color()`).
 - `Repeater`: ровно один дочерний объект-делегат; `model` — id `ListModel`
-  или неотрицательное число экземпляров.
+  или неотрицательное число экземпляров. При изменении модели делегаты
+  пересоздаются асинхронно (через цикл событий); серия изменений за один
+  проход цикла (например, наполнение модели по строкам) коалесцируется в
+  одно пересоздание — список не мерцает по разу на строку.
 - В делегате доступны `model.<роль>` и `index` (number). Во всём поддереве
   делегата запрещены: `id`, свои `property`, anchors, `behavior`, вложенные
   `Repeater` и `ListModel`.
 - Делегаты инстанцируются после инициализации остальных привязок, поэтому
   могут читать свои свойства внешних объектов; объекты, на которые ссылается
   делегат, должны быть объявлены до `Repeater` в файле.
+- Когда `model` — `ListModel`, делегаты пересоздаются при изменении
+  `count` модели (append/clear из C++): пересоздание откладывается до
+  следующей итерации цикла событий, поэтому удаление строки из обработчика
+  самого делегата безопасно.
 
 ## Сводка семантических правил
 

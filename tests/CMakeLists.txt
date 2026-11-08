@@ -35,7 +35,7 @@ if(FIRMIR_BUILD_LIB_NETWORKING)
     list(APPEND TEST_LIBS firmir-networking)
 endif()
 if(FIRMIR_BUILD_LIB_GUI AND TARGET firmir-gui-headless)
-    list(APPEND TEST_SOURCES gui/test_gui.cpp gui/test_abstract_data_list.cpp
+    list(APPEND TEST_SOURCES gui/test_gui.cpp gui/test_abstract_data_list.cpp gui/test_listmodel.cpp gui/test_editabletext.cpp gui/test_mousearea.cpp
         gui/test_positioners.cpp)
     list(APPEND TEST_LIBS firmir-gui firmir-gui-headless)
 elseif(FIRMIR_BUILD_LIB_GUI)
@@ -52,7 +52,7 @@ elseif(FIRMIR_BUILD_LIB_RENDER)
 endif()
 
 if(TARGET firmir-gui-controls)
-    list(APPEND TEST_SOURCES gui-controls/test_gui_extended.cpp)
+    list(APPEND TEST_SOURCES gui-controls/test_gui_extended.cpp gui-controls/test_controls.cpp)
     list(APPEND TEST_LIBS firmir-gui-controls)
 endif()
 if(TARGET firmir-multimedia)
@@ -62,6 +62,18 @@ endif()
 if(TARGET firmir-wayland-compositor)
     list(APPEND TEST_SOURCES wayland/test_wayland.cpp)
     list(APPEND TEST_LIBS firmir-wayland-client firmir-wayland-compositor)
+endif()
+
+# The wl_keyboard keycode translation (plugins/gui/wayland/keytranslate.hpp)
+# is header-only; test it wherever xkbcommon is available, even without the
+# compositor library.
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+    pkg_check_modules(XKBCOMMON QUIET IMPORTED_TARGET xkbcommon)
+endif()
+if(XKBCOMMON_FOUND)
+    list(APPEND TEST_SOURCES wayland/test_wayland_keymap.cpp)
+    list(APPEND TEST_LIBS PkgConfig::XKBCOMMON)
 endif()
 
 add_executable(tests ${TEST_SOURCES})

@@ -13,7 +13,9 @@ libs/
   xml/          XmlElement, XmlDocument
   dbus/         DBusConnection + утилита firmir-dbus-tool
   networking/   NetworkAccessManager, NetworkRequest, NetworkReply
-  gui/          Screen, Window, Item (2D scene graph), Painter, Platform
+  gui/          Screen, Window, Item (2D scene graph), Painter, Platform,
+                Theme (синглтон оформления), Translator (trId/i18n)
+  gui-controls/ контролы (скруглены, цвета из Theme)
 plugins/
   gui/          подгружаемые бэкенды firmir-gui-<имя>.so:
     headless/   виртуальные экраны/окна + инъекция ввода (тесты)
@@ -51,6 +53,7 @@ tests/          собственный мини-фреймворк, один б�
 - **GUI-бэкенды (плагины .so)** — headless (тесты), evdev, drm и **wayland**:
   wl_compositor/wl_shm/xdg-shell, shm double-buffering, поток dispatch
   (prepare_read/poll), экраны через wl_output, pointer-ввод (wl_seat),
+  keyboard-ввод (wl_keyboard + xkbcommon, UTF-8 текст; XKB-коды → evdev −8),
   закрытие окна → quit.
 - **Рендеринг GUI через firmir-render** — Painter записывает команды в
   RenderCommandBuffer; backends: soft (CPU), OpenGL ES 2 (EGL/FBO/readback),
@@ -60,6 +63,24 @@ tests/          собственный мини-фреймворк, один б�
 - **Fonts/controls** — Fontconfig + FreeType + HarfBuzz для native Text;
   FontDatabase поддерживает system/application fonts. Отдельная
   firmir-gui-controls реализует requested QuickControls-подобные классы.
+- **Theme** — синглтон `Firmir::Gui::Theme` (`gui/theme.hpp`, тип
+  "Firmir.Gui.Theme"): ~45 записываемых свойств (цвета, 7 размеров шрифта,
+  6 item- и 6 icon-размеров, 5 buttonWidth, padding'и, opacity, строковый
+  enum `colorScheme`) через X-macro `FIRMIR_THEME_PROPS`; цвета принимают
+  "#RRGGBB"/"#AARRGGBB" (`detail::anyToColor`); `controlRadius()` =
+  clamp(paddingSmall*1.5, 2, 12). Window подписан на
+  `signalPropertyChanged` → полная перерисовка (Queued).
+- **Translator/i18n** — синглтон `Firmir::Gui::Translator`
+  (`gui/translator.hpp`, тип "Firmir.Gui.Translator"): JSON-файлы
+  `{"language":"ru","strings":{...}}`, `trId(id)` с фолбэком на id, язык по
+  умолчанию из LC_ALL/LANG (codeset отрезается до проверки C/POSIX);
+  addTranslationFile/removeTranslationFile/setLanguage эмитят
+  `propertyChanged("language")` → биндинги trId пересчитываются сами.
+- **Скруглённые контролы** — `Painter::fillRoundedRect` (общая
+  SDF-растеризация `detail/rounded_rect.hpp`, append-only кэш битмапов:
+  указатели — ключи текстурного кэша RenderDevice, eviction → ABA);
+  button/checkbox/radio (круги)/switch (pill)/progressbar/busy-точки/
+  scrollbar/EditableText; все контролы берут цвета из Theme.
 - **Wayland modules** — client (Display/Registry/Proxy + XML→C++ generator),
   server (Display/Client/Resource), compositor (surfaces/outputs/seat/shells,
   xdg-shell/viewporter/decoration/output). GUI backend использует client module.
@@ -202,6 +223,12 @@ ctest --test-dir build --output-on-failure
       (20 клавиш в ListModel, единый обработчик по ролям), apps/red-window
       разнесён: `examples/gui/views-menu` (логика на Firml) и
       `examples/gui/controls-gallery` (C++-галерея контролов).
+      M11 готов — синглтоны Theme/Translator (обобщение App-механизма:
+      `canonicalSingletonName()`, `singletonAccess()`, `noteSingletonUse()`;
+      запись `Theme.highlightColor = "#FFA000"` в обработчиках →
+      `setProperty`) и builtin `trId(id)` → `Translator::instance()->trId(...)`;
+      биндинг на trId зависит от `Translator.language`, поэтому тексты
+      переключаются при смене языка. Snapshot `82_theme_translator`.
 - [x] firmir-wayland-generator переписан на C++ (tools/wayland,
       парсинг XML через firmir-xml, вывод байт-в-байт совместим с
       Python-версией; Python-зависимость сборки удалена).
@@ -219,9 +246,43 @@ ctest --test-dir build --output-on-failure
 - [x] firmir-wayland-client/server/compositor, XML→C++ generator, migrated backend,
       собственный compositor example с реальным first frame клиента.
 - [ ] Покрытие тестами 100% (ветки ошибок, граничные случаи)
-- [x] Wayland-бэкенд для gui (wl_compositor/wl_shm/xdg-shell, pointer input)
+- [x] Wayland-бэкенд для gui (wl_compositor/wl_shm/xdg-shell, pointer +
+      keyboard input: wl_keyboard + xkbcommon, UTF-8 текст)
+- [x] Theme singleton `Firmir.Gui.Theme` (~45 записываемых свойств, X-macro
+      `FIRMIR_THEME_PROPS`, цвета "#RRGGBB"); контролы скруглены
+      (SDF `Painter::fillRoundedRect`, append-only кэш) и берут цвета из темы
+- [x] Локализация: синглтон `Firmir.Gui.Translator` (JSON
+      `{"language","strings"}`), builtin `trId()` в firmlc, язык из
+      LC_ALL/LANG, переключение в рантайме (демо — firmir-weather)
 - [ ] DRM-бэкенд: page flip vsync вместо простого memcpy, окна меньше
       экрана (сейчас только fullscreen-поверхность на коннектор)
+
+---
+
+## Рабочие принципы
+
+- **Read before write**: правки маленькие и инкрементальные; файл сначала
+  читается, после каждой правки — сборка и тест.
+- **Ничего не устанавливаем в систему**: приложения собираются против дерева
+  исходников (`-DFIRMIR_ROOT=...`); /usr может содержать устаревшую копию.
+- **Верификация end-to-end**: изменение библиотеки = полный `ctest` +
+  пересборка и живой запуск всех приложений; без интернета сетевые пути
+  проверяются против локального mock-сервера (внешние URL переопределяются
+  env-переменными, напр. `FIRMIR_WEATHER_API`).
+- **`if constexpr` не отбрасывает ветки вне шаблонов** — типозависимая
+  регистрация свойств делается через template-helper.
+- **Append-only кэши** там, где указатели на данные — ключи текстурного кэша
+  RenderDevice: eviction при переиспользовании памяти даёт ABA-баг.
+- **wl_keyboard отдаёт XKB-коды**, внутри Firmir — evdev (смещение −8);
+  текст клавиш — UTF-8 через xkbcommon.
+- **Пиксельные тесты** учитывают перекрывающиеся фолбэк-прямоугольники
+  (проверяются углы/края, а не центр).
+- **Изменения, видимые из Firml**, сопровождаются правкой `doc/firml/doc.md`
+  и snapshot-тестов firmlc (включая тексты ошибок sema).
+- **Миграция внешних API** — с сохранением legacy-парсинга (open-meteo:
+  `current=...` вместо `current_weather=true`, старый блок ещё принимается).
+- После завершения задачи — краткий email-отчёт: что сделано, какие файлы,
+  результаты сборки/тестов.
 
 ---
 

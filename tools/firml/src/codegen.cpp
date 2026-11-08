@@ -161,8 +161,15 @@ std::string dottedExprName(const Expr& expr) {
     return {};
 }
 
-/// The C++ expression evaluating to the Firmir.Gui.App singleton instance.
-std::string appSingletonAccess() {
+/// The C++ expression evaluating to the given singleton instance.
+/// @p canonical is the canonical dotted name (canonicalSingletonName()).
+std::string singletonAccess(const std::string& canonical) {
+    if (canonical == "Firmir.Gui.Theme")
+        return "Firmir::Gui::Theme::instance()";
+    if (canonical == "Firmir.Gui.Translator")
+        return "Firmir::Gui::Translator::instance()";
+    // Firmir.Gui.App is created and registered by the generated window
+    // function, so it is looked up dynamically here.
     return "Firmir::Object::singleton<Firmir::Gui::App>(\"Firmir.Gui.App\")";
 }
 
@@ -175,6 +182,7 @@ public:
     bool usesAlgorithm = false;
     bool usesCmath = false;
     bool usesPainter = false;
+    bool usesTranslator = false; // trId() calls -> translator.hpp include
     std::map<std::string, ValueType> locals;
     const SemaResult* sema = nullptr; // for id/property type resolution
 
@@ -245,10 +253,13 @@ public:
             return typeOf(*cond->thenExpr, scope);
         if (const auto* call = std::get_if<CallExpr>(&expr.node)) {
             BuiltinFunction function;
-            if (lookupBuiltinFunction(call->callee, function) &&
-                (function == BuiltinFunction::Lighter ||
-                 function == BuiltinFunction::Darker))
-                return ValueType::Color;
+            if (lookupBuiltinFunction(call->callee, function)) {
+                if (function == BuiltinFunction::Lighter ||
+                    function == BuiltinFunction::Darker)
+                    return ValueType::Color;
+                if (function == BuiltinFunction::TrId)
+                    return ValueType::String;
+            }
             return ValueType::Number;
         }
         return ValueType::Number;
@@ -285,15 +296,18 @@ public:
             }
             if (!base) {
                 // A dotted singleton reference: Firmir.Gui.App.screenWidth.
-                if (builtinSingleton(dottedExprName(*member->object)))
-                    return memberAccess(appSingletonAccess(), member->name, type);
+                const std::string dotted = dottedExprName(*member->object);
+                if (builtinSingleton(dotted))
+                    return memberAccess(singletonAccess(canonicalSingletonName(dotted)),
+                                        member->name, type);
                 // childrenRect.x/y/width/height
                 return emit(*member->object, ValueType::Rect, scope) + "." +
                        member->name;
             }
-            // The short singleton form: App.screenWidth.
+            // The short singleton form: App.screenWidth / Theme.paddingSmall.
             if (builtinSingleton(base->name))
-                return memberAccess(appSingletonAccess(), member->name, type);
+                return memberAccess(singletonAccess(canonicalSingletonName(base->name)),
+                                    member->name, type);
             std::string var;
             if (base->name == "parent") {
                 if (!scope.parent)
@@ -363,6 +377,11 @@ public:
                     first = false;
                 }
                 return out + "})";
+            }
+            if (function == BuiltinFunction::TrId) {
+                usesTranslator = true;
+                return "Firmir::Gui::Translator::instance()->trId(" +
+                       emit(call->args[0], ValueType::String, scope) + ")";
             }
             // lighter/darker: single Color argument
             const std::string arg = emit(call->args[0], ValueType::Color, scope);
@@ -628,15 +647,41 @@ private:
 
     /// Emits the delegate instantiation loop of a Repeater: one delegate
     /// subtree per model row, with `model.<role>`/`index` in scope.
+    ///
+    /// A Repeater bound to a ListModel object (as opposed to a numeric
+    /// literal model) gets a rebuildable delegate set: the delegates are
+    /// re-created whenever the model's `count` property changes. The rebuild
+    /// is scheduled through the event loop (Timer::singleShot) so a model
+    /// mutation triggered from a delegate's own handler (e.g. a delete
+    /// button removing its row) never deletes the emitting item mid-signal.
+    /// Consecutive count changes within one event-loop turn coalesce into a
+    /// single rebuild: filling a model row by row must not produce a
+    /// delete+recreate cycle (a visible flicker) per row.
     void emitDelegateLoop(const ObjectInfo& obj, std::ostringstream& body) {
         const std::string base = std::to_string(obj.declIndex);
         const std::string indexVar = "_index_" + base;
+        const std::string repeaterVar = obj.internalName;
         std::string modelVar;
         body << "    {\n";
         if (obj.modelObject) {
+            m_usesDynamicRepeater = true;
             modelVar = "_model_" + base;
-            body << "        const auto* " << modelVar << " = "
+            const std::string rebuildVar = "_rebuild_" + base;
+            const std::string pendingVar = "_rebuild_pending_" + base;
+            body << "        auto* " << modelVar << " = "
                  << obj.modelObject->internalName << ";\n";
+            body << "        auto " << rebuildVar
+                 << " = std::make_shared<std::function<void()>>();\n";
+            body << "        auto " << pendingVar
+                 << " = std::make_shared<bool>(false);\n";
+            body << "        *" << rebuildVar << " = [=]() {\n";
+            // Drop the delegates of the previous generation (all the
+            // Repeater's children are delegate instances).
+            body << "            const std::vector<Firmir::Gui::Item*> _old_"
+                 << base << " = " << repeaterVar << "->childItems();\n";
+            body << "            for (Firmir::Gui::Item* _child_" << base
+                 << " : _old_" << base << ")\n";
+            body << "                delete _child_" << base << ";\n";
         }
         const std::string countExpr =
             obj.modelObject ? modelVar + "->count()" : std::to_string(obj.modelCount);
@@ -655,7 +700,39 @@ private:
         m_expr.delegateIndexVar.clear();
         m_expr.delegateRoles = nullptr;
 
-        body << "        }\n    }\n";
+        body << "        }\n";
+        if (obj.modelObject) {
+            const std::string rebuildVar = "_rebuild_" + base;
+            const std::string pendingVar = "_rebuild_pending_" + base;
+            body << "        };\n";
+            body << "        (*" << rebuildVar << ")();\n";
+            body << "        " << modelVar << "->connect<std::string, std::any>(\n";
+            body << "            " << repeaterVar
+                 << ", Firmir::Object::signalPropertyChanged,\n";
+            body << "            [" << rebuildVar << ", " << pendingVar << ", "
+                 << repeaterVar
+                 << "](const std::string& name, const std::any&) {\n";
+            // Timer requires a positive interval; 1ms is effectively
+            // immediate but still deferred to the next loop iteration. A
+            // burst of count changes (e.g. filling the model row by row)
+            // schedules only the first rebuild — the rest are redundant.
+            body << "                if (name == \"count\" && !*"
+                 << pendingVar << ") {\n";
+            body << "                    *" << pendingVar << " = true;\n";
+            body << "                    Firmir::Timer::singleShot(\n";
+            body << "                        std::chrono::milliseconds(1), "
+                 << repeaterVar << ",\n";
+            body << "                        [" << rebuildVar << ", "
+                 << pendingVar << "] {\n";
+            body << "                            *" << pendingVar
+                 << " = false;\n";
+            body << "                            (*" << rebuildVar
+                 << ")();\n                        });\n";
+            body << "                }\n";
+            body << "            },\n";
+            body << "            Firmir::ConnectionMode::Direct);\n";
+        }
+        body << "    }\n";
     }
 
     /// Timer settings are applied through the native Firmir::Timer API (no
@@ -715,8 +792,8 @@ private:
         }
         for (const std::string& dep : deps) {
             const std::string depObj = dep.substr(0, dep.rfind('.'));
-            if (depObj == "Firmir.Gui.App")
-                continue; // the singleton is accessed inline; nothing to capture
+            if (builtinSingleton(depObj))
+                continue; // singletons are accessed inline; nothing to capture
             if (std::find(captures.begin(), captures.end(), depObj) == captures.end())
                 captures.push_back(depObj);
         }
@@ -730,7 +807,7 @@ private:
             const size_t dot = dep.rfind('.');
             const std::string depObj = dep.substr(0, dot);
             body << "    "
-                 << (depObj == "Firmir.Gui.App" ? appSingletonAccess() : depObj)
+                 << (builtinSingleton(depObj) ? singletonAccess(depObj) : depObj)
                  << "->connect<std::string, std::any>(\n"
                  << "        " << var << ", Firmir::Object::signalPropertyChanged,\n"
                  << "        [" << captureList
@@ -847,9 +924,13 @@ private:
 
     std::string methodReceiver(const Expr& expr) {
         const std::string name = dottedName(expr);
-        if (name == "Firmir.Gui.App" || name == "App") {
-            m_usesAppSingleton = true;
-            return "Firmir::Object::singleton<Firmir::Gui::App>(\"Firmir.Gui.App\")";
+        if (const std::string canonical = canonicalSingletonName(name);
+            !canonical.empty()) {
+            if (canonical == "Firmir.Gui.App")
+                m_usesAppSingleton = true;
+            else if (canonical == "Firmir.Gui.Theme")
+                m_usesThemeSingleton = true;
+            return singletonAccess(canonical);
         }
         return name;
     }
@@ -873,14 +954,37 @@ private:
                            const AssignExpr& assign) {
         const ObjectInfo* targetObj = &scope;
         std::string propName;
+        std::string singletonReceiver; // non-empty for `Theme.x = ...`
         if (const auto* ident = std::get_if<IdentExpr>(&assign.target->node)) {
             propName = ident->name;
         } else {
             const auto& member = std::get<MemberExpr>(assign.target->node);
-            const auto& base = std::get<IdentExpr>(member.object->node);
-            targetObj =
-                base.name == "parent" ? scope.parent : m_sema.byId.at(base.name);
+            const std::string baseName = dottedName(*member.object);
+            if (const std::string canonical = canonicalSingletonName(baseName);
+                !canonical.empty()) {
+                singletonReceiver = singletonAccess(canonical);
+                if (canonical == "Firmir.Gui.Theme")
+                    m_usesThemeSingleton = true;
+                else if (canonical == "Firmir.Gui.App")
+                    m_usesAppSingleton = true;
+            } else {
+                const auto& base = std::get<IdentExpr>(member.object->node);
+                targetObj =
+                    base.name == "parent" ? scope.parent : m_sema.byId.at(base.name);
+            }
             propName = member.name;
+        }
+        if (!singletonReceiver.empty()) {
+            const PropertyInfo* prop =
+                builtinSingleton(canonicalSingletonName(
+                    dottedName(*std::get<MemberExpr>(assign.target->node).object)))
+                    ->findProperty(propName);
+            body << "        " << singletonReceiver << "->setProperty(\""
+                 << propName << "\", "
+                 << m_expr.emit(*assign.value, prop ? prop->type : ValueType::Any,
+                                scope)
+                 << ");\n";
+            return;
         }
         ValueType type = propValueType(*targetObj, propName, *assign.value);
         if (targetObj->type->opaque && !targetObj->type->findProperty(propName) &&
@@ -1045,8 +1149,19 @@ private:
             out << "#include <chrono>\n#include <firmir/gui/animation.hpp>\n";
         else if (m_usesTimer)
             out << "#include <chrono>\n";
+        if (m_usesDynamicRepeater) {
+            if (!m_usesAnimation && !m_usesTimer)
+                out << "#include <chrono>\n";
+            out << "#include <functional>\n#include <memory>\n#include <vector>\n";
+            out << "#include <firmir/gui/listmodel.hpp>\n#include <firmir/timer.hpp>\n";
+        }
         if (m_usesAppSingleton || m_sema.usesAppSingleton)
             out << "#include <firmir/gui/app.hpp>\n";
+        if (m_usesThemeSingleton || m_sema.usesThemeSingleton)
+            out << "#include <firmir/gui/theme.hpp>\n";
+        if (m_expr.usesTranslator || m_usesTranslatorSingleton ||
+            m_sema.usesTranslatorSingleton)
+            out << "#include <firmir/gui/translator.hpp>\n";
         out << "\n" << body;
         return out.str();
     }
@@ -1056,10 +1171,16 @@ private:
     std::string m_outputStem;
     ExprEmitter m_expr;
     std::vector<const ObjectInfo*> m_repeaters; // delegate loops pending emission
+    /// True when some Repeater is bound to a ListModel and its delegates
+    /// must be rebuilt when the model count changes (needs <functional>,
+    /// <memory>, <vector>, <chrono> and <firmir/timer.hpp>).
+    bool m_usesDynamicRepeater = false;
     int m_animationCounter = 0;
     bool m_usesAnimation = false;
     bool m_usesTimer = false;
     bool m_usesAppSingleton = false;
+    bool m_usesThemeSingleton = false;
+    bool m_usesTranslatorSingleton = false;
 };
 
 } // namespace

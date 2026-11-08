@@ -34,18 +34,18 @@ void ListModel::append(Row row) {
         m_roleDefaults.emplace(role, defaultValueFor(value)); // the first row wins
     const int index = count();
     beginInsertItems(index, index);
-    endInsertItems();
+    endInsertItems(); // notifies "count" itself
     itemAt(index) = std::move(row);
-    notifyPropertyChanged("count"); // Firml bindings (e.g. contentHeight)
 }
 
 void ListModel::clear() {
     if (count() == 0)
         return;
     beginRemoveItems(0, count() - 1);
-    endRemoveItems();
-    m_roleDefaults.clear();
-    notifyPropertyChanged("count");
+    endRemoveItems(); // notifies "count" itself
+    // m_roleDefaults stays: it describes the role schema, not the rows.
+    // Sparse-role lookups (data() of a row missing a role) must keep
+    // returning the default after a clear()+append() cycle.
 }
 
 std::any ListModel::data(int index, const std::string& role) const {

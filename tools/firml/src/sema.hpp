@@ -129,6 +129,13 @@ struct SemaResult {
     /// method calls or screenWidth/screenHeight reads). A Window-rooted
     /// generated function then creates and registers the App instance itself.
     bool usesAppSingleton = false;
+    /// True when the file references the Firmir.Gui.Theme singleton (property
+    /// reads/writes). The singleton self-creates on first access, so codegen
+    /// only needs the theme.hpp include.
+    bool usesThemeSingleton = false;
+    /// True when the file calls trId() (the Firmir.Gui.Translator singleton).
+    /// The singleton self-creates on first access.
+    bool usesTranslatorSingleton = false;
 };
 
 /// Runs semantic analysis on a parsed file: resolves the #include directives

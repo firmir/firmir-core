@@ -94,6 +94,7 @@ public:
 private:
     /// Input dispatch entry points used by Platform. GUI thread only.
     void dispatchMouse(MouseEvent& event);
+    void watchGrabbedItem(Item* item);
     void dispatchTouch(TouchEvent& event);
     void dispatchKey(KeyEvent& event);
 

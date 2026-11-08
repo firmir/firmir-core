@@ -50,6 +50,7 @@ if(FIRMIR_BUILD_TESTS)
         71_repeater
         80_rectangle_border
         81_connections_binding
+        83_property_group
         err_bad_token
         err_two_roots
         err_unclosed_brace
@@ -77,6 +78,7 @@ if(FIRMIR_BUILD_TESTS)
         71_repeater
         80_rectangle_border
         81_connections_binding
+        83_property_group
         err_sema_anchor_axis_conflict
         err_sema_anchor_center_conflict
         err_sema_anchor_fill_conflict
@@ -91,6 +93,7 @@ if(FIRMIR_BUILD_TESTS)
         err_sema_cycle_anchor
         err_sema_cycle_binding
         err_sema_delegate_id
+        err_sema_group_unknown_property
         err_sema_dup_id
         err_sema_handler_property_lowercase
         err_sema_include_not_found
@@ -161,6 +164,8 @@ if(FIRMIR_BUILD_TESTS)
         71_repeater
         80_rectangle_border
         81_connections_binding
+        82_theme_translator
+        83_property_group
     )
     foreach(case IN LISTS FIRML_GEN_CASES)
         add_test(

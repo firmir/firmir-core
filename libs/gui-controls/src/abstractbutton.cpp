@@ -1,4 +1,7 @@
 #include <firmir/gui-controls/abstractbutton.hpp>
+
+#include <firmir/gui/theme.hpp>
+
 #include <algorithm>
 
 namespace Firmir {
@@ -85,11 +88,15 @@ void AbstractButton::drawLabel(Painter& painter, float x, float y, Color color) 
     painter.drawText(x, y, m_text.toStdString(), color, textScale());
 }
 void AbstractButton::paint(Painter& painter) {
+    const Theme* theme = Theme::instance();
     const Color background = !isEnabled() ? Color::rgb(70, 74, 80)
-        : m_pressed ? Color::rgb(40, 90, 145) : m_checked ? Color::rgb(45, 120, 180)
-                                                         : Color::rgb(55, 65, 78);
-    painter.fillRect(RectF{0, 0, width(), height()}, background);
-    painter.fillRect(RectF{0, 0, width(), 1}, Color::rgb(110, 130, 150));
+        : m_pressed ? theme->highlightDimmerColor()
+        : m_checked ? theme->highlightColor()
+                    : theme->darkSecondaryColor().lighter(1.5);
+    const float radius = static_cast<float>(theme->controlRadius());
+    painter.fillRoundedRect(RectF{0, 0, width(), height()}, radius, background);
+    painter.fillRect(RectF{radius, 0, width() - 2 * radius, 1},
+                     theme->secondaryHighlightColor());
 }
 void AbstractButton::mouseEvent(MouseEvent& event) {
     if (event.action == MouseEvent::Action::Press && event.button == 1) {
@@ -143,18 +150,26 @@ void CheckBox::toggle() {
     }
 }
 void CheckBox::paint(Painter& painter) {
+    const Theme* theme = Theme::instance();
     const float side = std::min(24.0f, height() - 8);
     const float top = (height() - side) / 2;
-    painter.fillRect(RectF{2, top, side, side}, Color::rgb(235, 238, 242));
-    painter.fillRect(RectF{4, top + 2, side - 4, side - 4}, Color::rgb(45, 55, 68));
+    const float radius = static_cast<float>(theme->controlRadius()) * 0.6f;
+    painter.fillRoundedRect(RectF{2, top, side, side}, radius,
+                            theme->lightPrimaryColor());
+    painter.fillRoundedRect(RectF{4, top + 2, side - 4, side - 4},
+                            std::max(0.0f, radius - 2.0f),
+                            theme->darkSecondaryColor());
     if (m_checkState != CheckState::Unchecked) {
         const float inset = m_checkState == CheckState::PartiallyChecked ? side / 3 : 5;
-        painter.fillRect(RectF{2 + inset, top + inset, side - 2 * inset, side - 2 * inset},
-                         Color::rgb(70, 170, 240));
+        painter.fillRoundedRect(RectF{2 + inset, top + inset, side - 2 * inset,
+                                      side - 2 * inset},
+                                std::max(0.0f, radius - inset + 2.0f),
+                                theme->highlightColor());
     }
     float labelW = 0, labelH = 0;
     labelSize(labelW, labelH);
-    drawLabel(painter, side + 10, (height() - labelH) / 2, Color::rgb(235, 238, 242));
+    drawLabel(painter, side + 10, (height() - labelH) / 2,
+              theme->primaryColor());
 }
 
 RadioButton::RadioButton(Object* parent) : AbstractButton(parent) { setCheckable(true); }
@@ -170,16 +185,21 @@ void RadioButton::toggle() {
     }
 }
 void RadioButton::paint(Painter& painter) {
+    const Theme* theme = Theme::instance();
     const float side = std::min(22.0f, height() - 8);
     const float top = (height() - side) / 2;
-    // Concentric squares keep the primitive renderer backend-independent.
-    painter.fillRect(RectF{3, top, side, side}, Color::rgb(225, 230, 236));
-    painter.fillRect(RectF{5, top + 2, side - 4, side - 4}, Color::rgb(45, 55, 68));
+    // Fully-rounded rects read as circles: outer ring, dark well, inner dot.
+    painter.fillRoundedRect(RectF{3, top, side, side}, side / 2,
+                            theme->lightPrimaryColor());
+    painter.fillRoundedRect(RectF{5, top + 2, side - 4, side - 4},
+                            (side - 4) / 2, theme->darkSecondaryColor());
     if (isChecked())
-        painter.fillRect(RectF{9, top + 6, side - 12, side - 12}, Color::rgb(70, 170, 240));
+        painter.fillRoundedRect(RectF{9, top + 6, side - 12, side - 12},
+                                (side - 12) / 2, theme->highlightColor());
     float labelW = 0, labelH = 0;
     labelSize(labelW, labelH);
-    drawLabel(painter, side + 12, (height() - labelH) / 2, Color::rgb(235, 238, 242));
+    drawLabel(painter, side + 12, (height() - labelH) / 2,
+              theme->primaryColor());
 }
 
 Switch::Switch(Object* parent) : AbstractButton(parent) {
@@ -188,19 +208,24 @@ Switch::Switch(Object* parent) : AbstractButton(parent) {
     setImplicitHeight(30);
 }
 void Switch::paint(Painter& painter) {
+    const Theme* theme = Theme::instance();
     const float trackWidth = std::min(52.0f, width() - 4);
     const float trackHeight = std::min(22.0f, height() - 4);
     const float top = (height() - trackHeight) / 2;
-    painter.fillRect(RectF{2, top, trackWidth, trackHeight},
-                     isChecked() ? Color::rgb(45, 145, 205) : Color::rgb(85, 92, 102));
+    // Pill-shaped track, round knob.
+    painter.fillRoundedRect(RectF{2, top, trackWidth, trackHeight},
+                            trackHeight / 2,
+                            isChecked() ? theme->highlightColor()
+                                        : Color::rgb(85, 92, 102));
     const float knob = trackHeight - 4;
     const float x = isChecked() ? 2 + trackWidth - knob - 2 : 4;
-    painter.fillRect(RectF{x, top + 2, knob, knob}, Color::rgb(245, 247, 250));
+    painter.fillRoundedRect(RectF{x, top + 2, knob, knob}, knob / 2,
+                            theme->lightPrimaryColor());
     if (!text().isEmpty()) {
         float labelW = 0, labelH = 0;
         labelSize(labelW, labelH);
         drawLabel(painter, trackWidth + 10, (height() - labelH) / 2,
-                  Color::rgb(235, 238, 242));
+                  theme->primaryColor());
     }
 }
 } // namespace Controls

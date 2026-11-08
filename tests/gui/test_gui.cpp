@@ -5,13 +5,17 @@
 #include <firmir/gui/animation.hpp>
 #include <firmir/gui/flickable.hpp>
 #include <firmir/gui/item.hpp>
+#include <firmir/gui/editabletext.hpp>
 #include <firmir/gui/painter.hpp>
 #include <firmir/gui/platform.hpp>
 #include <firmir/gui/rectangle.hpp>
 #include <firmir/gui/screen.hpp>
 #include <firmir/gui/text.hpp>
+#include <firmir/gui/theme.hpp>
+#include <firmir/gui/translator.hpp>
 #include <firmir/gui/window.hpp>
 #if __has_include(<firmir/gui-controls/containers.hpp>)
+#include <firmir/gui-controls/Button.hpp>
 #include <firmir/gui-controls/containers.hpp>
 #define FIRMIR_TEST_HAVE_CONTROLS 1
 #endif
@@ -25,6 +29,8 @@
 #include <atomic>
 #include <cstdlib>
 #include <cmath>
+#include <cstdio>
+#include <fstream>
 #include <headless_control.hpp>
 #include <thread>
 #include <vector>
@@ -406,6 +412,47 @@ TEST_CASE(gui_scrollview_wheel_scroll) {
     CHECK_EQ(view->flickable()->contentY(), 48.0f);
 
     firmir_gui_headless_remove_screen("WHEEL-2");
+}
+
+TEST_CASE(gui_controls_rounded_button_pixels) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("ROUND-1", 120, 60);
+    const int windowIndex = firmir_gui_headless_window_count();
+    {
+        Window window(Platform::instance()->screens().back());
+        window.setGeometry(Rect{0, 0, 120, 60});
+        // Opaque black background behind the button.
+        auto* bg = window.createItem<Rectangle>(window.contentItem());
+        bg->setGeometry(0, 0, 120, 60);
+        bg->setColor(Color::rgb(0, 0, 0));
+        auto* button =
+            window.createItem<Controls::Button>(window.contentItem());
+        button->setGeometry(10, 10, 100, 40);
+        button->setText(String("Hi"));
+        window.show();
+        CHECK(testing::waitFor(
+            [&] { return firmir_gui_headless_frame_count(windowIndex) > 0; }));
+
+        int width = 0, height = 0;
+        CHECK(firmir_gui_headless_last_frame(windowIndex, nullptr, &width,
+                                             &height));
+        CHECK_EQ(width, 120);
+        CHECK_EQ(height, 60);
+        std::vector<std::uint32_t> pixels(static_cast<std::size_t>(width) *
+                                          height);
+        CHECK(firmir_gui_headless_last_frame(windowIndex, pixels.data(),
+                                             &width, &height));
+        // Button corners (10,10 origin): the very corner pixel stays the
+        // black background (rounded), the top edge mid and the interior are
+        // the button background (darkSecondaryColor().lighter(1.5) of the
+        // default theme = #3F4650-ish, definitely not black).
+        CHECK_EQ(pixels[10 * width + 10], 0xFF000000u);      // corner
+        CHECK(pixels[10 * width + 60] != 0xFF000000u);       // top edge mid
+        CHECK(pixels[30 * width + 60] != 0xFF000000u);       // center
+        // (near-corner pixels are inside the antialiased arc; not checked)
+        window.hide();
+    }
+    firmir_gui_headless_remove_screen("ROUND-1");
 }
 #endif // FIRMIR_TEST_HAVE_CONTROLS
 
@@ -975,6 +1022,48 @@ TEST_CASE(gui_rectangle_rounded_border_pixels) {
     CHECK_EQ(px[20 * 40 + 20], 0xFF00FF00u); // center
     CHECK_EQ(px[39 * 40 + 20], 0xFFFF0000u); // bottom edge: border
 }
+
+TEST_CASE(gui_painter_fill_rounded_rect) {
+    auto device = Render::Render::createDevice("soft");
+    CHECK(device != nullptr);
+    if (!device)
+        return;
+    RenderResources resources(device.get());
+    std::unique_ptr<Render::RenderTarget> target(
+        device->createRenderTarget({40, 40, Render::TextureFormat::Rgba8, false}));
+    std::unique_ptr<Render::RenderCommandBuffer> commands(
+        device->createCommandBuffer());
+    CHECK(target && commands);
+    if (!target || !commands)
+        return;
+
+    commands->begin();
+    Render::ClearValue clear; // opaque black
+    clear.a = 1;
+    commands->beginRenderPass(target.get(), clear);
+    {
+        Painter painter(resources, commands.get(), target.get());
+        painter.fillRoundedRect(RectF{0, 0, 40, 40}, 10, Color::rgb(0, 0, 255));
+        // Degenerate inputs must not crash and fall back to plain rects.
+        painter.fillRoundedRect(RectF{15, 15, 10, 10}, 0, Color::rgb(255, 0, 0));
+        painter.fillRoundedRect(RectF{20, 0, 0, 10}, 5, Color::rgb(255, 0, 0));
+    }
+    commands->endRenderPass();
+    commands->end();
+    device->submit(commands.get());
+    const auto* cpu = dynamic_cast<Render::CpuRenderTarget*>(target.get());
+    CHECK(cpu != nullptr);
+    if (!cpu)
+        return;
+    const std::uint32_t* px = cpu->pixels(); // 0xAARRGGBB
+    CHECK_EQ(px[0 * 40 + 0], 0xFF000000u);  // corner: outside the radius
+    CHECK_EQ(px[2 * 40 + 2], 0xFF000000u);  // still outside the corner arc
+    CHECK_EQ(px[0 * 40 + 20], 0xFF0000FFu); // top edge center: filled
+    CHECK_EQ(px[20 * 40 + 30], 0xFF0000FFu); // interior: filled
+    CHECK_EQ(px[39 * 40 + 39], 0xFF000000u); // opposite corner: outside
+    CHECK_EQ(px[9 * 40 + 9], 0xFF0000FFu);  // inner region: filled
+    CHECK_EQ(px[17 * 40 + 17], 0xFFFF0000u); // radius==0 fallback painted red
+}
 #endif // FIRMIR_RENDER_TEST_SOFT
 
 TEST_CASE(gui_item_qt_extended_properties) {
@@ -1113,4 +1202,440 @@ TEST_CASE(gui_item_active_focus_and_tab) {
     }
     (void)windowIndex;
     firmir_gui_headless_remove_screen("FOCUS-EXT-1");
+}
+
+TEST_CASE(gui_editabletext_text_input) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("EDIT-1", 200, 100);
+    {
+        Window window(Platform::instance()->screens().back());
+        window.setGeometry(Rect{0, 0, 200, 100});
+        auto* edit = window.createItem<EditableText>(window.contentItem());
+        edit->setGeometry(4, 4, 180, 32);
+        window.show();
+
+        // Focus on click, then printable keys append UTF-8 text.
+        firmir_gui_headless_inject_mouse(
+            static_cast<int>(MouseEvent::Action::Press), 20, 20, 1);
+        firmir_gui_headless_inject_mouse(
+            static_cast<int>(MouseEvent::Action::Release), 20, 20, 1);
+        CHECK(window.focusItem() == edit);
+
+        bool accepted = false;
+        edit->connect(edit, EditableText::signalAccepted,
+                      [&accepted] { accepted = true; });
+
+        firmir_gui_headless_inject_key(true, 30, "a");  // KEY_A
+        firmir_gui_headless_inject_key(false, 30, "");
+        firmir_gui_headless_inject_key(true, 48, "b");  // KEY_B
+        firmir_gui_headless_inject_key(false, 48, "");
+        firmir_gui_headless_inject_key(true, 57, " ");  // KEY_SPACE
+        firmir_gui_headless_inject_key(false, 57, "");
+        // Multi-byte UTF-8 (Cyrillic) arrives as one text string per press.
+        firmir_gui_headless_inject_key(true, 32, "\xD0\x9F"); // 'П'
+        firmir_gui_headless_inject_key(false, 32, "");
+        CHECK_EQ(edit->text().toStdString(), std::string("ab \xD0\x9F"));
+
+        // Backspace removes exactly one code point (the Cyrillic char).
+        firmir_gui_headless_inject_key(true, 14, "");   // KEY_BACKSPACE
+        firmir_gui_headless_inject_key(false, 14, "");
+        CHECK_EQ(edit->text().toStdString(), std::string("ab "));
+
+        // Delete (forward) does the same at the end-of-text cursor.
+        firmir_gui_headless_inject_key(true, 111, "");  // KEY_DELETE
+        firmir_gui_headless_inject_key(false, 111, "");
+        CHECK_EQ(edit->text().toStdString(), std::string("ab"));
+
+        // Control text never becomes content: "\x08"/"\x7F" delete, others
+        // are ignored entirely.
+        firmir_gui_headless_inject_key(true, 0, "\x05"); // a stray C0 control
+        firmir_gui_headless_inject_key(false, 0, "");
+        CHECK_EQ(edit->text().toStdString(), std::string("ab"));
+        firmir_gui_headless_inject_key(true, 0, "\x7F"); // DEL as text
+        firmir_gui_headless_inject_key(false, 0, "");
+        CHECK_EQ(edit->text().toStdString(), std::string("a"));
+        firmir_gui_headless_inject_key(true, 0, "\x08"); // BS as text
+        firmir_gui_headless_inject_key(false, 0, "");
+        CHECK_EQ(edit->text().toStdString(), std::string(""));
+
+        // Release events must not modify the text.
+        firmir_gui_headless_inject_key(true, 30, "a");
+        firmir_gui_headless_inject_key(false, 30, "a");
+        CHECK_EQ(edit->text().toStdString(), std::string("a"));
+
+        // Enter emits accepted in single-line mode and does not insert text.
+        firmir_gui_headless_inject_key(true, 28, "\r"); // KEY_ENTER
+        firmir_gui_headless_inject_key(false, 28, "");
+        CHECK(accepted);
+        CHECK_EQ(edit->text().toStdString(), std::string("a"));
+
+        window.hide();
+    }
+    firmir_gui_headless_remove_screen("EDIT-1");
+}
+
+TEST_CASE(gui_editabletext_click_on_text_focuses_edit) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("EDIT-2", 200, 100);
+    {
+        Window window(Platform::instance()->screens().back());
+        window.setGeometry(Rect{0, 0, 200, 100});
+        auto* edit = window.createItem<EditableText>(window.contentItem());
+        edit->setGeometry(4, 4, 180, 32);
+        edit->setText(String("existing text"));
+        window.show();
+
+        // The click lands on the inner Text child; the nearest
+        // click-focusable ancestor (the edit) must get the focus.
+        firmir_gui_headless_inject_mouse(
+            static_cast<int>(MouseEvent::Action::Press), 15, 15, 1);
+        firmir_gui_headless_inject_mouse(
+            static_cast<int>(MouseEvent::Action::Release), 15, 15, 1);
+        CHECK(window.focusItem() == edit);
+        CHECK(edit->hasFocus());
+
+        firmir_gui_headless_inject_key(true, 30, "a");
+        firmir_gui_headless_inject_key(false, 30, "");
+        CHECK_EQ(edit->text().toStdString(), std::string("existing texta"));
+
+        window.hide();
+    }
+    firmir_gui_headless_remove_screen("EDIT-2");
+}
+
+TEST_CASE(gui_editabletext_cursor_tracks_rendered_text) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("EDIT-3", 400, 100);
+    {
+        Window window(Platform::instance()->screens().back());
+        window.setGeometry(Rect{0, 0, 400, 100});
+        auto* edit = window.createItem<EditableText>(window.contentItem());
+        edit->setGeometry(4, 4, 380, 40);
+        window.show();
+        edit->setFocus(true);
+
+        edit->setText(String("hello"));
+        // The cursor must sit right after the rendered text, not at the
+        // crude 16px-per-glyph bitmap estimate (~2x the real width).
+        const Item* cursor = nullptr;
+        const Item* textItem = nullptr;
+        for (Item* child : edit->childItems()) {
+            if (std::string(typeid(*child).name()).find("Text") !=
+                std::string::npos)
+                textItem = child;
+            else
+                cursor = child;
+        }
+        CHECK(textItem != nullptr);
+        CHECK(cursor != nullptr);
+        if (textItem && cursor) {
+            const float textRight = 10.0f + textItem->implicitWidth();
+            CHECK(std::fabs(cursor->x() - (textRight + 2)) < 0.5f);
+        }
+
+        window.hide();
+    }
+    firmir_gui_headless_remove_screen("EDIT-3");
+}
+
+TEST_CASE(gui_theme_properties) {
+    auto* theme = Theme::instance();
+    CHECK(theme != nullptr);
+    // The same singleton is registered for Firml-generated code.
+    CHECK_EQ(Object::singleton("Firmir.Gui.Theme"), static_cast<Object*>(theme));
+
+    // Defaults (a light-on-dark palette).
+    CHECK_EQ(theme->colorScheme(), Theme::ColorScheme::LightOnDark);
+    CHECK_EQ(theme->colorSchemeName().toStdString(), std::string("lightOnDark"));
+    CHECK(theme->paddingMedium() > 0.0);
+    CHECK(theme->fontSizeMedium() > 0);
+    CHECK(theme->itemSizeMedium() > 0.0);
+
+    // propertyChanged fires on set (and only on change).
+    std::vector<std::string> notified;
+    // The theme is a singleton that outlives this test; the connection must
+    // not outlive the stack-captured `notified` vector.
+    const ScopedConnection notifiedConnection(theme->connect<std::string, std::any>(
+        theme, Object::signalPropertyChanged,
+        [&notified](const std::string& name, const std::any&) {
+            notified.push_back(name);
+        }));
+
+    theme->setProperty("paddingMedium", 12.5);
+    CHECK_EQ(theme->paddingMedium(), 12.5);
+    CHECK(std::find(notified.begin(), notified.end(), "paddingMedium") !=
+          notified.end());
+
+    // No-op writes do not notify.
+    const std::size_t count = notified.size();
+    theme->setProperty("paddingMedium", 12.5);
+    CHECK_EQ(notified.size(), count);
+
+    // Color properties accept "#RRGGBB" strings.
+    theme->setProperty("highlightColor", Firmir::String("#FFA000"));
+    const Color highlight = theme->highlightColor();
+    CHECK_EQ(static_cast<int>(highlight.r), 0xFF);
+    CHECK_EQ(static_cast<int>(highlight.g), 0xA0);
+    CHECK_EQ(static_cast<int>(highlight.b), 0x00);
+    CHECK(std::find(notified.begin(), notified.end(), "highlightColor") !=
+          notified.end());
+
+    // ColorScheme enum as a string property.
+    theme->setProperty("colorScheme", Firmir::String("darkOnLight"));
+    CHECK_EQ(theme->colorScheme(), Theme::ColorScheme::DarkOnLight);
+    theme->setProperty("colorScheme", Firmir::String("lightOnDark"));
+    CHECK_EQ(theme->colorScheme(), Theme::ColorScheme::LightOnDark);
+
+    // Every macro-declared property is registered (readable via getProperty).
+    for (const char* name :
+         {"buttonWidthMedium", "darkPrimaryColor", "errorColor", "fontFamily",
+          "fontSizeLarge", "highlightBackgroundOpacity", "iconSizeMedium",
+          "itemSizeSmall", "opacityFaint", "paddingSmall", "pixelRatio",
+          "primaryColor", "secondaryHighlightColor"})
+        CHECK(theme->getProperty(name).has_value());
+
+    // controlRadius derives from paddingSmall, clamped to [2, 12].
+    const double savedPadding = theme->paddingSmall();
+    theme->setProperty("paddingSmall", 4.0);
+    CHECK_EQ(theme->controlRadius(), 6.0);
+    theme->setProperty("paddingSmall", 0.0);
+    CHECK_EQ(theme->controlRadius(), 2.0);
+    theme->setProperty("paddingSmall", 40.0);
+    CHECK_EQ(theme->controlRadius(), 12.0);
+    theme->setProperty("paddingSmall", savedPadding);
+}
+
+TEST_CASE(gui_translator_trid_language_switch) {
+    auto* tr = Translator::instance();
+    const std::string savedLanguage = tr->language().toStdString();
+
+    // Without files every id translates to itself.
+    CHECK_EQ(tr->trId(String("weather-title")).toStdString(),
+             std::string("weather-title"));
+
+    const char* ruPath = "/tmp/firmir-test-ru.json";
+    const char* enPath = "/tmp/firmir-test-en.json";
+    {
+        std::ofstream ru(ruPath);
+        ru << "{\"language\":\"ru\",\"strings\":{\"weather-title\":\"\\u041f\\u043e\\u0433\\u043e\\u0434\\u0430\","
+              "\"add-task\":\"\\u0414\\u043e\\u0431\\u0430\\u0432\\u0438\\u0442\\u044c\"}}";
+    }
+    {
+        std::ofstream en(enPath);
+        en << "{\"language\":\"en\",\"strings\":{\"weather-title\":\"Weather\","
+              "\"add-task\":\"Add task\"}}";
+    }
+
+    int languageNotifies = 0;
+    // Singleton: keep the stack-captured counter safe via ScopedConnection.
+    const ScopedConnection languageConnection(tr->connect<std::string, std::any>(
+        tr, Object::signalPropertyChanged,
+        [&languageNotifies](const std::string& name, const std::any&) {
+            if (name == "language")
+                ++languageNotifies;
+        }));
+
+    CHECK(tr->addTranslationFile(String(ruPath)));
+    CHECK_EQ(languageNotifies, 1); // new strings: refresh bindings
+    CHECK(tr->addTranslationFile(String(enPath)));
+    CHECK_EQ(languageNotifies, 2);
+
+    // The default language comes from the process locale (usually "en" here);
+    // switch to "de" first so the later switch to "en" is a real change.
+    tr->setLanguage(String("de"));
+    CHECK_EQ(languageNotifies, 3);
+    tr->setLanguage(String("en"));
+    CHECK_EQ(languageNotifies, 4);
+    CHECK_EQ(tr->trId(String("weather-title")).toStdString(),
+             std::string("Weather"));
+    CHECK_EQ(tr->trId(String("add-task")).toStdString(), std::string("Add task"));
+
+    tr->setLanguage(String("ru"));
+    CHECK_EQ(languageNotifies, 5);
+    CHECK_EQ(tr->trId(String("weather-title")).toStdString(),
+            std::string("\xD0\x9F\xD0\xBE\xD0\xB3\xD0\xBE\xD0\xB4\xD0\xB0")); // "Погода"
+
+    // Same-language set is a no-op (no notification storm).
+    tr->setLanguage(String("ru"));
+    CHECK_EQ(languageNotifies, 5);
+
+    // Removing a file drops its strings and refreshes.
+    CHECK(tr->removeTranslationFile(String(ruPath)));
+    CHECK_EQ(languageNotifies, 6);
+    CHECK_EQ(tr->trId(String("weather-title")).toStdString(),
+             std::string("weather-title"));
+    CHECK(!tr->removeTranslationFile(String(ruPath))); // already gone
+
+    // Bad files are rejected without touching the state.
+    CHECK(!tr->addTranslationFile(String("/tmp/firmir-test-missing.json")));
+    {
+        std::ofstream bad("/tmp/firmir-test-bad.json");
+        bad << "not json";
+    }
+    CHECK(!tr->addTranslationFile(String("/tmp/firmir-test-bad.json")));
+
+    CHECK(tr->removeTranslationFile(String(enPath)));
+    std::remove(ruPath);
+    std::remove(enPath);
+    std::remove("/tmp/firmir-test-bad.json");
+    tr->setLanguage(String(savedLanguage));
+}
+
+TEST_CASE(gui_theme_config_file) {
+    auto* theme = Theme::instance();
+    const double savedPadding = theme->paddingMedium();
+    const Color savedHighlight = theme->highlightColor();
+    const Theme::ColorScheme savedScheme = theme->colorScheme();
+
+    // Round-trip: modify, save, restore defaults, load again.
+    theme->setProperty("paddingMedium", 13.5);
+    theme->setProperty("highlightColor", Firmir::String("#FFA000"));
+    theme->setProperty("colorScheme", Firmir::String("darkOnLight"));
+    const char* path = "/tmp/firmir-test-theme.json";
+    CHECK(theme->saveToFile(String(path)));
+
+    theme->setProperty("paddingMedium", 8.0);
+    theme->setProperty("highlightColor", Firmir::String("#000000"));
+    theme->setProperty("colorScheme", Firmir::String("lightOnDark"));
+    CHECK(theme->loadFromFile(String(path)));
+    CHECK_EQ(theme->paddingMedium(), 13.5);
+    CHECK_EQ(theme->highlightColor().r, 0xFF);
+    CHECK_EQ(theme->highlightColor().g, 0xA0);
+    CHECK_EQ(theme->colorScheme(), Theme::ColorScheme::DarkOnLight);
+
+    // The saved file is a JSON object of property names.
+    {
+        std::ifstream in(path);
+        std::ostringstream buf;
+        buf << in.rdbuf();
+        const std::string text = buf.str();
+        CHECK(text.find("\"paddingMedium\": 13.5") != std::string::npos);
+        CHECK(text.find("\"highlightColor\": \"#FFA000\"") != std::string::npos);
+        CHECK(text.find("\"colorScheme\": \"darkOnLight\"") != std::string::npos);
+    }
+
+    // Unknown keys are skipped (and must not create dynamic properties).
+    const std::size_t metaCount = theme->propertyMetaList().size();
+    {
+        std::ofstream out("/tmp/firmir-test-theme-partial.json");
+        out << "{\"paddingSmall\": 7.5, \"noSuchKey\": 1, "
+               "\"fontSizeLarge\": \"not a number\"}";
+    }
+    const double savedSmall = theme->paddingSmall();
+    const int savedFontLarge = theme->fontSizeLarge();
+    CHECK(theme->loadFromFile(String("/tmp/firmir-test-theme-partial.json")));
+    CHECK_EQ(theme->paddingSmall(), 7.5);
+    CHECK_EQ(theme->fontSizeLarge(), savedFontLarge); // type mismatch skipped
+    CHECK_EQ(theme->propertyMetaList().size(), metaCount); // no dynamic prop
+    theme->setProperty("paddingSmall", savedSmall);
+
+    // Missing/broken files report failure.
+    CHECK(!theme->loadFromFile(String("/tmp/firmir-test-theme-none.json")));
+    {
+        std::ofstream out("/tmp/firmir-test-theme-bad.json");
+        out << "not json";
+    }
+    CHECK(!theme->loadFromFile(String("/tmp/firmir-test-theme-bad.json")));
+
+    // Restore and clean up.
+    theme->setProperty("paddingMedium", savedPadding);
+    theme->setProperty("highlightColor", savedHighlight);
+    theme->setColorScheme(savedScheme);
+    std::remove(path);
+    std::remove("/tmp/firmir-test-theme-partial.json");
+    std::remove("/tmp/firmir-test-theme-bad.json");
+}
+
+TEST_CASE(gui_translator_arguments_and_plurals) {
+    auto* tr = Translator::instance();
+    const std::string savedLanguage = tr->language().toStdString();
+
+    const char* ruPath = "/tmp/firmir-test-plural-ru.json";
+    const char* enPath = "/tmp/firmir-test-plural-en.json";
+    {
+        std::ofstream ru(ruPath);
+        ru << "{\"language\":\"ru\",\"strings\":{"
+              "\"tasks-count\":[\"\\u0417\\u0430\\u0434\\u0430\\u0447\\u0430: %n\","
+              "\"\\u0417\\u0430\\u0434\\u0430\\u0447\\u0438: %n\","
+              "\"\\u0417\\u0430\\u0434\\u0430\\u0447: %n\"],"
+              "\"greet\":\"\\u041f\\u0440\\u0438\\u0432\\u0435\\u0442, %1!\"}}";
+        // "Задача: %n" / "Задачи: %n" / "Задач: %n", "Привет, %1!"
+    }
+    {
+        std::ofstream en(enPath);
+        en << "{\"language\":\"en\",\"strings\":{"
+              "\"tasks-count\":[\"%n task\",\"%n tasks\"],"
+              "\"greet\":\"Hello, %1! You have %2 messages.\"}}";
+    }
+    CHECK(tr->addTranslationFile(String(ruPath)));
+    CHECK(tr->addTranslationFile(String(enPath)));
+
+    // --- %1..%9 substitution ---------------------------------------------
+    tr->setLanguage(String("en"));
+    CHECK_EQ(tr->trId(String("greet"), {String("Ann"), String("3")})
+                 .toStdString(),
+             std::string("Hello, Ann! You have 3 messages."));
+    // Missing arguments leave the marker untouched; extras are ignored.
+    CHECK_EQ(tr->trId(String("greet"), {String("Ann")}).toStdString(),
+             std::string("Hello, Ann! You have %2 messages."));
+    // Unknown id: substitution still applies to the id itself.
+    CHECK_EQ(tr->trId(String("%1-none"), {String("x")}).toStdString(),
+             std::string("x-none"));
+    // Russian string, one placeholder.
+    tr->setLanguage(String("ru"));
+    CHECK_EQ(tr->trId(String("greet"), {String("Bob")}).toStdString(),
+             std::string("\xD0\x9F\xD1\x80\xD0\xB8\xD0\xB2\xD0\xB5\xD1\x82, Bob!"));
+
+    // --- %n plural selection: Russian one/few/many ------------------------
+    const std::string one = "\xD0\x97\xD0\xB0\xD0\xB4\xD0\xB0\xD1\x87\xD0\xB0: ";   // "Задача: "
+    const std::string few = "\xD0\x97\xD0\xB0\xD0\xB4\xD0\xB0\xD1\x87\xD0\xB8: ";   // "Задачи: "
+    const std::string many = "\xD0\x97\xD0\xB0\xD0\xB4\xD0\xB0\xD1\x87: ";          // "Задач: "
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 1).toStdString(), one + "1");
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 2).toStdString(), few + "2");
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 3).toStdString(), few + "3");
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 4).toStdString(), few + "4");
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 5).toStdString(), many + "5");
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 11).toStdString(), many + "11");
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 12).toStdString(), many + "12");
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 21).toStdString(), one + "21");
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 22).toStdString(), few + "22");
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 111).toStdString(),
+             many + "111");
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 101).toStdString(),
+             one + "101");
+
+    // English one/other; the two-form array clamps nothing.
+    tr->setLanguage(String("en"));
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 1).toStdString(),
+             std::string("1 task"));
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 2).toStdString(),
+             std::string("2 tasks"));
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), 0).toStdString(),
+             std::string("0 tasks"));
+    CHECK_EQ(tr->trIdPlural(String("tasks-count"), -1).toStdString(),
+             std::string("-1 task"));
+
+    // Unknown id: %n still substituted into the id itself.
+    CHECK_EQ(tr->trIdPlural(String("%n unknown"), 7).toStdString(),
+             std::string("7 unknown"));
+
+    // A language with fewer forms than the rule index clamps to the last.
+    tr->setLanguage(String("ru"));
+    const char* shortRu = "/tmp/firmir-test-plural-short.json";
+    {
+        std::ofstream f(shortRu);
+        f << "{\"language\":\"ru\",\"strings\":{"
+             "\"items\":[\"%n \xD1\x88\xD1\x82.\"]}}"; // "%n шт."
+    }
+    CHECK(tr->addTranslationFile(String(shortRu)));
+    CHECK_EQ(tr->trIdPlural(String("items"), 5).toStdString(),
+             std::string("5 \xD1\x88\xD1\x82."));
+    CHECK(tr->removeTranslationFile(String(shortRu)));
+
+    CHECK(tr->removeTranslationFile(String(ruPath)));
+    CHECK(tr->removeTranslationFile(String(enPath)));
+    std::remove(ruPath);
+    std::remove(enPath);
+    std::remove(shortRu);
+    tr->setLanguage(String(savedLanguage));
 }

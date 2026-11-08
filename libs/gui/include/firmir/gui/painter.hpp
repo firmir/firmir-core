@@ -128,6 +128,10 @@ public:
 
     /// Fills @p rect (current coordinates) with @p color, alpha-blended.
     void fillRect(const RectF& rect, Color color);
+    /// Fills @p rect with rounded corners (@p radius in pixels, clamped to
+    /// half the smaller side). Antialiased; falls back to fillRect() when
+    /// radius <= 0.
+    void fillRoundedRect(const RectF& rect, float radius, Color color);
     /// Fills the whole target with @p color, ignoring the clip and opacity
     /// state (overwrite, not blended).
     void clear(Color color);
