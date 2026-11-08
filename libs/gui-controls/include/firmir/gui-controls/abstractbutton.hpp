@@ -65,7 +65,7 @@ public:
     CheckState checkState() const { return m_checkState; }
     void setCheckState(CheckState state);
     bool tristate() const { return m_tristate; }
-    void setTristate(bool enabled) { auto lock = lockScene(); m_tristate = enabled; }
+    void setTristate(bool enabled);
 protected:
     void paint(Painter& painter) override;
     void toggle() override;

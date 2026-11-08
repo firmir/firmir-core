@@ -7,7 +7,11 @@ namespace Firmir {
 namespace Fml {
 
 /// Value types of Firml expressions and item properties (v0.1).
-enum class ValueType { Number, String, Color, Bool, Rect };
+enum class ValueType { Number, String, Color, Bool, Rect, Any };
+
+/// Any: the statically unknown type of an opaque object's property (checked
+/// at runtime through the dynamic property bag). Compatible with every
+/// operator/operand combination; propagates through arithmetic.
 
 const char* valueTypeName(ValueType type); // "Number", "String", ...
 
@@ -32,7 +36,17 @@ struct SignalInfo {
 /// anchors or behaviors, static properties only). Model is a non-visual data
 /// object (ListModel: only ListElement children); ModelElement (ListElement)
 /// lives only inside a Model and carries literal role values.
-enum class TypeKind { Item, Window, Timer, Model, ModelElement };
+enum class TypeKind {
+    Item,
+    Window,
+    Timer,
+    Model,
+    ModelElement,
+    // QML-style attachable constructs; they create no runtime object — sema
+    // resolves their target and codegen inlines the connects/bindings.
+    Connections,
+    Binding
+};
 
 /// Static description of an item type known to firmlc. Types from project
 /// headers are opaque: only the Item base properties are known for them.
@@ -47,6 +61,13 @@ struct TypeInfo {
     /// C++ class name when it differs from the default mapping
     /// (dotted -> ::-path, or "Firmir::Gui::<name>" for short builtins).
     std::string cppName = {};
+    /// Children are parented to <obj>->contentItem() instead of the object
+    /// itself (ScrollView, Flickable).
+    bool contentItemParent = false;
+    /// When non-empty, each direct child is additionally registered with the
+    /// container through this method right after construction
+    /// (StackView: "push", SwipeView/SplitView: "addItem").
+    std::string childAddMethod = {};
 
     /// Finds a property walking up the inheritance chain (nullptr if absent).
     const PropertyInfo* findProperty(const std::string& name) const;

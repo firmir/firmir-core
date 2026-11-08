@@ -92,7 +92,9 @@ bool decodeJpeg(const std::string& path, std::vector<std::uint8_t>& rgba, Size& 
 
 Image::Image(Object* parent) : Item(parent) {
     registerProperty<String>("source", &Image::source, &Image::setSource);
-    registerProperty<FillMode>("fillMode", &Image::fillMode, &Image::setFillMode);
+    registerPropertyImpl("fillMode", typeid(Firmir::String),
+        [](const Object* o) -> std::any { return static_cast<const Image*>(o)->fillModeName(); },
+        [](Object* o, const std::any& v) { static_cast<Image*>(o)->setFillModeName(std::any_cast<Firmir::String>(v)); });
     registerProperty<bool>("smooth", &Image::smooth, &Image::setSmooth);
     registerPropertyImpl("status", typeid(int),
         [](const Object* o) -> std::any { return static_cast<int>(static_cast<const Image*>(o)->status()); },
@@ -133,6 +135,21 @@ void Image::setFillMode(FillMode mode) {
     setClip(mode == FillMode::PreserveAspectCrop);
     update();
     notifyPropertyChanged("fillMode");
+}
+String Image::fillModeName() const {
+    switch (m_fillMode) {
+    case FillMode::Stretch: return String("Stretch");
+    case FillMode::PreserveAspectCrop: return String("PreserveAspectCrop");
+    case FillMode::Pad: return String("Pad");
+    default: return String("PreserveAspectFit");
+    }
+}
+void Image::setFillModeName(const String& name) {
+    const std::string value = name.toStdString();
+    if (value == "Stretch") setFillMode(FillMode::Stretch);
+    else if (value == "PreserveAspectFit") setFillMode(FillMode::PreserveAspectFit);
+    else if (value == "PreserveAspectCrop") setFillMode(FillMode::PreserveAspectCrop);
+    else if (value == "Pad") setFillMode(FillMode::Pad);
 }
 void Image::setRgba(int width, int height, const void* pixels, std::size_t bytes) {
     auto sceneLock = lockScene();

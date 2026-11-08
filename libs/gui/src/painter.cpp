@@ -127,13 +127,20 @@ void forEachCodepoint(const std::string& text, F&& fn) {
 
 } // namespace
 
-ShaderDesc customFragmentDesc(RenderDevice* device, const std::string& body) {
+ShaderDesc customFragmentDesc(RenderDevice* device, const std::string& body,
+                              bool externalSampler = false) {
     const std::string backend = device->backendName();
     if (backend == "opengl") {
+        // Video frames imported as EGLImage need the external sampler.
         const std::string source =
+            std::string(externalSampler
+                            ? "#extension GL_OES_EGL_image_external : require\n"
+                            : "") +
             "precision mediump float;\n"
-            "varying vec4 v_color; varying vec2 v_uv;\n"
-            "uniform sampler2D u_texture; uniform bool u_textured;\n"
+            "varying vec4 v_color; varying vec2 v_uv;\n" +
+            (externalSampler ? "uniform samplerExternalOES u_texture;\n"
+                             : "uniform sampler2D u_texture;\n") +
+            "uniform bool u_textured;\n"
             "void main() {\n" + body + "\n}\n";
         return {ShaderStage::Fragment, ShaderLanguage::Glsl, "main",
                 std::vector<std::uint8_t>(source.begin(), source.end())};
@@ -316,6 +323,42 @@ public:
             ? device->createPipeline(desc, vertexShader.get(), entry.fragment.get()) : nullptr);
         return entry.pipeline ? entry.pipeline.get() : fallback;
     }
+
+    // ---- external textures (imported by the caller, e.g. dma-buf) ----
+
+    /// Pipeline for external textures: the regular textured pipeline when
+    /// the backend converts YUV in the sampler (Vulkan), a custom
+    /// external-sampler fragment on OpenGL.
+    RenderPipeline* externalPipeline() {
+        if (device->backendName() != "opengl")
+            return pipeline(true, true);
+        if (!videoPipeline_) {
+            static const std::string body =
+                "gl_FragColor = v_color * texture2D(u_texture, v_uv);\n";
+            std::unique_ptr<RenderShader> fragment(device->createShader(
+                customFragmentDesc(device, body, /*externalSampler=*/true)));
+            PipelineDesc desc;
+            desc.vertexLayout.stride = sizeof(TextVertex);
+            desc.vertexLayout.attributes = {
+                {0, "pos", VertexFormat::Float2, 0},
+                {1, "color", VertexFormat::UByte4Norm, 8},
+                {2, "uv", VertexFormat::Float2, 12},
+            };
+            desc.rasterizer.scissorEnabled = true;
+            desc.blend.enabled = true;
+            desc.blend.srcColor = BlendFactor::SrcAlpha;
+            desc.blend.dstColor = BlendFactor::OneMinusSrcAlpha;
+            videoPipeline_.reset(
+                fragment ? device->createPipeline(desc, vertexShader.get(),
+                                                  fragment.get())
+                         : nullptr);
+            videoFragment_.swap(fragment);
+        }
+        return videoPipeline_.get();
+    }
+
+    std::unique_ptr<RenderShader> videoFragment_;
+    std::unique_ptr<RenderPipeline> videoPipeline_;
 
     struct ShaderEffectEntry {
         std::string body;
@@ -643,6 +686,50 @@ void Painter::drawShader(const RectF& target, const std::string& fragmentMain,
     };
     d->emitQuad(vertices, pipeline, texture);
 }
+
+bool Painter::drawTexture(const RectF& target, Render::RenderTexture* texture,
+                          const RectF& source, Color tint) {
+    if (!texture)
+        return false;
+    if (target.width <= 0 || target.height <= 0)
+        return true; // nothing to draw: not a failure
+    Render::RenderPipeline* pipeline = texture->isExternal()
+                                           ? d->resources.externalPipeline()
+                                           : d->resources.pipeline(true, true);
+    if (!pipeline)
+        return false;
+    // Normalized UVs for the (sub-)rectangle being sampled.
+    const auto& desc = texture->desc();
+    float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
+    if (source.width > 0 && source.height > 0 && desc.width > 0 &&
+        desc.height > 0) {
+        u0 = source.x / static_cast<float>(desc.width);
+        v0 = source.y / static_cast<float>(desc.height);
+        u1 = (source.x + source.width) / static_cast<float>(desc.width);
+        v1 = (source.y + source.height) / static_cast<float>(desc.height);
+    }
+    const auto& state = d->state();
+    const unsigned alpha =
+        static_cast<unsigned>(tint.a) * 255 * state.opacity / 255;
+    if (!alpha)
+        return true;
+    const std::uint8_t color[4] = {tint.r, tint.g, tint.b,
+                                   static_cast<std::uint8_t>(alpha)};
+    Point q[4];
+    Impl::mapRect(state, target.x, target.y, target.width, target.height, q);
+    const TextVertex vertices[6] = {
+        {q[0].x, q[0].y, {color[0], color[1], color[2], color[3]}, u0, v0},
+        {q[1].x, q[1].y, {color[0], color[1], color[2], color[3]}, u1, v0},
+        {q[2].x, q[2].y, {color[0], color[1], color[2], color[3]}, u1, v1},
+        {q[0].x, q[0].y, {color[0], color[1], color[2], color[3]}, u0, v0},
+        {q[2].x, q[2].y, {color[0], color[1], color[2], color[3]}, u1, v1},
+        {q[3].x, q[3].y, {color[0], color[1], color[2], color[3]}, u0, v1},
+    };
+    d->emitQuad(vertices, pipeline, texture);
+    return true;
+}
+
+Render::RenderDevice* Painter::device() const { return d->resources.device; }
 
 void Painter::textSize(const std::string& text, int scale, float& width,
                        float& height) {

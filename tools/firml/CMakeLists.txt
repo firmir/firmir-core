@@ -12,6 +12,13 @@ add_executable(firmlc
 )
 target_include_directories(firmlc PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# The transpiler and the installed-tree codegen module are part of the SDK:
+# external applications compile their .fml UIs with them.
+install(TARGETS firmlc RUNTIME DESTINATION bin)
+install(FILES ${CMAKE_SOURCE_DIR}/cmake/FirmirFirmlInstalled.cmake
+        DESTINATION share/firmir/cmake
+        RENAME FirmirFirml.cmake)
+
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/FirmlCodegen.cmake)
 
 # Snapshot tests: run `firmlc --dump-ast` on each fixture in testdata/ and
@@ -42,6 +49,7 @@ if(FIRMIR_BUILD_TESTS)
         70_positioners
         71_repeater
         80_rectangle_border
+        81_connections_binding
         err_bad_token
         err_two_roots
         err_unclosed_brace
@@ -68,6 +76,7 @@ if(FIRMIR_BUILD_TESTS)
         70_positioners
         71_repeater
         80_rectangle_border
+        81_connections_binding
         err_sema_anchor_axis_conflict
         err_sema_anchor_center_conflict
         err_sema_anchor_fill_conflict
@@ -93,7 +102,11 @@ if(FIRMIR_BUILD_TESTS)
         err_sema_nested_repeater
         err_sema_repeater_delegates
         err_sema_repeater_no_model
+        err_sema_binding_readonly
+        err_sema_binding_unknown_property
         err_sema_concat_bool
+        err_sema_connections_no_target
+        err_sema_connections_unknown_target
         err_sema_property_builtin
         err_sema_property_dup
         err_sema_property_type
@@ -147,6 +160,7 @@ if(FIRMIR_BUILD_TESTS)
         70_positioners
         71_repeater
         80_rectangle_border
+        81_connections_binding
     )
     foreach(case IN LISTS FIRML_GEN_CASES)
         add_test(
@@ -228,6 +242,21 @@ if(FIRMIR_BUILD_TESTS)
             else()
                 add_test(NAME firmlc.handlers.app
                          COMMAND $<TARGET_FILE:firmlc_handlers_app>)
+            endif()
+
+            # QML-style Connections/Binding attached to a target object.
+            firml_add_target(firmlc_connections_codegen
+                ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/testdata/e2e
+                SOURCES testdata/e2e/connections.fml)
+            add_executable(firmlc_connections_app testdata/e2e/connections_main.cpp)
+            target_link_libraries(firmlc_connections_app PRIVATE
+                firmlc_connections_codegen firmir-gui-headless)
+            if(FIRMIR_SANITIZER STREQUAL "thread")
+                add_test(NAME firmlc.connections.app
+                         COMMAND setarch -R $<TARGET_FILE:firmlc_connections_app>)
+            else()
+                add_test(NAME firmlc.connections.app
+                         COMMAND $<TARGET_FILE:firmlc_connections_app>)
             endif()
         endif()
 

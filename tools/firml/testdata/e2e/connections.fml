@@ -1,0 +1,35 @@
+// E2E: QML-style Connections and Binding attached to a target object.
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Button.hpp>
+
+Rectangle {
+    id: root
+    width: 200
+    height: 200
+    color: "#101418"
+
+    Button {
+        id: grow
+        x: 10
+        y: 10
+        width: 80
+        height: 30
+    }
+
+    Connections {
+        target: grow
+        onClicked: root.width = root.width + 10
+    }
+
+    Binding {
+        target: grow
+        property: "text"
+        value: root.width > 200 ? "big" : "small"
+    }
+
+    Binding {
+        target: grow
+        property: "x"
+        value: 40
+    }
+}

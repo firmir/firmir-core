@@ -1,4 +1,6 @@
-prefix=@CMAKE_INSTALL_PREFIX@
+# Relocatable: the prefix is derived from the .pc file's own location, so an
+# install tree can be moved (or staged with --prefix/DESTDIR) freely.
+prefix=${pcfiledir}/../..
 exec_prefix=${prefix}
 libdir=${prefix}/@FIRMIR_INSTALL_LIBDIR@
 includedir=${prefix}/@FIRMIR_INSTALL_INCLUDEDIR@

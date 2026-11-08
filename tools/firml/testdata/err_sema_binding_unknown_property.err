@@ -1,0 +1,1 @@
+err_sema_binding_unknown_property.fml:8:9: error: unknown property 'nope' of type 'Rectangle'

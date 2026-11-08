@@ -69,7 +69,12 @@ const TypeInfo appType{"App",
                        {{"show", {}},
                         {"hide", {}},
                         {"quit", {}},
-                        {"setTitle", {ValueType::String}}},
+                        {"setTitle", {ValueType::String}},
+                        {"showMinimized", {}},
+                        {"showNormal", {}},
+                        {"showMaximized", {}},
+                        {"toggleMaximized", {}},
+                        {"close", {}}},
                        {},
                        false};
 
@@ -97,6 +102,15 @@ const TypeInfo timerType{"Timer",
                          false,
                          TypeKind::Timer,
                          "Firmir::Timer"};
+
+// Connections/Binding: QML-style constructs targeting another object. They
+// have no properties of their own (sema validates `target`/handlers and
+// `target`/`property`/`value` against the target's type) and no runtime
+// representation (codegen inlines them).
+const TypeInfo connectionsType{"Connections", nullptr, {}, {}, {}, false,
+                               TypeKind::Connections};
+const TypeInfo bindingType{"Binding", nullptr, {}, {}, {}, false,
+                           TypeKind::Binding};
 
 // Column/Row/Grid: positioner items (Firmir::Gui::Column/Row/Grid).
 const TypeInfo columnType{"Column",
@@ -146,6 +160,183 @@ const TypeInfo listElementType{"ListElement",
                                TypeKind::ModelElement,
                                {}};
 
+// Image: raster image item (Firmir::Gui::Image); fillMode is the string
+// form ("Stretch", "PreserveAspectFit", "PreserveAspectCrop", "Pad").
+const TypeInfo imageType{"Image",
+                         &itemType,
+                         {{"source", ValueType::String},
+                          {"fillMode", ValueType::String},
+                          {"smooth", ValueType::Bool}},
+                         {},
+                         {},
+                         false,
+                         TypeKind::Item,
+                         "Firmir::Gui::Image"};
+
+// MouseArea: pointer/touch input item (Firmir::Gui::MouseArea). The C++
+// signals carry MouseEvent/Point (not Firml value types), so Firml code
+// reacts through the read-only properties: onPressedChanged,
+// onContainsMouseChanged, onMouseXChanged/onMouseYChanged. Only the
+// argument-less signals are declared here.
+const TypeInfo mouseAreaType{"MouseArea",
+                             &itemType,
+                             {{"hoverEnabled", ValueType::Bool},
+                              {"mouseX", ValueType::Number, true},
+                              {"mouseY", ValueType::Number, true},
+                              {"pressed", ValueType::Bool, true},
+                              {"containsMouse", ValueType::Bool, true}},
+                             {},
+                             {{"entered", {}},
+                              {"exited", {}}},
+                             false,
+                             TypeKind::Item,
+                             "Firmir::Gui::MouseArea"};
+
+// Flickable: draggable content area (Firmir::Gui::Flickable); children go
+// into contentItem().
+const TypeInfo flickableType{"Flickable",
+                             &itemType,
+                             {{"contentWidth", ValueType::Number},
+                              {"contentHeight", ValueType::Number}},
+                             {},
+                             {},
+                             false,
+                             TypeKind::Item,
+                             "Firmir::Gui::Flickable",
+                             /*contentItemParent=*/true};
+
+// ShaderEffect: custom fragment shader quad (Firmir::Gui::ShaderEffect);
+// the source image is wired from C++ (object pointers are not FML values).
+const TypeInfo shaderEffectType{"ShaderEffect",
+                                &itemType,
+                                {{"fragmentShader", ValueType::String},
+                                 {"color", ValueType::Color}},
+                                {},
+                                {},
+                                false,
+                                TypeKind::Item,
+                                "Firmir::Gui::ShaderEffect"};
+
+// LineEdit: single/multi-line text input (Firmir::Gui::LineEdit).
+const TypeInfo lineEditType{"LineEdit",
+                            &itemType,
+                            {{"text", ValueType::String},
+                             {"multiline", ValueType::Bool}},
+                            {},
+                            {{"accepted", {}}},
+                            false,
+                            TypeKind::Item,
+                            "Firmir::Gui::LineEdit"};
+
+// ---- Controls (Firmir::Gui::Controls, the gui-controls library) ----
+
+const TypeInfo checkBoxType{"CheckBox",
+                            &itemType,
+                            {{"text", ValueType::String},
+                             {"checked", ValueType::Bool},
+                             {"tristate", ValueType::Bool}},
+                            {},
+                            {{"clicked", {}}},
+                            false,
+                            TypeKind::Item,
+                            "Firmir::Gui::Controls::CheckBox"};
+
+const TypeInfo radioButtonType{"RadioButton",
+                               &itemType,
+                               {{"text", ValueType::String},
+                                {"checked", ValueType::Bool}},
+                               {},
+                               {{"clicked", {}}},
+                               false,
+                               TypeKind::Item,
+                               "Firmir::Gui::Controls::RadioButton"};
+
+const TypeInfo switchType{"Switch",
+                          &itemType,
+                          {{"text", ValueType::String},
+                           {"checked", ValueType::Bool}},
+                          {},
+                          {{"clicked", {}}},
+                          false,
+                          TypeKind::Item,
+                          "Firmir::Gui::Controls::Switch"};
+
+const TypeInfo progressBarType{"ProgressBar",
+                               &itemType,
+                               {{"value", ValueType::Number},
+                                {"from", ValueType::Number},
+                                {"to", ValueType::Number},
+                                {"indeterminate", ValueType::Bool}},
+                               {},
+                               {},
+                               false,
+                               TypeKind::Item,
+                               "Firmir::Gui::Controls::ProgressBar"};
+
+const TypeInfo busyIndicatorType{"BusyIndicator",
+                                 &itemType,
+                                 {{"running", ValueType::Bool}},
+                                 {},
+                                 {},
+                                 false,
+                                 TypeKind::Item,
+                                 "Firmir::Gui::Controls::BusyIndicator"};
+
+const TypeInfo scrollViewType{"ScrollView",
+                              &itemType,
+                              {{"contentWidth", ValueType::Number},
+                               {"contentHeight", ValueType::Number}},
+                              {},
+                              {},
+                              false,
+                              TypeKind::Item,
+                              "Firmir::Gui::Controls::ScrollView",
+                              /*contentItemParent=*/true};
+
+const TypeInfo stackViewType{"StackView",
+                             &itemType,
+                             {{"depth", ValueType::Number, true}},
+                             {},
+                             {},
+                             false,
+                             TypeKind::Item,
+                             "Firmir::Gui::Controls::StackView",
+                             false,
+                             "push"};
+
+const TypeInfo swipeViewType{"SwipeView",
+                             &itemType,
+                             {{"currentIndex", ValueType::Number},
+                              {"interactive", ValueType::Bool}},
+                             {},
+                             {},
+                             false,
+                             TypeKind::Item,
+                             "Firmir::Gui::Controls::SwipeView",
+                             false,
+                             "addItem"};
+
+const TypeInfo splitViewType{"SplitView",
+                             &itemType,
+                             {{"orientation", ValueType::String}},
+                             {},
+                             {},
+                             false,
+                             TypeKind::Item,
+                             "Firmir::Gui::Controls::SplitView",
+                             false,
+                             "addItem"};
+
+const TypeInfo tabBarType{"TabBar",
+                          &itemType,
+                          {{"currentIndex", ValueType::Number},
+                           {"count", ValueType::Number, true}},
+                          {{"addTab", {ValueType::String}}},
+                          {},
+                          false,
+                          TypeKind::Item,
+                          "Firmir::Gui::Controls::TabBar"};
+
 } // namespace
 
 const char* valueTypeName(ValueType type) {
@@ -155,6 +346,7 @@ const char* valueTypeName(ValueType type) {
     case ValueType::Color: return "Color";
     case ValueType::Bool: return "Bool";
     case ValueType::Rect: return "Rect";
+    case ValueType::Any: return "Any";
     }
     return "?";
 }
@@ -209,6 +401,40 @@ const TypeInfo* builtinType(const std::string& name) {
         return &listModelType;
     if (name == "ListElement")
         return &listElementType;
+    if (name == "Image")
+        return &imageType;
+    if (name == "MouseArea")
+        return &mouseAreaType;
+    if (name == "Flickable")
+        return &flickableType;
+    if (name == "ShaderEffect")
+        return &shaderEffectType;
+    if (name == "LineEdit")
+        return &lineEditType;
+    if (name == "CheckBox")
+        return &checkBoxType;
+    if (name == "RadioButton")
+        return &radioButtonType;
+    if (name == "Switch")
+        return &switchType;
+    if (name == "ProgressBar")
+        return &progressBarType;
+    if (name == "BusyIndicator")
+        return &busyIndicatorType;
+    if (name == "ScrollView")
+        return &scrollViewType;
+    if (name == "StackView")
+        return &stackViewType;
+    if (name == "SwipeView")
+        return &swipeViewType;
+    if (name == "SplitView")
+        return &splitViewType;
+    if (name == "TabBar")
+        return &tabBarType;
+    if (name == "Connections")
+        return &connectionsType;
+    if (name == "Binding")
+        return &bindingType;
     return nullptr;
 }
 

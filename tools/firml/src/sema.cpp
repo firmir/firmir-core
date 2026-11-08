@@ -77,6 +77,10 @@ private:
     void resolveIncludes() {
         const std::filesystem::path fmlDir =
             std::filesystem::path(m_file.fileName).parent_path();
+        // Language constructs without a runtime class/header of their own
+        // (codegen inlines them); available in every file without an include.
+        m_types["Connections"] = builtinType("Connections");
+        m_types["Binding"] = builtinType("Binding");
         for (const IncludeDirective& inc : m_file.includes) {
             const std::string shown =
                 inc.angled ? "<" + inc.path + ">" : "\"" + inc.path + "\"";
@@ -171,9 +175,14 @@ private:
         info->parent = parent;
         if (info->type->kind == TypeKind::Window && parent)
             throw Error(node.loc, "'Window' is only allowed as the root object");
+        if (!parent && (info->type->kind == TypeKind::Connections ||
+                        info->type->kind == TypeKind::Binding))
+            throw Error(node.loc, "'" + info->type->name +
+                                      "' is only allowed as a child object");
         if (parent) {
             const TypeKind parentKind = parent->type->kind;
-            if (parentKind == TypeKind::Timer || parentKind == TypeKind::ModelElement)
+            if (parentKind == TypeKind::Timer || parentKind == TypeKind::ModelElement ||
+                parentKind == TypeKind::Connections || parentKind == TypeKind::Binding)
                 throw Error(node.loc, "'" + parent->type->name +
                                           "' cannot contain objects");
             if (parentKind == TypeKind::Model &&
@@ -195,6 +204,11 @@ private:
             if (info->delegateScope && info->type->kind == TypeKind::Model)
                 throw Error(node.loc,
                             "a ListModel cannot be declared inside a delegate");
+            if (info->delegateScope &&
+                (info->type->kind == TypeKind::Connections ||
+                 info->type->kind == TypeKind::Binding))
+                throw Error(node.loc, "'" + info->type->name +
+                                          "' is not supported inside a Repeater delegate yet");
         }
         info->declIndex = m_declCounter++;
         info->internalName = "_obj_" + std::to_string(info->declIndex);
@@ -268,6 +282,9 @@ private:
             throw Error(stmt.loc, "'id' is not allowed inside a Repeater delegate");
         if (obj.type->kind == TypeKind::ModelElement)
             throw Error(stmt.loc, "'ListElement' cannot have an id");
+        if (obj.type->kind == TypeKind::Connections ||
+            obj.type->kind == TypeKind::Binding)
+            throw Error(stmt.loc, "'" + obj.type->name + "' cannot have an id");
         if (!obj.id.empty())
             throw Error(stmt.loc, "the object already has id '" + obj.id + "'");
         const auto* ident = std::get_if<IdentExpr>(&stmt.value.node);
@@ -305,6 +322,16 @@ private:
             }
             return;
         }
+        // Connections/Binding own no runtime object: their members resolve
+        // against the target and feed the generic handler/binding tables.
+        if (obj.type->kind == TypeKind::Connections) {
+            processConnections(obj);
+            return;
+        }
+        if (obj.type->kind == TypeKind::Binding) {
+            processBinding(obj);
+            return;
+        }
         const bool isRepeater = obj.type == builtinType("Repeater");
         for (const MemberNode& member : obj.node->members) {
             if (const auto* prop = std::get_if<PropertyStmt>(&member)) {
@@ -333,7 +360,7 @@ private:
                                                "Repeater delegate yet");
                 processBehavior(obj, *behavior);
             } else if (const auto* handler = std::get_if<HandlerStmt>(&member)) {
-                processHandler(obj, *handler);
+                processHandler(obj, obj, *handler);
             }
         }
         if (isRepeater)
@@ -480,6 +507,9 @@ private:
                          ValueType expected, ValueType actual, const Expr& value) const {
         if (expected == actual)
             return;
+        // Any: an opaque/runtime value — converted at runtime (anyConvert).
+        if (actual == ValueType::Any || expected == ValueType::Any)
+            return;
         // A String is accepted where a Color is expected; bare literals are
         // validated against the #RRGGBB form.
         if (expected == ValueType::Color && actual == ValueType::String) {
@@ -529,7 +559,7 @@ private:
             return checkBinary(*binary, expr.loc, scope, deps);
         if (const auto* cond = std::get_if<ConditionalExpr>(&expr.node)) {
             const ValueType condType = checkExpr(*cond->condition, scope, deps);
-            if (condType != ValueType::Bool)
+            if (condType != ValueType::Bool && condType != ValueType::Any)
                 throw Error(expr.loc, "the ternary condition must be Bool, got " +
                                           std::string(valueTypeName(condType)));
             const ValueType thenType = checkExpr(*cond->thenExpr, scope, deps);
@@ -613,9 +643,18 @@ private:
                 throw Error(loc, "the Repeater model is a plain number; 'model." +
                                  member.name + "' is unavailable");
             const auto role = repeater->modelObject->roles.find(member.name);
-            if (role == repeater->modelObject->roles.end())
+            if (role == repeater->modelObject->roles.end()) {
+                // A model without static rows is filled at runtime (e.g.
+                // ListModel::append from C++): its roles cannot be checked.
+                if (repeater->modelObject->roles.empty()) {
+                    warn(loc, "cannot verify role '" + member.name +
+                                  "' of runtime-filled ListModel '" +
+                                  repeater->modelObject->id + "'");
+                    return ValueType::Any;
+                }
                 throw Error(loc, "ListModel '" + repeater->modelObject->id +
                                      "' has no role '" + member.name + "'");
+            }
             return role->second; // a static model: no dependency to track
         }
         const ObjectInfo* target = nullptr;
@@ -643,6 +682,15 @@ private:
             if (const CustomPropInfo* custom = findCustomProp(*target, member.name)) {
                 addDep(deps, target->internalName + "." + member.name);
                 return custom->type;
+            }
+            if (target->type->opaque) {
+                // Opaque types expose their properties through the dynamic
+                // Object property bag (getProperty/anyConvert at runtime).
+                warn(loc, "cannot verify property '" + member.name +
+                              "' of opaque type '" + target->type->name +
+                              "' (no meta information)");
+                addDep(deps, target->internalName + "." + member.name);
+                return ValueType::Any;
             }
             throw Error(loc, "unknown property '" + member.name + "' of type '" +
                                  target->type->name + "'");
@@ -692,14 +740,15 @@ private:
         const ValueType rhs = checkExpr(*binary.rhs, scope, deps);
         const std::string& op = binary.op;
         if (op == "&&" || op == "||") {
-            if (lhs != ValueType::Bool || rhs != ValueType::Bool)
+            if ((lhs != ValueType::Bool && lhs != ValueType::Any) ||
+                (rhs != ValueType::Bool && rhs != ValueType::Any))
                 throw Error(loc, "operator '" + op + "' requires Bool operands, got " +
                                      std::string(valueTypeName(lhs)) + " and " +
                                      valueTypeName(rhs));
             return ValueType::Bool;
         }
         if (op == "==" || op == "!=") {
-            if (lhs != rhs)
+            if (lhs != rhs && lhs != ValueType::Any && rhs != ValueType::Any)
                 throw Error(loc, "cannot compare " + std::string(valueTypeName(lhs)) +
                                      " and " + valueTypeName(rhs) + " with '" + op + "'");
             return ValueType::Bool;
@@ -708,8 +757,10 @@ private:
         // String concatenation: at least one String operand, the other side
         // may be a Number (converted with String::number() in codegen).
         if (op == "+" && (lhs == ValueType::String || rhs == ValueType::String)) {
-            const bool ok = (lhs == ValueType::String || lhs == ValueType::Number) &&
-                            (rhs == ValueType::String || rhs == ValueType::Number);
+            const bool ok = (lhs != ValueType::Color && lhs != ValueType::Bool &&
+                             lhs != ValueType::Rect) &&
+                            (rhs != ValueType::Color && rhs != ValueType::Bool &&
+                             rhs != ValueType::Rect);
             if (!ok)
                 throw Error(loc, "operator '+' cannot concatenate " +
                                      std::string(valueTypeName(lhs)) + " and " +
@@ -717,7 +768,8 @@ private:
                                      " (only String and Number operands)");
             return ValueType::String;
         }
-        if (lhs != ValueType::Number || rhs != ValueType::Number)
+        if ((lhs != ValueType::Number && lhs != ValueType::Any) ||
+            (rhs != ValueType::Number && rhs != ValueType::Any))
             throw Error(loc, "operator '" + op + "' requires Number operands, got " +
                                  std::string(valueTypeName(lhs)) + " and " +
                                  valueTypeName(rhs));
@@ -1033,13 +1085,115 @@ private:
                             *assign.value);
     }
 
-    void processHandler(ObjectInfo& obj, const HandlerStmt& stmt) {
+    // --------------------- connections / binding (QML) ---------------------
+
+    /// `target: <id>` shared by Connections and Binding.
+    const ObjectInfo& resolveTargetRef(const PropertyStmt& stmt,
+                                       const char* owner) const {
+        const auto* ident = std::get_if<IdentExpr>(&stmt.value.node);
+        if (!ident)
+            throw Error(stmt.loc, "'" + std::string(owner) +
+                                      ".target' must be an object id");
+        const auto it = m_result.byId.find(ident->name);
+        if (it == m_result.byId.end())
+            throw Error(stmt.loc, "unknown id '" + ident->name + "' in '" +
+                                      owner + ".target'");
+        return *it->second;
+    }
+
+    /// Connections { target: <id>; onXxx: ... } — the handlers are validated
+    /// against the target's type and recorded with the target as the signal
+    /// owner; the Connections object itself is the command scope.
+    void processConnections(ObjectInfo& obj) {
+        const ObjectInfo* target = nullptr;
+        for (const MemberNode& member : obj.node->members) {
+            const auto* prop = std::get_if<PropertyStmt>(&member);
+            if (!prop)
+                continue;
+            if (prop->name != "target")
+                throw Error(prop->loc, "unknown property '" + prop->name +
+                                           "' of type 'Connections'");
+            target = &resolveTargetRef(*prop, "Connections");
+        }
+        if (!target)
+            throw Error(obj.node->loc, "'Connections' requires a 'target' property");
+        for (const MemberNode& member : obj.node->members) {
+            if (std::get_if<PropertyStmt>(&member))
+                continue; // 'target', resolved above
+            const auto* handler = std::get_if<HandlerStmt>(&member);
+            if (!handler)
+                throw Error(obj.node->loc,
+                            "'Connections' only supports 'target' and signal handlers");
+            processHandler(obj, const_cast<ObjectInfo&>(*target), *handler);
+        }
+    }
+
+    /// Binding { target: <id>; property: "name"; value: <expr> } — records an
+    /// ordinary binding whose object is the target; codegen needs nothing
+    /// special (the binding tables are object-agnostic).
+    void processBinding(ObjectInfo& obj) {
+        const ObjectInfo* target = nullptr;
+        const PropertyStmt* propertyStmt = nullptr;
+        const PropertyStmt* valueStmt = nullptr;
+        for (const MemberNode& member : obj.node->members) {
+            const auto* prop = std::get_if<PropertyStmt>(&member);
+            if (!prop)
+                throw Error(obj.node->loc,
+                            "'Binding' only supports 'target', 'property' and 'value'");
+            if (prop->name == "target")
+                target = &resolveTargetRef(*prop, "Binding");
+            else if (prop->name == "property")
+                propertyStmt = prop;
+            else if (prop->name == "value")
+                valueStmt = prop;
+            else
+                throw Error(prop->loc, "unknown property '" + prop->name +
+                                           "' of type 'Binding'");
+        }
+        if (!target)
+            throw Error(obj.node->loc, "'Binding' requires a 'target' property");
+        if (!propertyStmt)
+            throw Error(obj.node->loc, "'Binding' requires a 'property' property");
+        if (!valueStmt)
+            throw Error(obj.node->loc, "'Binding' requires a 'value' property");
+        const auto* nameLit = std::get_if<StringLit>(&propertyStmt->value.node);
+        if (!nameLit || nameLit->value.empty())
+            throw Error(propertyStmt->loc,
+                        "'Binding.property' must be a non-empty string");
+        const std::string& propName = nameLit->value;
+        const PropertyInfo* prop = target->type->findProperty(propName);
+        const CustomPropInfo* custom = prop ? nullptr : findCustomProp(*target, propName);
+        if (!prop && !custom)
+            throw Error(propertyStmt->loc, "unknown property '" + propName +
+                                               "' of type '" + target->type->name + "'");
+        if (prop && prop->readOnly)
+            throw Error(propertyStmt->loc, "property '" + propName + "' of type '" +
+                                               target->type->name + "' is read-only");
+        std::vector<std::string> deps;
+        const ValueType actual = checkExpr(valueStmt->value, obj, deps);
+        checkAssignable(valueStmt->loc, propName, prop ? prop->type : custom->type,
+                        actual, valueStmt->value);
+        BindingInfo binding;
+        binding.loc = valueStmt->loc;
+        binding.object = target;
+        binding.property = propName;
+        binding.stmt = valueStmt;
+        binding.deps = deps;
+        binding.isStatic = deps.empty();
+        m_result.bindings.push_back(binding);
+        const std::string from = target->internalName + "." + propName;
+        for (const std::string& dep : deps)
+            addEdge(from, dep, valueStmt->loc);
+    }
+
+    void processHandler(ObjectInfo& context, ObjectInfo& obj, const HandlerStmt& stmt) {
         if (stmt.name.size() <= 2)
             throw Error(stmt.loc, "invalid handler name '" + stmt.name + "'");
         std::string target = stmt.name.substr(2);
         HandlerInfo info;
         info.loc = stmt.loc;
         info.object = &obj;
+        info.context = &context;
         info.stmt = &stmt;
         const bool propertyChanged =
             target.size() > 7 && target.compare(target.size() - 7, 7, "Changed") == 0;
@@ -1080,7 +1234,7 @@ private:
         }
         for (const Expr& command : stmt.commands) {
             if (const auto* assign = std::get_if<AssignExpr>(&command.node)) {
-                checkAssignCommand(obj, *assign);
+                checkAssignCommand(context, *assign);
                 continue;
             }
             const auto* call = std::get_if<MethodCallExpr>(&command.node);
@@ -1094,9 +1248,9 @@ private:
                 receiverType = singleton;
                 m_result.usesAppSingleton = true;
             } else if (receiver == "parent") {
-                if (!obj.parent)
+                if (!context.parent)
                     throw Error(command.loc, "the root object has no 'parent'");
-                receiverType = obj.parent->type;
+                receiverType = context.parent->type;
             } else if (const auto it = m_result.byId.find(receiver);
                        it != m_result.byId.end()) {
                 receiverType = it->second->type;
@@ -1114,7 +1268,7 @@ private:
             }
             for (const Expr& arg : call->args) {
                 std::vector<std::string> ignoredDeps;
-                checkExpr(arg, obj, ignoredDeps);
+                checkExpr(arg, context, ignoredDeps);
             }
         }
         m_expressionLocals.clear();

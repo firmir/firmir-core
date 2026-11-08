@@ -45,11 +45,31 @@ T anyConvert(const std::any& value) {
             return *v;
         if (const auto* v = std::any_cast<String>(&value))
             return v->toStdString();
+        if (const auto* v = std::any_cast<double>(&value))
+            return String::number(*v).toStdString();
+        if (const auto* v = std::any_cast<float>(&value))
+            return String::number(*v).toStdString();
+        if (const auto* v = std::any_cast<int>(&value))
+            return String::number(*v).toStdString();
+        if (const auto* v = std::any_cast<long long>(&value))
+            return String::number(static_cast<double>(*v)).toStdString();
+        if (const auto* v = std::any_cast<bool>(&value))
+            return std::string(*v ? "true" : "false");
     } else if constexpr (std::is_same_v<T, String>) {
         if (const auto* v = std::any_cast<const char*>(&value))
             return String(*v);
         if (const auto* v = std::any_cast<std::string>(&value))
             return String(*v);
+        if (const auto* v = std::any_cast<double>(&value))
+            return String::number(*v);
+        if (const auto* v = std::any_cast<float>(&value))
+            return String::number(*v);
+        if (const auto* v = std::any_cast<int>(&value))
+            return String::number(*v);
+        if (const auto* v = std::any_cast<long long>(&value))
+            return String::number(static_cast<double>(*v));
+        if (const auto* v = std::any_cast<bool>(&value))
+            return String(*v ? "true" : "false");
     }
     throw std::invalid_argument("Firmir::Object: property value type mismatch");
 }

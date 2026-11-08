@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <memory>
 #include <vector>
+#include <unistd.h>
 
 using namespace Firmir::Render;
 
@@ -352,7 +353,67 @@ TEST_CASE(render_opengl_clear_quad_and_texture) {
 }
 #endif // FIRMIR_RENDER_TEST_OPENGL
 
+#ifdef FIRMIR_RENDER_TEST_OPENGL
+TEST_CASE(render_opengl_dmabuf_capability) {
+    // Capability detection + graceful failure of the dma-buf import path.
+    SoftScene scene = makeSoftScene(false, "opengl");
+    if (!scene.device) {
+        std::fprintf(stderr, "render_opengl_dmabuf: no EGL context; skipped\n");
+        return;
+    }
+    std::fprintf(stderr, "render_opengl_dmabuf: supportsDmaBufTextures=%d\n",
+                 scene.device->supportsDmaBufTextures() ? 1 : 0);
+    // Invalid descriptor: no planes at all.
+    DmaBufTextureDesc empty;
+    CHECK(scene.device->importDmaBufTexture(empty) == nullptr);
+    // A valid fd that is not a dma-buf (a pipe) must fail cleanly.
+    int fds[2];
+    if (::pipe(fds) == 0) {
+        DmaBufTextureDesc desc;
+        desc.width = 4;
+        desc.height = 2;
+        desc.fourcc = Fourcc::Nv12;
+        desc.planeCount = 2;
+        desc.planes[0] = {fds[0], 0, 4};
+        desc.planes[1] = {fds[0], 8, 4};
+        std::unique_ptr<RenderTexture> texture(
+            scene.device->importDmaBufTexture(desc));
+        CHECK(texture == nullptr);
+        ::close(fds[0]);
+        ::close(fds[1]);
+    }
+}
+#endif // FIRMIR_RENDER_TEST_OPENGL
+
 #ifdef FIRMIR_RENDER_TEST_VULKAN
+TEST_CASE(render_vulkan_dmabuf_capability) {
+    SoftScene scene = makeSoftScene(false, "vulkan");
+    if (!scene.device) {
+        std::fprintf(stderr, "render_vulkan_dmabuf: no Vulkan device; skipped\n");
+        return;
+    }
+    // llvmpipe exposes the dma-buf external memory extensions.
+    std::fprintf(stderr, "render_vulkan_dmabuf: supportsDmaBufTextures=%d\n",
+                 scene.device->supportsDmaBufTextures() ? 1 : 0);
+    DmaBufTextureDesc empty;
+    CHECK(scene.device->importDmaBufTexture(empty) == nullptr);
+    int fds[2];
+    if (::pipe(fds) == 0) {
+        DmaBufTextureDesc desc;
+        desc.width = 4;
+        desc.height = 2;
+        desc.fourcc = Fourcc::Nv12;
+        desc.planeCount = 2;
+        desc.planes[0] = {fds[0], 0, 4};
+        desc.planes[1] = {fds[0], 8, 4};
+        std::unique_ptr<RenderTexture> texture(
+            scene.device->importDmaBufTexture(desc));
+        CHECK(texture == nullptr);
+        ::close(fds[0]);
+        ::close(fds[1]);
+    }
+}
+
 TEST_CASE(render_vulkan_clear_quad_scissor_texture_and_indices) {
     SoftScene scene = makeSoftScene(true, "vulkan");
     if (!scene.device) {

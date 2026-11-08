@@ -1,0 +1,63 @@
+// QML-style Connections and Binding: handlers/bindings attached to a target.
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Button.hpp>
+#include <firmir/items/Timer.hpp>
+
+Rectangle {
+    id: root
+    width: 200
+    height: 200
+
+    Rectangle {
+        id: box
+        width: 50
+        height: 50
+        color: "#204060"
+    }
+
+    Button {
+        id: grow
+        text: "Grow"
+        x: 10
+        y: 10
+    }
+
+    Timer {
+        id: ticker
+        interval: 500
+        running: true
+    }
+
+    Connections {
+        target: grow
+
+        onClicked: {
+            box.width = box.width + 10
+            Firmir.Gui.App.setTitle("clicked")
+        }
+    }
+
+    Connections {
+        target: ticker
+
+        onTimeout: root.update()
+    }
+
+    Connections {
+        target: root
+
+        onWidthChanged: { root.update() }
+    }
+
+    Binding {
+        target: box
+        property: "x"
+        value: root.width / 2
+    }
+
+    Binding {
+        target: box
+        property: "color"
+        value: "#FF8000"
+    }
+}

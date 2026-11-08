@@ -26,6 +26,9 @@ public:
 
     /// Appends one row of role values (emits itemsAboutToBeInserted/itemsInserted).
     void append(Row row);
+    /// Removes all rows (emits itemsAboutToBeRemoved/itemsRemoved when
+    /// non-empty) and forgets the learned role defaults.
+    void clear();
     /// The value of @p role in row @p index. When the row has no such role
     /// but another row declared it, returns a default-constructed value of the
     /// role's type (0.0, empty string, false, default Color); an empty

@@ -1,0 +1,17 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Button.hpp>
+
+Rectangle {
+    id: root
+
+    Button {
+        id: btn
+        text: "x"
+    }
+
+    Binding {
+        target: btn
+        property: "pressed"
+        value: true
+    }
+}

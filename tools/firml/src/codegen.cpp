@@ -144,6 +144,7 @@ std::string cppValueType(ValueType type) {
     case ValueType::String: return "Firmir::String";
     case ValueType::Color: return "Firmir::Gui::Color";
     case ValueType::Rect: return "Firmir::Gui::RectF";
+    case ValueType::Any: return "Firmir::String"; // runtime-converted
     }
     return "double";
 }
@@ -210,6 +211,7 @@ public:
                 const auto role = delegateRoles->find(member->name);
                 if (role != delegateRoles->end())
                     return role->second;
+                return ValueType::Any; // runtime-filled model (sema warned)
             }
             if (!base) {
                 if (const TypeInfo* singleton =
@@ -223,7 +225,9 @@ public:
                 base->name == "parent" ? scope.parent : sema->byId.at(base->name);
             if (const PropertyInfo* prop = target->type->findProperty(member->name))
                 return prop->type;
-            return findCustomProp(*target, member->name)->type;
+            if (const CustomPropInfo* custom = findCustomProp(*target, member->name))
+                return custom->type;
+            return ValueType::Any; // opaque object's property (sema warned)
         }
         if (const auto* un = std::get_if<UnaryExpr>(&expr.node))
             return un->op == '!' ? ValueType::Bool : ValueType::Number;
@@ -322,8 +326,14 @@ public:
                        ", " + emit(*bin->rhs, ValueType::Number, scope) + ")";
             }
             // == / != compare values of the operands' own type, not the
-            // context type (the result is Bool, the operands usually are not).
+            // context type (the result is Bool, the operands usually are
+            // not). Any (opaque-object property) takes the other side's
+            // type; Any/Any falls back to Number.
             ValueType operandType = typeOf(*bin->lhs, scope); // == / !=
+            if (operandType == ValueType::Any)
+                operandType = typeOf(*bin->rhs, scope);
+            if (operandType == ValueType::Any)
+                operandType = ValueType::Number;
             if (bin->op == "&&" || bin->op == "||")
                 operandType = ValueType::Bool;
             else if (bin->op == "+" || bin->op == "-" || bin->op == "*" ||
@@ -446,6 +456,7 @@ public:
             m_expr.usesPainter = true;
             return "Firmir::Gui::Color()";
         case ValueType::Rect: return "Firmir::Gui::RectF()";
+        case ValueType::Any: return "Firmir::String()";
         case ValueType::Number: break;
         }
         return "0.0";
@@ -471,8 +482,11 @@ public:
         for (const ObjectInfo* obj : m_sema.objects) {
             // Delegate subtrees are emitted by their Repeater (inside the
             // instantiation loop); ListElements compile into append() calls
-            // of their ListModel.
-            if (obj->delegateScope || obj->type->kind == TypeKind::ModelElement)
+            // of their ListModel; Connections/Binding are declarative — sema
+            // already turned them into handler/binding table entries.
+            if (obj->delegateScope || obj->type->kind == TypeKind::ModelElement ||
+                obj->type->kind == TypeKind::Connections ||
+                obj->type->kind == TypeKind::Binding)
                 continue;
             emitObject(*obj, body);
         }
@@ -511,12 +525,20 @@ private:
         std::string parentVar;
         if (!obj.parent)
             parentVar = obj.type->kind == TypeKind::Window ? "screen" : "parent";
-        else if (obj.parent->type->kind == TypeKind::Window)
+        else if (obj.parent->type->kind == TypeKind::Window ||
+                 obj.parent->type->contentItemParent)
             parentVar = obj.parent->internalName + "->contentItem()";
         else
             parentVar = obj.parent->internalName;
         body << "\n    auto* " << var << " = new " << cppTypeName(obj) << "("
              << parentVar << ");\n";
+        // Containers with imperative child management (StackView::push,
+        // SwipeView/SplitView::addItem) adopt each declared child.
+        if (obj.parent && !obj.parent->type->childAddMethod.empty() &&
+            obj.type->kind == TypeKind::Item) {
+            body << "    " << obj.parent->internalName << "->"
+                 << obj.parent->type->childAddMethod << "(" << var << ");\n";
+        }
         if (!obj.parent || !obj.id.empty()) {
             // The root is always exposed; children only when they have an id.
             const std::string field =
@@ -832,23 +854,16 @@ private:
         return name;
     }
 
-    ValueType handlerExprType(const Expr& expr) const {
+    ValueType handlerExprType(const Expr& expr, const ObjectInfo& scope) {
+        // Locals (handler parameters) shadow everything; index is a Number.
         if (const auto* ident = std::get_if<IdentExpr>(&expr.node)) {
             if (const auto local = m_expr.locals.find(ident->name);
                 local != m_expr.locals.end())
                 return local->second;
-            if (ident->name == "index" && !m_expr.delegateIndexVar.empty())
-                return ValueType::Number;
         }
-        if (const auto* member = std::get_if<MemberExpr>(&expr.node)) {
-            const auto* base = std::get_if<IdentExpr>(&member->object->node);
-            if (base && base->name == "model" && m_expr.delegateRoles) {
-                const auto role = m_expr.delegateRoles->find(member->name);
-                if (role != m_expr.delegateRoles->end())
-                    return role->second;
-            }
-        }
-        return inferType(expr);
+        // Everything else resolves like a binding expression: own/builtin
+        // properties, model roles, opaque properties (Any).
+        return m_expr.typeOf(expr, scope);
     }
 
     /// Emits a `<target> = <value>` handler command as a property write; the
@@ -867,7 +882,13 @@ private:
                 base.name == "parent" ? scope.parent : m_sema.byId.at(base.name);
             propName = member.name;
         }
-        const ValueType type = propValueType(*targetObj, propName, *assign.value);
+        ValueType type = propValueType(*targetObj, propName, *assign.value);
+        if (targetObj->type->opaque && !targetObj->type->findProperty(propName) &&
+            !findCustomProp(*targetObj, propName)) {
+            // Opaque target: the property type is unknown statically, so emit
+            // the value with its own type; the runtime setProperty() converts.
+            type = m_expr.typeOf(*assign.value, scope);
+        }
         body << "        " << targetObj->internalName << "->setProperty(\""
              << propName << "\", " << m_expr.emit(*assign.value, type, scope)
              << ");\n";
@@ -904,9 +925,12 @@ private:
             }
             for (const HandlerParam& param : stmt.params)
                 body << "        (void)" << param.name << ";\n";
+            // The command scope differs from the signal owner for Connections.
+            const ObjectInfo& scope =
+                handler.context ? *handler.context : *handler.object;
             for (const Expr& command : stmt.commands) {
                 if (const auto* assign = std::get_if<AssignExpr>(&command.node)) {
-                    emitAssignCommand(body, *handler.object, *assign);
+                    emitAssignCommand(body, scope, *assign);
                     continue;
                 }
                 const auto& call = std::get<MethodCallExpr>(command.node);
@@ -914,8 +938,8 @@ private:
                 for (std::size_t i = 0; i < call.args.size(); ++i) {
                     if (i)
                         body << ", ";
-                    body << m_expr.emit(call.args[i], handlerExprType(call.args[i]),
-                                        *handler.object);
+                    body << m_expr.emit(call.args[i], handlerExprType(call.args[i], scope),
+                                        scope);
                 }
                 body << ");\n";
             }

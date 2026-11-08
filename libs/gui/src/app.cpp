@@ -38,6 +38,33 @@ void App::setTitle(String title) {
         m_window->setTitle(title.toStdString());
 }
 
+void App::showMinimized() {
+    if (m_window)
+        m_window->showMinimized();
+}
+void App::showNormal() {
+    if (m_window) {
+        m_window->showNormal();
+        m_maximized = false;
+    }
+}
+void App::showMaximized() {
+    if (m_window) {
+        m_window->showMaximized();
+        m_maximized = true;
+    }
+}
+void App::toggleMaximized() {
+    if (m_maximized)
+        showNormal();
+    else
+        showMaximized();
+}
+void App::close() {
+    if (m_window)
+        m_window->close();
+}
+
 double App::screenWidth() const {
     const auto screens = Platform::instance()->screens();
     return screens.empty() ? 0.0 : static_cast<double>(screens.front()->size().width);

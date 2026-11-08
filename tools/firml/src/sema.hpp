@@ -51,10 +51,13 @@ enum class HandlerKind { Signal, PropertyChanged };
 
 struct HandlerInfo {
     SourceLoc loc;
-    const ObjectInfo* object = nullptr;
+    const ObjectInfo* object = nullptr;  // signal/property owner (the connect target)
     HandlerKind kind = HandlerKind::Signal;
     std::string name; // signal name or property name
     const HandlerStmt* stmt = nullptr;
+    // Scope for the handler commands (`parent` resolution): the object the
+    // handler was declared in — differs from `object` for Connections.
+    const ObjectInfo* context = nullptr;
 };
 
 /// One script-declared (`property <type> <name>[: <expr>]`) dynamic property.

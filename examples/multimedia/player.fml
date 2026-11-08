@@ -1,0 +1,30 @@
+// firmir-multimedia example: the player UI is declared in Firml (compiled
+// to C++ by firmlc at build time); main.cpp opens the media file and wires
+// the VideoSource into the VideoOutput.
+#include <firmir/items/Window.hpp>
+#include <firmir/items/Text.hpp>
+#include <firmir/items/VideoOutput.hpp>
+
+Firmir.Gui.Window {
+    id: root
+    title: "firmir multimedia: video player"
+    width: 800
+    height: 480
+
+    // The video fills the window; VideoOutput letterboxes the frame itself
+    // (fillMode: Stretch / PreserveAspectFit / PreserveAspectCrop / Pad).
+    Firmir.Multimedia.VideoOutput {
+        id: video
+        anchors.fill: parent
+        fillMode: "PreserveAspectFit"
+    }
+
+    Text {
+        id: status
+        x: 12
+        y: 10
+        fontSize: 15
+        color: "#FFFFFF"
+        text: ""
+    }
+}

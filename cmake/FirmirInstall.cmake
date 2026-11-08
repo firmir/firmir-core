@@ -47,7 +47,7 @@ function(firmir_install_library target)
     string(REPLACE ";" " " FIRMIR_PC_REQUIRES "${ARG_REQUIRES}")
     set(FIRMIR_PC_MODULE ${ARG_MODULE})
     set(FIRMIR_PC_TARGET ${target})
-    configure_file(${CMAKE_SOURCE_DIR}/cmake/firmir.pc.in
+    configure_file(${CMAKE_CURRENT_FUNCTION_LIST_DIR}/firmir.pc.in
                    ${CMAKE_BINARY_DIR}/pkgconfig/firmir-${ARG_MODULE}.pc @ONLY)
     install(FILES ${CMAKE_BINARY_DIR}/pkgconfig/firmir-${ARG_MODULE}.pc
             DESTINATION ${FIRMIR_INSTALL_LIBDIR}/pkgconfig)

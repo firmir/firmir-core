@@ -11,6 +11,7 @@ namespace Render {
 class RenderCommandBuffer;
 class RenderDevice;
 class RenderTarget;
+class RenderTexture;
 } // namespace Render
 
 namespace Gui {
@@ -151,6 +152,23 @@ public:
                     const void* cacheKey, Color tint,
                     const void* rgba = nullptr, int imageWidth = 0,
                     int imageHeight = 0, std::uint64_t generation = 0);
+    /**
+     * @brief Draws an arbitrary render-device texture into @p target.
+     *
+     * @p source selects the texture sub-rectangle in pixels; an empty rect
+     * (the default) samples the whole texture. Textures imported from
+     * external memory (Render::RenderTexture::isExternal, e.g. zero-copy
+     * dma-buf video frames) are drawn with the backend's external-sampler
+     * pipeline; regular textures use the standard textured pipeline.
+     * Returns false when the required pipeline cannot be created — the
+     * caller should then fall back to drawRgba() with CPU pixels.
+     */
+    bool drawTexture(const RectF& target, Render::RenderTexture* texture,
+                     const RectF& source = RectF(),
+                     Color tint = Color::rgb(255, 255, 255));
+    /// The render device this painter records commands for (needed by
+    /// callers that create/import textures to be drawn with drawTexture()).
+    Render::RenderDevice* device() const;
     /// Pixel size of the drawText() output for @p text at @p scale.
     static void textSize(const std::string& text, int scale, float& width,
                          float& height);

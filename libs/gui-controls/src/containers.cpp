@@ -28,6 +28,29 @@ private:
 
 } // namespace
 
+namespace {
+
+/// contentWidth/contentHeight registered properties, forwarded to the inner
+/// flickable (ScrollView::setContentSize writes both at once).
+void registerScrollViewProperties(ScrollView* self) {
+    self->registerPropertyImpl("contentWidth", typeid(float),
+        [](const Object* o) -> std::any {
+            return static_cast<const ScrollView*>(o)->flickable()->contentWidth(); },
+        [](Object* o, const std::any& v) {
+            auto* sv = static_cast<ScrollView*>(o);
+            const float w = Firmir::detail::anyConvert<float>(v);
+            sv->setContentSize(w, sv->flickable()->contentHeight()); });
+    self->registerPropertyImpl("contentHeight", typeid(float),
+        [](const Object* o) -> std::any {
+            return static_cast<const ScrollView*>(o)->flickable()->contentHeight(); },
+        [](Object* o, const std::any& v) {
+            auto* sv = static_cast<ScrollView*>(o);
+            const float h = Firmir::detail::anyConvert<float>(v);
+            sv->setContentSize(sv->flickable()->contentWidth(), h); });
+}
+
+} // namespace
+
 ScrollView::ScrollView(Object* parent)
     : Item(parent), m_flickable(new Flickable(this)),
       m_scrollBar(new ScrollBarIndicator(this, m_flickable)) {
@@ -44,6 +67,7 @@ ScrollView::ScrollView(Object* parent)
                 m_scrollBar->update();
         },
         ConnectionMode::Direct);
+    registerScrollViewProperties(this);
 }
 ScrollView::~ScrollView() = default;
 Item* ScrollView::contentItem() const { return m_flickable->contentItem(); }
@@ -79,7 +103,16 @@ private:
     Point m_last;
 };
 
-SplitView::SplitView(Object* parent) : Item(parent) {}
+SplitView::SplitView(Object* parent) : Item(parent) {
+    registerPropertyImpl("orientation", typeid(String),
+        [](const Object* o) -> std::any {
+            return String(static_cast<const SplitView*>(o)->orientation() ==
+                                  Orientation::Horizontal ? "Horizontal" : "Vertical"); },
+        [](Object* o, const std::any& v) {
+            const std::string s = Firmir::detail::anyConvert<Firmir::String>(v).toStdString();
+            static_cast<SplitView*>(o)->setOrientation(
+                s == "Vertical" ? Orientation::Vertical : Orientation::Horizontal); });
+}
 SplitView::~SplitView() = default;
 void SplitView::setOrientation(Orientation orientation) {
     auto sceneLock = lockScene();
@@ -139,7 +172,12 @@ void SplitView::moveHandle(int index, float delta) {
     layout();
 }
 
-StackView::StackView(Object* parent) : Item(parent) { setClip(true); }
+StackView::StackView(Object* parent) : Item(parent) {
+    setClip(true);
+    registerPropertyImpl("depth", typeid(int),
+        [](const Object* o) -> std::any { return static_cast<const StackView*>(o)->depth(); },
+        [](Object*, const std::any&) { throw std::invalid_argument("depth is read-only"); });
+}
 StackView::~StackView() = default;
 void StackView::push(Item* item) {
     auto sceneLock = lockScene();
@@ -173,7 +211,14 @@ void StackView::clear() {
     notifyPropertyChanged("currentItem");
 }
 
-SwipeView::SwipeView(Object* parent) : Item(parent) { setClip(true); }
+SwipeView::SwipeView(Object* parent) : Item(parent) {
+    setClip(true);
+    registerProperty<int>("currentIndex", &SwipeView::currentIndex, &SwipeView::setCurrentIndex);
+    registerProperty<bool>("interactive", &SwipeView::interactive, &SwipeView::setInteractive);
+    registerPropertyImpl("count", typeid(int),
+        [](const Object* o) -> std::any { return static_cast<const SwipeView*>(o)->count(); },
+        [](Object*, const std::any&) { throw std::invalid_argument("count is read-only"); });
+}
 SwipeView::~SwipeView() = default;
 void SwipeView::addItem(Item* item) {
     auto sceneLock = lockScene();
@@ -219,7 +264,13 @@ void SwipeView::touchEvent(TouchEvent& event) {
     mouseEvent(mouse); event.accepted = mouse.accepted;
 }
 
-TabBar::TabBar(Object* parent) : Item(parent) { setImplicitHeight(40); }
+TabBar::TabBar(Object* parent) : Item(parent) {
+    setImplicitHeight(40);
+    registerProperty<int>("currentIndex", &TabBar::currentIndex, &TabBar::setCurrentIndex);
+    registerPropertyImpl("count", typeid(int),
+        [](const Object* o) -> std::any { return static_cast<const TabBar*>(o)->count(); },
+        [](Object*, const std::any&) { throw std::invalid_argument("count is read-only"); });
+}
 TabBar::~TabBar() = default;
 void TabBar::addTab(String text) {
     auto sceneLock = lockScene();

@@ -24,6 +24,14 @@ public:
     void quit();
     void setTitle(String title);
 
+    /// Window state controls, exposed to Firml for window-control buttons.
+    void showMinimized();
+    void showNormal();
+    void showMaximized();
+    /// Toggles between maximized and normal (tracked locally).
+    void toggleMaximized();
+    void close();
+
     /// Primary screen size in pixels (0 when no screen is connected).
     /// Exposed to Firml as the read-only Number properties "screenWidth" and
     /// "screenHeight"; a propertyChanged is emitted on screen hotplug.
@@ -35,6 +43,7 @@ private:
     void notifyScreenSizeChanged();
 
     Window* m_window;
+    bool m_maximized = false;
 };
 
 } // namespace Gui

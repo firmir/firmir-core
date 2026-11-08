@@ -1,0 +1,6 @@
+# Third-party library init state held at process exit (not Firmir-owned):
+# ffmpeg's transitive deps keep global tables (codecs, demuxers) allocated.
+leak:libavutil
+leak:libswresample
+leak:libbluray
+leak:libopenmpt

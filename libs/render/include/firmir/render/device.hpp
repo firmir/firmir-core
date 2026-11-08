@@ -25,6 +25,11 @@ public:
     virtual const TextureDesc& desc() const = 0;
     /// Uploads the full texture in the texture's native format.
     virtual bool write(const void* data, std::uint64_t bytes) = 0;
+    /// True for textures imported from external memory (dma-buf video
+    /// frames): sampling them needs the backend's external-sampler pipeline
+    /// (GL_TEXTURE_EXTERNAL_OES / YCbCr conversion) instead of the regular
+    /// texture pipeline. Renderers use this to pick the right pipeline.
+    virtual bool isExternal() const { return false; }
 };
 
 class RenderShader {
@@ -129,6 +134,24 @@ public:
     virtual void submit(RenderCommandBuffer* commands) = 0;
     virtual bool present(RenderSwapchain* swapchain) = 0;
     virtual void waitIdle() = 0;
+
+    // -------------------- zero-copy external textures --------------------
+    // Additive: existing backends keep the defaults (no dma-buf support).
+    //
+    /// Whether this device can import dma-buf video frames at all (required
+    /// platform extensions present). Queried once at startup by the
+    /// capability check; per-format failures still return nullptr from
+    /// importDmaBufTexture().
+    virtual bool supportsDmaBufTextures() const { return false; }
+    /// Imports a dma-buf frame as a sampled texture (YUV->RGB happens on the
+    /// GPU at sample time). Returns nullptr when the format/modifier is not
+    /// supported by this backend — the caller then uses its CPU fallback.
+    /// The returned texture must not be destroyed while a submitted command
+    /// buffer still samples it.
+    virtual RenderTexture* importDmaBufTexture(const DmaBufTextureDesc& desc) {
+        (void)desc;
+        return nullptr;
+    }
 };
 
 } // namespace Render

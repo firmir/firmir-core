@@ -1,0 +1,11 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+
+    Binding {
+        target: root
+        property: "nope"
+        value: 1
+    }
+}

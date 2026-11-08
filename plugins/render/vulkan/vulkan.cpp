@@ -18,6 +18,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <fcntl.h>
+#include <unistd.h>
 
 using namespace Firmir::Render;
 
@@ -62,19 +64,27 @@ private:
 class Texture final : public RenderTexture {
 public:
     Texture(Device* device, const TextureDesc& desc);
+    /// Imports a dma-buf video frame (zero-copy): external memory + a YCbCr
+    /// conversion sampler for YUV formats. valid() reports the outcome.
+    Texture(Device* device, const DmaBufTextureDesc& desc);
     ~Texture() override;
     const TextureDesc& desc() const override { return m_desc; }
     bool write(const void* data, std::uint64_t bytes) override;
+    bool isExternal() const override { return m_imported; }
     bool valid() const { return m_image != VK_NULL_HANDLE; }
+    bool imported() const { return m_imported; }
     VkImageView view() const { return m_view; }
     VkSampler sampler() const { return m_sampler; }
 private:
+    bool importDmaBuf(const DmaBufTextureDesc& desc);
     Device* m_device;
     TextureDesc m_desc;
     VkImage m_image = VK_NULL_HANDLE;
     VkDeviceMemory m_memory = VK_NULL_HANDLE;
     VkImageView m_view = VK_NULL_HANDLE;
     VkSampler m_sampler = VK_NULL_HANDLE;
+    VkSamplerYcbcrConversion m_ycbcr = VK_NULL_HANDLE;
+    bool m_imported = false;
 };
 
 class Shader final : public RenderShader {
@@ -154,6 +164,12 @@ public:
     bool present(RenderSwapchain*) override { return false; }
     void waitIdle() override;
 
+    // Zero-copy video frames (dma-buf import).
+    bool supportsDmaBufTextures() const override { return m_hasDmaBuf; }
+    RenderTexture* importDmaBufTexture(const DmaBufTextureDesc& desc) override;
+    bool hasYcbcrConversion() const { return m_hasYcbcr; }
+    bool hasDrmFormatModifier() const { return m_hasDrmModifier; }
+
     std::uint32_t memoryType(std::uint32_t bits, VkMemoryPropertyFlags properties) const;
     bool createImage(std::uint32_t width, std::uint32_t height, VkFormat format,
                      VkImageUsageFlags usage, VkImage& image,
@@ -188,6 +204,10 @@ private:
     std::unique_ptr<Texture> m_white;
     std::unique_ptr<Buffer> m_emptyUniform;
     bool m_ready = false;
+    // Probed at device creation: zero-copy dma-buf import capabilities.
+    bool m_hasDmaBuf = false;
+    bool m_hasYcbcr = false;
+    bool m_hasDrmModifier = false;
 };
 
 bool createRawBuffer(Device* device, VkDeviceSize size, VkBufferUsageFlags usage,
@@ -291,12 +311,14 @@ Texture::Texture(Device* device, const TextureDesc& desc) : m_device(device), m_
 
 Texture::~Texture() {
     if (m_sampler) vkDestroySampler(m_device->handle(), m_sampler, nullptr);
+    if (m_ycbcr) vkDestroySamplerYcbcrConversion(m_device->handle(), m_ycbcr, nullptr);
     if (m_view) vkDestroyImageView(m_device->handle(), m_view, nullptr);
     if (m_image) vkDestroyImage(m_device->handle(), m_image, nullptr);
     if (m_memory) vkFreeMemory(m_device->handle(), m_memory, nullptr);
 }
 
 bool Texture::write(const void* data, std::uint64_t bytes) {
+    if (m_imported) return false; // external textures are producer-written
     const std::uint64_t expected = static_cast<std::uint64_t>(m_desc.width) * m_desc.height * 4;
     if (!valid() || !m_view || !m_sampler || !data || bytes != expected)
         return false;
@@ -337,6 +359,205 @@ bool Texture::write(const void* data, std::uint64_t bytes) {
     vkDestroyBuffer(m_device->handle(), staging, nullptr);
     vkFreeMemory(m_device->handle(), stagingMemory, nullptr);
     return uploaded;
+}
+
+namespace {
+
+VkFormat vkFormatFromFourcc(std::uint32_t fourcc) {
+    switch (fourcc) {
+    case Fourcc::Abgr8: return VK_FORMAT_R8G8B8A8_UNORM;
+    case Fourcc::Nv12:  return VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
+    case Fourcc::P010:
+        return VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;
+    case Fourcc::P016:  return VK_FORMAT_G16_B16R16_2PLANE_420_UNORM;
+    default:            return VK_FORMAT_UNDEFINED;
+    }
+}
+
+VkSamplerYcbcrModelConversion vkYcbcrModel(YcbcrModel model) {
+    switch (model) {
+    case YcbcrModel::Bt601:  return VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_601;
+    case YcbcrModel::Bt2020: return VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_2020;
+    default:                 return VK_SAMPLER_YCBCR_MODEL_CONVERSION_YCBCR_709;
+    }
+}
+
+} // namespace
+
+Texture::Texture(Device* device, const DmaBufTextureDesc& desc)
+    : m_device(device), m_imported(true) {
+    m_desc.width = desc.width;
+    m_desc.height = desc.height;
+    m_desc.format = TextureFormat::Rgba8;
+    if (importDmaBuf(desc))
+        return;
+    if (m_view) { vkDestroyImageView(device->handle(), m_view, nullptr); m_view = VK_NULL_HANDLE; }
+    if (m_image) { vkDestroyImage(device->handle(), m_image, nullptr); m_image = VK_NULL_HANDLE; }
+    if (m_memory) { vkFreeMemory(device->handle(), m_memory, nullptr); m_memory = VK_NULL_HANDLE; }
+}
+
+bool Texture::importDmaBuf(const DmaBufTextureDesc& desc) {
+    const VkFormat format = vkFormatFromFourcc(desc.fourcc);
+    const bool yuv = desc.fourcc != Fourcc::Abgr8;
+    if (format == VK_FORMAT_UNDEFINED || desc.planeCount <= 0 ||
+        desc.planes[0].fd < 0)
+        return false;
+    if (yuv && !m_device->hasYcbcrConversion())
+        return false; // no GPU-side YUV->RGB: the caller falls back to CPU
+
+    // Image over external memory. With an explicit DRM modifier (real
+    // drivers) the exact plane layout is passed; otherwise the legacy
+    // modifier-less path assumes a linear layout.
+    VkImageDrmFormatModifierExplicitCreateInfoEXT modifierInfo{
+        VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_EXPLICIT_CREATE_INFO_EXT};
+    std::array<VkSubresourceLayout, 4> planeLayouts{};
+    VkExternalMemoryImageCreateInfo external{
+        VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO};
+    external.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+
+    VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    image.pNext = &external;
+    image.imageType = VK_IMAGE_TYPE_2D;
+    image.format = format;
+    image.extent = {static_cast<std::uint32_t>(desc.width),
+                    static_cast<std::uint32_t>(desc.height), 1};
+    image.mipLevels = 1;
+    image.arrayLayers = 1;
+    image.samples = VK_SAMPLE_COUNT_1_BIT;
+    image.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    image.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (desc.modifier != Fourcc::ModifierInvalid &&
+        m_device->hasDrmFormatModifier()) {
+        modifierInfo.drmFormatModifier = desc.modifier;
+        modifierInfo.drmFormatModifierPlaneCount = desc.planeCount;
+        for (int i = 0; i < desc.planeCount; ++i) {
+            planeLayouts[i].offset = desc.planes[i].offset;
+            planeLayouts[i].rowPitch = desc.planes[i].stride;
+        }
+        modifierInfo.pPlaneLayouts = planeLayouts.data();
+        external.pNext = &modifierInfo;
+        image.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+    } else {
+        image.tiling = VK_IMAGE_TILING_LINEAR;
+    }
+    if (!ok(vkCreateImage(m_device->handle(), &image, nullptr, &m_image),
+            "vkCreateImage(dmabuf) "))
+        return false;
+
+    VkMemoryRequirements requirements{};
+    vkGetImageMemoryRequirements(m_device->handle(), m_image, &requirements);
+    // The dma-buf size comes from the fd itself; the allocation must not
+    // exceed it (some drivers require an exact match).
+    const off_t bufSize = ::lseek(desc.planes[0].fd, 0, SEEK_END);
+    VkDeviceSize allocationSize = requirements.size;
+    if (bufSize > 0 && allocationSize > static_cast<VkDeviceSize>(bufSize))
+        allocationSize = static_cast<VkDeviceSize>(bufSize);
+    std::uint32_t type = m_device->memoryType(requirements.memoryTypeBits, 0);
+    if (type == UINT32_MAX) {
+        // Imported dma-buf memory may only land in host-visible types.
+        type = m_device->memoryType(requirements.memoryTypeBits,
+                          VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    }
+    if (type == UINT32_MAX)
+        return false;
+
+    const int fd = ::dup(desc.planes[0].fd); // consumed by the allocation
+    if (fd < 0)
+        return false;
+    VkImportMemoryFdInfoKHR import{VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR};
+    import.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    import.fd = fd;
+    VkMemoryAllocateInfo allocation{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    allocation.pNext = &import;
+    allocation.allocationSize = allocationSize;
+    allocation.memoryTypeIndex = type;
+    if (!ok(vkAllocateMemory(m_device->handle(), &allocation, nullptr,
+                             &m_memory),
+            "vkAllocateMemory(import) ")) {
+        ::close(fd);
+        return false;
+    }
+    if (!ok(vkBindImageMemory(m_device->handle(), m_image, m_memory, 0),
+            "vkBindImageMemory(import) "))
+        return false;
+
+    // YUV formats: GPU-side YCbCr conversion with the stream's matrix/range.
+    VkSamplerYcbcrConversionInfo conversionInfo{
+        VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_INFO};
+    if (yuv) {
+        VkSamplerYcbcrConversionCreateInfo conversion{
+            VK_STRUCTURE_TYPE_SAMPLER_YCBCR_CONVERSION_CREATE_INFO};
+        conversion.format = format;
+        conversion.ycbcrModel = vkYcbcrModel(desc.ycbcrModel);
+        conversion.ycbcrRange = desc.ycbcrRange == YcbcrRange::Full
+                                    ? VK_SAMPLER_YCBCR_RANGE_ITU_FULL
+                                    : VK_SAMPLER_YCBCR_RANGE_ITU_NARROW;
+        conversion.components = {VK_COMPONENT_SWIZZLE_IDENTITY,
+                                 VK_COMPONENT_SWIZZLE_IDENTITY,
+                                 VK_COMPONENT_SWIZZLE_IDENTITY,
+                                 VK_COMPONENT_SWIZZLE_IDENTITY};
+        conversion.xChromaOffset = VK_CHROMA_LOCATION_COSITED_EVEN;
+        conversion.yChromaOffset = VK_CHROMA_LOCATION_COSITED_EVEN;
+        conversion.chromaFilter = VK_FILTER_LINEAR;
+        conversion.forceExplicitReconstruction = VK_FALSE;
+        if (!ok(vkCreateSamplerYcbcrConversion(m_device->handle(),
+                                               &conversion, nullptr, &m_ycbcr),
+                "vkCreateSamplerYcbcrConversion "))
+            return false;
+        conversionInfo.conversion = m_ycbcr;
+    }
+
+    VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    view.pNext = yuv ? &conversionInfo : nullptr;
+    view.image = m_image;
+    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.format = format;
+    view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (!ok(vkCreateImageView(m_device->handle(), &view, nullptr, &m_view),
+            "vkCreateImageView(dmabuf) "))
+        return false;
+
+    VkSamplerCreateInfo sampler{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+    sampler.pNext = yuv ? &conversionInfo : nullptr;
+    sampler.minFilter = VK_FILTER_LINEAR;
+    sampler.magFilter = VK_FILTER_LINEAR;
+    sampler.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sampler.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler.maxLod = 0.0f;
+    if (!ok(vkCreateSampler(m_device->handle(), &sampler, nullptr, &m_sampler),
+            "vkCreateSampler(dmabuf) "))
+        return false;
+
+    // Imported images start UNDEFINED; move to GENERAL for sampling.
+    VkImage imageHandle = m_image;
+    return m_device->oneShot([imageHandle](VkCommandBuffer commands) {
+        VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = imageHandle;
+        barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                             VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                             nullptr, 0, nullptr, 1, &barrier);
+    });
+}
+
+RenderTexture* Device::importDmaBufTexture(const DmaBufTextureDesc& desc) {
+    if (!valid() || !supportsDmaBufTextures())
+        return nullptr;
+    auto* texture = new Texture(this, desc);
+    if (!texture->valid()) {
+        delete texture;
+        return nullptr;
+    }
+    return texture;
 }
 
 Shader::Shader(Device* device, const ShaderDesc& desc) : m_device(device), m_desc(desc) {
@@ -903,14 +1124,62 @@ Device::Device(const DeviceDesc& desc) : m_desc(desc) {
     }
     if (!m_physical)
         return;
+
+    // Probe zero-copy capabilities: dma-buf external memory (import), YCbCr
+    // sampler conversion (GPU-side YUV->RGB) and explicit DRM modifiers.
+    std::vector<const char*> extensions;
+    {
+        std::uint32_t count = 0;
+        vkEnumerateDeviceExtensionProperties(m_physical, nullptr, &count,
+                                             nullptr);
+        std::vector<VkExtensionProperties> available(count);
+        vkEnumerateDeviceExtensionProperties(m_physical, nullptr, &count,
+                                             available.data());
+        const auto has = [&](const char* name) {
+            for (const auto& ext : available)
+                if (!std::strcmp(ext.extensionName, name))
+                    return true;
+            return false;
+        };
+        const bool fd = has(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+        const bool dmaBuf = has(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+        m_hasDmaBuf = fd && dmaBuf;
+        if (fd)
+            extensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+        if (dmaBuf)
+            extensions.push_back(VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME);
+        m_hasDrmModifier = has(VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
+        if (m_hasDrmModifier)
+            extensions.push_back(
+                VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME);
+        VkPhysicalDeviceVulkan11Features features11{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+        VkPhysicalDeviceFeatures2 features2{
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+        features2.pNext = &features11;
+        vkGetPhysicalDeviceFeatures2(m_physical, &features2);
+        m_hasYcbcr = has(VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME) &&
+                     features11.samplerYcbcrConversion == VK_TRUE;
+        if (m_hasYcbcr)
+            extensions.push_back(
+                VK_KHR_SAMPLER_YCBCR_CONVERSION_EXTENSION_NAME);
+    }
+
     const float priority = 1.0f;
     VkDeviceQueueCreateInfo queue{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
     queue.queueFamilyIndex = m_queueFamily;
     queue.queueCount = 1;
     queue.pQueuePriorities = &priority;
+    VkPhysicalDeviceVulkan11Features features11{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES};
+    features11.samplerYcbcrConversion = m_hasYcbcr ? VK_TRUE : VK_FALSE;
     VkDeviceCreateInfo device{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
     device.queueCreateInfoCount = 1;
     device.pQueueCreateInfos = &queue;
+    device.enabledExtensionCount =
+        static_cast<std::uint32_t>(extensions.size());
+    device.ppEnabledExtensionNames = extensions.data();
+    device.pNext = &features11;
     if (!ok(vkCreateDevice(m_physical, &device, nullptr, &m_device), "vkCreateDevice "))
         return;
     vkGetDeviceQueue(m_device, m_queueFamily, 0, &m_queue);

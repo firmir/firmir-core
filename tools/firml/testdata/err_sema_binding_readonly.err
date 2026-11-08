@@ -1,0 +1,1 @@
+err_sema_binding_readonly.fml:14:9: error: property 'pressed' of type 'Button' is read-only

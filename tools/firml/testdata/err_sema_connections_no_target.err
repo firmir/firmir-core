@@ -1,0 +1,1 @@
+err_sema_connections_no_target.fml:6:5: error: 'Connections' requires a 'target' property

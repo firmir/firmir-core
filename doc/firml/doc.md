@@ -30,7 +30,11 @@ Rectangle {                              // ровно один корневой
   `firmir/items/Rectangle.hpp`); заголовок обязан содержать `class <stem>`.
 - Включённый тип либо встроенный (полная метаинформация: свойства, сигналы,
   методы), либо *opaque* — объявлен в C++, но метаданных нет: его свойства,
-  методы и сигналы не проверяются (warning при использовании).
+  методы и сигналы не проверяются (warning при использовании). Значения
+  opaque-свойств имеют тип `Any`: проходят во все контексты, конвертируются
+  в рантайме (`Object::setProperty`/`getProperty`, `detail::anyConvert`) —
+  поэтому opaque-классы должны регистрировать свои свойства через
+  `registerProperty` (иначе значение попадёт в динамический багаж).
 - Повторный include того же типа — ошибка; include, не добавивший ни одного
   используемого типа, — warning.
 - `using Alias = Qualified.Type` — алиас обязан ссылаться на включённый тип;
@@ -69,6 +73,28 @@ Rectangle {                              // ровно один корневой
 | `Repeater` | да | (`model` — специальное, см. ниже) | | |
 | `ListModel` | нет | `count` (ro) | | |
 | `ListElement` | нет | (только роли-литералы) | | |
+| `Image` | да | `source`, `fillMode` (строка: `Stretch`, `PreserveAspectFit`, `PreserveAspectCrop`, `Pad`), `smooth` | | |
+| `LineEdit` | да | `text`, `multiline` | | `accepted` |
+| `MouseArea` | да | `hoverEnabled`; `mouseX`, `mouseY`, `pressed`, `containsMouse` (ro) | | `entered`, `exited` (сигналы с аргументами недоступны — используйте `onMouseXChanged`/`onPressedChanged`/...) |
+| `Flickable` | да | `contentWidth`, `contentHeight` | | |
+| `ShaderEffect` | да | `fragmentShader`, `color` | | |
+| `CheckBox` | да | `text`, `checked`, `tristate` | | `clicked` |
+| `RadioButton` | да | `text`, `checked` | | `clicked` |
+| `Switch` | да | `text`, `checked` | | `clicked` |
+| `ProgressBar` | да | `value`, `from`, `to`, `indeterminate` | | |
+| `BusyIndicator` | да | `running` | | |
+| `ScrollView` | да | `contentWidth`, `contentHeight` | | |
+| `StackView` | да | `depth` (ro) | | |
+| `SwipeView` | да | `currentIndex`, `interactive` | | |
+| `SplitView` | да | `orientation` (`Horizontal`/`Vertical`) | | |
+| `TabBar` | да | `currentIndex`; `count` (ro) | `addTab(string)` | |
+
+Дополнительные типы из других библиотек (например, `Firmir.Multimedia.VideoOutput`)
+подключаются как *opaque* через `#include` (см. ниже).
+
+Особенности контейнеров: дети `ScrollView`/`Flickable` создаются внутри их
+`contentItem()`; дети `StackView`/`SwipeView`/`SplitView` дополнительно
+регистрируются методами `push`/`addItem` при создании.
 
 Свойства `Item`: `x`, `y`, `width`, `height`, `implicitWidth`,
 `implicitHeight`, `transformOrigin`, `rotation`, `scale`, `opacity`, `z`,
@@ -78,11 +104,14 @@ Rectangle {                              // ровно один корневой
 
 Синглтон `Firmir.Gui.App` (коротко `App`): read-only свойства `screenWidth`,
 `screenHeight` (обновляются при hotplug экрана); методы `show()`, `hide()`,
-`quit()`, `setTitle(string)`.
+`quit()`, `setTitle(string)`, а также управление окном для кнопок
+`showMinimized()`, `showNormal()`, `showMaximized()`, `toggleMaximized()`,
+`close()`.
 
 Ограничения по размещению: `Window` — только корневой объект файла; `Timer` и
 `ListModel` — невизуальные объекты; `ListElement` — только строка внутри
-`ListModel`.
+`ListModel`; `Connections` и `Binding` — только дочерние объекты (не корень),
+без `id`, без своих детей и не в делегате `Repeater`.
 
 ## Объекты и члены
 
@@ -180,10 +209,44 @@ onWidthChanged: root.update()                             // <свойство>C
   тернарным оператором `?:`.
 - Получатель метода: `id`, `parent`, `Firmir.Gui.App`. Списки методов
   встроенных типов проверяются (`Item.update`, `Window.show/hide/close`,
-  `Timer.start/stop`, `App.show/hide/quit/setTitle`); у opaque-типов — нет.
+  `Timer.start/stop`, `App.show/hide/quit/setTitle/showMinimized/showNormal/
+  showMaximized/toggleMaximized/close`); у opaque-типов — нет.
 - Цель присваивания: `свойство` (своё), `id.свойство`, `parent.свойство`.
   Нельзя присваивать read-only свойства, свойства синглтона и свойства
   `Timer` (используйте `start()`/`stop()`).
+
+## Connections и Binding (QML-стиль)
+
+Языковые конструкции без собственного runtime-объекта: не требуют `#include`
+и не попадают в структуру объектов — кодогенератор разворачивает их в обычные
+подключения/привязки к цели.
+
+```fml
+Connections {
+    target: button
+    onClicked: { root.count = root.count + 1 }
+    onWidthChanged: root.update()          // изменение свойства цели
+}
+
+Binding {
+    target: box
+    property: "width"
+    value: root.width / 2                  // отслеживаемая привязка
+}
+```
+
+- `Connections`: члены — `target: <id>` и обработчики; обработчики
+  проверяются против типа цели (сигналы и `<свойство>Changed`), тела видят
+  область видимости места объявления (`parent` — родитель `Connections`).
+- `Binding`: члены — `target: <id>`, `property: "<имя>"`, `value: <выражение>`.
+  Имя свойства проверяется по таблице типа цели (включая свои `property`
+  и вложенные вроде `border.width`), read-only свойства запрещены; выражение
+  с зависимостями становится отслеживаемой привязкой (переоценка при
+  изменении зависимостей), без зависимостей — одноразовой записью.
+- Цель может быть объявлена позже по файлу (id видны после первого прохода).
+  Нюанс: статические записи одного свойства применяются в порядке их
+  появления в файле — объявляйте `Binding` после целевого объекта, чтобы он
+  перекрывал статическое значение, заданное в самом объекте.
 
 ## Свои свойства
 

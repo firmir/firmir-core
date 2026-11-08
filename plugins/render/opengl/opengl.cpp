@@ -15,6 +15,7 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -55,16 +56,24 @@ private:
 class GlTexture : public RenderTexture {
 public:
     GlTexture(GlDevice* device, const TextureDesc& desc);
+    /// Imports a dma-buf video frame as an EGLImage-backed external texture
+    /// (zero-copy; YUV->RGB happens in the sampler via the EGL colorspace
+    /// hints). Returns nullptr on any failure (caller falls back to CPU).
+    static GlTexture* importDmaBuf(GlDevice* device,
+                                   const DmaBufTextureDesc& desc);
     ~GlTexture() override;
 
     const TextureDesc& desc() const override { return m_desc; }
     bool write(const void* data, std::uint64_t bytes) override;
+    bool isExternal() const override { return m_eglImage != nullptr; }
     void bind(int unit = 0);
 
 private:
     GlDevice* m_device;
     TextureDesc m_desc;
     GLuint m_id = 0;
+    GLenum m_target = GL_TEXTURE_2D; // GL_TEXTURE_EXTERNAL_OES for dma-buf
+    void* m_eglImage = nullptr;      // EGLImageKHR, owned when set
 };
 
 class GlShader : public RenderShader {
@@ -140,13 +149,22 @@ public:
     bool present(RenderSwapchain*) override { return false; }
     void waitIdle() override;
 
+    // Zero-copy video frames (dma-buf via EGLImage).
+    bool supportsDmaBufTextures() const override { return m_hasDmaBuf; }
+    RenderTexture* importDmaBufTexture(const DmaBufTextureDesc& desc) override;
+
     EGLDisplay display() const { return m_display; }
+    bool hasDmaBufModifiers() const { return m_hasDmaBufModifiers; }
 
 private:
     DeviceDesc m_desc;
     EGLDisplay m_display = EGL_NO_DISPLAY;
     EGLSurface m_surface = EGL_NO_SURFACE;
     EGLContext m_context = EGL_NO_CONTEXT;
+    // Probed at init: EGL_EXT_image_dma_buf_import (+modifiers) and
+    // GL_OES_EGL_image_external.
+    bool m_hasDmaBuf = false;
+    bool m_hasDmaBufModifiers = false;
 };
 
 // ------------------------------ GL objects ---------------------------------
@@ -206,9 +224,18 @@ GlTexture::~GlTexture() {
     m_device->makeCurrent();
     if (m_id)
         glDeleteTextures(1, &m_id);
+    if (m_eglImage) {
+        auto destroyImage =
+            reinterpret_cast<PFNEGLDESTROYIMAGEKHRPROC>(
+                eglGetProcAddress("eglDestroyImageKHR"));
+        if (destroyImage)
+            destroyImage(m_device->display(), m_eglImage);
+    }
 }
 
 bool GlTexture::write(const void* data, std::uint64_t bytes) {
+    if (m_eglImage)
+        return false; // external textures are producer-written
     const std::uint64_t expected =
         static_cast<std::uint64_t>(m_desc.width) * m_desc.height * 4;
     if (!data || bytes != expected)
@@ -224,7 +251,120 @@ bool GlTexture::write(const void* data, std::uint64_t bytes) {
 void GlTexture::bind(int unit) {
     m_device->makeCurrent();
     glActiveTexture(GL_TEXTURE0 + unit);
-    glBindTexture(GL_TEXTURE_2D, m_id);
+    glBindTexture(m_target, m_id);
+}
+
+namespace {
+
+/// DMA-BUF plane attribute triplets for eglCreateImageKHR.
+void pushPlaneAttribs(std::vector<EGLint>& attribs, int plane,
+                      const DmaBufPlane& p) {
+    const EGLint base[4][3] = {
+        {EGL_DMA_BUF_PLANE0_FD_EXT, EGL_DMA_BUF_PLANE0_OFFSET_EXT,
+         EGL_DMA_BUF_PLANE0_PITCH_EXT},
+        {EGL_DMA_BUF_PLANE1_FD_EXT, EGL_DMA_BUF_PLANE1_OFFSET_EXT,
+         EGL_DMA_BUF_PLANE1_PITCH_EXT},
+        {EGL_DMA_BUF_PLANE2_FD_EXT, EGL_DMA_BUF_PLANE2_OFFSET_EXT,
+         EGL_DMA_BUF_PLANE2_PITCH_EXT},
+        {EGL_DMA_BUF_PLANE3_FD_EXT, EGL_DMA_BUF_PLANE3_OFFSET_EXT,
+         EGL_DMA_BUF_PLANE3_PITCH_EXT},
+    };
+    attribs.push_back(base[plane][0]);
+    attribs.push_back(p.fd);
+    attribs.push_back(base[plane][1]);
+    attribs.push_back(static_cast<EGLint>(p.offset));
+    attribs.push_back(base[plane][2]);
+    attribs.push_back(static_cast<EGLint>(p.stride));
+}
+
+} // namespace
+
+GlTexture* GlTexture::importDmaBuf(GlDevice* device,
+                                   const DmaBufTextureDesc& desc) {
+    if (!device->supportsDmaBufTextures() || desc.planeCount <= 0 ||
+        desc.planes[0].fd < 0)
+        return nullptr;
+    auto createImage = reinterpret_cast<PFNEGLCREATEIMAGEKHRPROC>(
+        eglGetProcAddress("eglCreateImageKHR"));
+    auto imageTarget = reinterpret_cast<PFNGLEGLIMAGETARGETTEXTURE2DOESPROC>(
+        eglGetProcAddress("glEGLImageTargetTexture2DOES"));
+    if (!createImage || !imageTarget)
+        return nullptr;
+
+    std::vector<EGLint> attribs;
+    attribs.push_back(EGL_WIDTH);
+    attribs.push_back(desc.width);
+    attribs.push_back(EGL_HEIGHT);
+    attribs.push_back(desc.height);
+    attribs.push_back(EGL_LINUX_DRM_FOURCC_EXT);
+    attribs.push_back(static_cast<EGLint>(desc.fourcc));
+    const bool withModifiers =
+        device->hasDmaBufModifiers() &&
+        desc.modifier != Fourcc::ModifierInvalid;
+    for (int i = 0; i < desc.planeCount && i < 4; ++i) {
+        pushPlaneAttribs(attribs, i, desc.planes[i]);
+        if (withModifiers) { // per-plane modifier (same for all planes)
+            static const EGLint lo[4] = {
+                EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT,
+                EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT,
+                EGL_DMA_BUF_PLANE2_MODIFIER_LO_EXT,
+                EGL_DMA_BUF_PLANE3_MODIFIER_LO_EXT};
+            static const EGLint hi[4] = {
+                EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT,
+                EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT,
+                EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT,
+                EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT};
+            attribs.push_back(lo[i]);
+            attribs.push_back(static_cast<EGLint>(desc.modifier & 0xFFFFFFFFu));
+            attribs.push_back(hi[i]);
+            attribs.push_back(static_cast<EGLint>(desc.modifier >> 32));
+        }
+    }
+    // GPU-side color conversion hints (Mesa honors both when sampling the
+    // external texture).
+    if (desc.fourcc != Fourcc::Abgr8) {
+        attribs.push_back(EGL_YUV_COLOR_SPACE_HINT_EXT);
+        attribs.push_back(desc.ycbcrModel == YcbcrModel::Bt601
+                              ? EGL_ITU_REC601_EXT
+                              : desc.ycbcrModel == YcbcrModel::Bt2020
+                                    ? EGL_ITU_REC2020_EXT
+                                    : EGL_ITU_REC709_EXT);
+        attribs.push_back(EGL_SAMPLE_RANGE_HINT_EXT);
+        attribs.push_back(desc.ycbcrRange == YcbcrRange::Full
+                              ? EGL_YUV_FULL_RANGE_EXT
+                              : EGL_YUV_NARROW_RANGE_EXT);
+    }
+    attribs.push_back(EGL_NONE);
+
+    device->makeCurrent();
+    EGLImageKHR image = createImage(device->display(), EGL_NO_CONTEXT,
+                                    EGL_LINUX_DMA_BUF_EXT, nullptr,
+                                    attribs.data());
+    if (image == EGL_NO_IMAGE_KHR)
+        return nullptr;
+
+    auto* texture = new GlTexture(device, TextureDesc{});
+    texture->m_desc.width = desc.width;
+    texture->m_desc.height = desc.height;
+    texture->m_target = GL_TEXTURE_EXTERNAL_OES;
+    texture->m_eglImage = image;
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture->m_id);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S,
+                    GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T,
+                    GL_CLAMP_TO_EDGE);
+    imageTarget(GL_TEXTURE_EXTERNAL_OES, image);
+    if (glGetError() != GL_NO_ERROR) {
+        delete texture;
+        return nullptr;
+    }
+    return texture;
+}
+
+RenderTexture* GlDevice::importDmaBufTexture(const DmaBufTextureDesc& desc) {
+    return valid() ? GlTexture::importDmaBuf(this, desc) : nullptr;
 }
 
 namespace {
@@ -688,6 +828,22 @@ GlDevice::GlDevice(const DeviceDesc& desc) : m_desc(desc) {
     makeCurrent();
     cLogInfo(lcGl()) << "OpenGL ES renderer:" <<
         reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+
+    // Zero-copy capability probe: dma-buf EGLImage import + external sampler.
+    const auto hasExtension = [](const char* list, const char* name) {
+        return list && std::strstr(list, name) != nullptr;
+    };
+    const char* eglExts = eglQueryString(m_display, EGL_EXTENSIONS);
+    const char* glExts =
+        reinterpret_cast<const char*>(glGetString(GL_EXTENSIONS));
+    m_hasDmaBufModifiers =
+        hasExtension(eglExts, "EGL_EXT_image_dma_buf_import_modifiers");
+    m_hasDmaBuf =
+        hasExtension(eglExts, "EGL_EXT_image_dma_buf_import") &&
+        hasExtension(glExts, "GL_OES_EGL_image_external");
+    cLogInfo(lcGl()) << "dma-buf import:"
+                     << (m_hasDmaBuf ? "supported" : "unsupported")
+                     << (m_hasDmaBufModifiers ? " (+modifiers)" : "");
 }
 
 GlDevice::~GlDevice() {

@@ -97,6 +97,59 @@ struct BufferDesc {
 
 enum class TextureFormat { Rgba8, Bgra8, Depth24Stencil8 };
 enum class Filter { Nearest, Linear };
+
+// ---------------------------------------------------------------------------
+// External (zero-copy) textures: dma-buf video frames imported by the device.
+// ---------------------------------------------------------------------------
+
+/// YUV color conversion model for imported video textures (ITU-T matrix).
+enum class YcbcrModel { Bt601, Bt709, Bt2020 };
+/// YUV sample range: limited (16-235/240) or full (0-255).
+enum class YcbcrRange { Limited, Full };
+
+/// DRM/KMS fourcc codes used by imported video frames (linux/drm_fourcc.h
+/// values, redeclared to keep this header free of platform includes).
+namespace Fourcc {
+constexpr std::uint32_t Abgr8 = 0x34324241; // 'AB24' DRM_FORMAT_ABGR8888
+                                            // (memory order R,G,B,A)
+constexpr std::uint32_t Nv12 = 0x3231564E;  // 'NV12'
+constexpr std::uint32_t P010 = 0x30313050;  // 'P010'
+constexpr std::uint32_t P016 = 0x36313050;  // 'P016'
+constexpr std::uint64_t ModifierInvalid = 0x00FFFFFFFFFFFFFFULL;
+} // namespace Fourcc
+
+/// One plane of a dma-buf buffer (multi-planar formats share one fd with
+/// different offsets).
+struct DmaBufPlane {
+    int fd = -1;                  // dma-buf fd, borrowed by the caller
+    std::uint32_t offset = 0;     // plane offset within the buffer, bytes
+    std::uint32_t stride = 0;     // plane row stride, bytes
+};
+
+/**
+ * @brief Descriptor for importing a dma-buf video frame as a texture.
+ *
+ * The fd(s) stay owned by the caller; a successful import keeps them alive
+ * internally (dup) for the texture lifetime. YUV formats (NV12/P010/P016)
+ * are converted to RGB on the GPU during sampling with the given model and
+ * range; RGB formats ignore the ycbcr fields.
+ *
+ * Synchronization: the caller guarantees the producer (decoder) has finished
+ * writing the buffer before the import (e.g. vaSyncSurface); reuse of the
+ * buffer by the producer is only allowed after the imported texture is
+ * destroyed (see Multimedia::VideoFramePool for the deferred-release model).
+ */
+struct DmaBufTextureDesc {
+    int width = 0;
+    int height = 0;
+    std::uint32_t fourcc = 0;           // Fourcc::* (DRM format)
+    std::uint64_t modifier = Fourcc::ModifierInvalid; // DRM format modifier
+    DmaBufPlane planes[4];
+    int planeCount = 0;
+    YcbcrModel ycbcrModel = YcbcrModel::Bt709;
+    YcbcrRange ycbcrRange = YcbcrRange::Limited;
+};
+
 enum class AddressMode { ClampToEdge, Repeat };
 
 struct SamplerDesc {

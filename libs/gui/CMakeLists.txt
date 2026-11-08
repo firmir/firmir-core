@@ -11,6 +11,7 @@ add_library(firmir-gui SHARED
     src/image.cpp
     src/item.cpp
     src/listmodel.cpp
+    src/lineedit.cpp
     src/mousearea.cpp
     src/painter.cpp
     src/platform.cpp
@@ -23,7 +24,9 @@ add_library(firmir-gui SHARED
     src/window.cpp
 )
 target_include_directories(firmir-gui PUBLIC include)
-target_link_libraries(firmir-gui PUBLIC firmir-core PRIVATE firmir-render ${CMAKE_DL_LIBS})
+# firmir-render is PUBLIC: painter.hpp exposes Render::DmaBufTextureDesc
+# (zero-copy video frames) in its public API.
+target_link_libraries(firmir-gui PUBLIC firmir-core firmir-render PRIVATE ${CMAKE_DL_LIBS})
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(FIRMIR_FONT REQUIRED freetype2 fontconfig harfbuzz)
 target_include_directories(firmir-gui PRIVATE ${FIRMIR_FONT_INCLUDE_DIRS})

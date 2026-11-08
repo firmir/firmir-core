@@ -12,6 +12,12 @@ MouseArea::MouseArea(Object* parent) : Item(parent) {
         [](Object*, const std::any&) { throw std::invalid_argument("containsMouse is read-only"); });
     registerProperty<bool>("hoverEnabled", &MouseArea::hoverEnabled, &MouseArea::setHoverEnabled);
     registerProperty<int>("acceptedButtons", &MouseArea::acceptedButtons, &MouseArea::setAcceptedButtons);
+    registerPropertyImpl("mouseX", typeid(float),
+        [](const Object* o) -> std::any { return static_cast<const MouseArea*>(o)->mouseX(); },
+        [](Object*, const std::any&) { throw std::invalid_argument("mouseX is read-only"); });
+    registerPropertyImpl("mouseY", typeid(float),
+        [](const Object* o) -> std::any { return static_cast<const MouseArea*>(o)->mouseY(); },
+        [](Object*, const std::any&) { throw std::invalid_argument("mouseY is read-only"); });
 }
 MouseArea::~MouseArea() = default;
 void MouseArea::setHoverEnabled(bool enabled) {
@@ -35,7 +41,14 @@ void MouseArea::setContainsMouse(bool contains) {
 }
 void MouseArea::mouseEvent(MouseEvent& event) {
     const bool inside = RectF{0, 0, width(), height()}.contains(event.pos.x, event.pos.y);
+    const bool moved = m_mouse.x != event.pos.x || m_mouse.y != event.pos.y;
     m_mouse = event.pos;
+    if (moved) {
+        // Firml bindings/handlers track the pointer through the properties
+        // (signals carry MouseEvent/Point, which are not Firml value types).
+        notifyPropertyChanged("mouseX");
+        notifyPropertyChanged("mouseY");
+    }
     if (event.action == MouseEvent::Action::Move) {
         if (m_hoverEnabled || m_pressed) {
             setContainsMouse(inside);

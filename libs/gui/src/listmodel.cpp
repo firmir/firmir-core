@@ -36,6 +36,16 @@ void ListModel::append(Row row) {
     beginInsertItems(index, index);
     endInsertItems();
     itemAt(index) = std::move(row);
+    notifyPropertyChanged("count"); // Firml bindings (e.g. contentHeight)
+}
+
+void ListModel::clear() {
+    if (count() == 0)
+        return;
+    beginRemoveItems(0, count() - 1);
+    endRemoveItems();
+    m_roleDefaults.clear();
+    notifyPropertyChanged("count");
 }
 
 std::any ListModel::data(int index, const std::string& role) const {

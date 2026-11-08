@@ -121,7 +121,10 @@ void Button::paint(Painter& painter) {
     drawLabel(painter, (width() - w) / 2, (height() - h) / 2, Color::rgb(245, 247, 250));
 }
 
-CheckBox::CheckBox(Object* parent) : AbstractButton(parent) { setCheckable(true); }
+CheckBox::CheckBox(Object* parent) : AbstractButton(parent) {
+    setCheckable(true);
+    registerProperty<bool>("tristate", &CheckBox::tristate, &CheckBox::setTristate);
+}
 void CheckBox::setCheckState(CheckState state) {
     auto sceneLock = lockScene();
     if (m_checkState == state) return;
@@ -203,3 +206,11 @@ void Switch::paint(Painter& painter) {
 } // namespace Controls
 } // namespace Gui
 } // namespace Firmir
+
+void Firmir::Gui::Controls::CheckBox::setTristate(bool enabled) {
+    auto lock = lockScene();
+    if (m_tristate == enabled) return;
+    m_tristate = enabled;
+    update();
+    notifyPropertyChanged("tristate");
+}

@@ -1,0 +1,895 @@
+// Firmir Controls Gallery: the whole UI is declared in Firml and compiled
+// to C++ by firmlc at build time. Dynamic/demo behavior lives in GalleryApp
+// (GalleryApp.cpp); the window follows the screen size through the App
+// singleton.
+#include <firmir/items/Window.hpp>
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+#include <firmir/items/Button.hpp>
+#include <firmir/items/Item.hpp>
+#include <firmir/items/Row.hpp>
+#include <firmir/items/Grid.hpp>
+#include <firmir/items/Column.hpp>
+#include <firmir/items/Repeater.hpp>
+#include <firmir/items/ListModel.hpp>
+#include <firmir/items/ListElement.hpp>
+#include <firmir/items/Image.hpp>
+#include <firmir/items/MouseArea.hpp>
+#include <firmir/items/Flickable.hpp>
+#include <firmir/items/ShaderEffect.hpp>
+#include <firmir/gui-controls/CheckBox.hpp>
+#include <firmir/gui-controls/RadioButton.hpp>
+#include <firmir/gui-controls/Switch.hpp>
+#include <firmir/gui-controls/ProgressBar.hpp>
+#include <firmir/gui-controls/BusyIndicator.hpp>
+#include <firmir/gui-controls/ScrollView.hpp>
+#include <firmir/gui-controls/StackView.hpp>
+#include <firmir/gui-controls/SwipeView.hpp>
+#include <firmir/gui-controls/SplitView.hpp>
+#include <firmir/gui-controls/TabBar.hpp>
+#include "GalleryApp.hpp"
+
+Firmir.Gui.Window {
+    id: root
+    title: "Firmir Controls Gallery"
+    width: App.screenWidth / 3
+    height: App.screenHeight / 3
+
+    GalleryApp {
+        id: gallery
+    }
+
+    ListModel {
+        id: menuModel
+        ListElement { label: "Button" }
+        ListElement { label: "Check / Radio / Switch" }
+        ListElement { label: "ScrollView" }
+        ListElement { label: "SplitView" }
+        ListElement { label: "StackView" }
+        ListElement { label: "SwipeView" }
+        ListElement { label: "TabBar" }
+        ListElement { label: "Busy / Progress" }
+        ListElement { label: "Text & Fonts" }
+        ListElement { label: "Image" }
+        ListElement { label: "ShaderEffect" }
+        ListElement { label: "MouseArea" }
+        ListElement { label: "Flickable" }
+    }
+
+    Rectangle {
+        anchors.fill: parent
+        color: "#141921"
+    }
+
+    // Header: title + window controls.
+    Text {
+        x: 12
+        y: 10
+        fontSize: 20
+        color: "#F5F8FC"
+        text: "Firmir Controls Gallery"
+    }
+    Button {
+        id: closeButton
+        width: 36
+        height: 32
+        text: "X"
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.rightMargin: 6
+        anchors.topMargin: 6
+        onClicked: App.close()
+    }
+    Button {
+        id: maxButton
+        width: 36
+        height: 32
+        text: "[]"
+        anchors.right: closeButton.left
+        anchors.top: parent.top
+        anchors.rightMargin: 4
+        anchors.topMargin: 6
+        onClicked: App.toggleMaximized()
+    }
+    Button {
+        width: 36
+        height: 32
+        text: "_"
+        anchors.right: maxButton.left
+        anchors.top: parent.top
+        anchors.rightMargin: 4
+        anchors.topMargin: 6
+        onClicked: App.showMinimized()
+    }
+
+    // ------------------------- menu page (page -1) -------------------------
+    ScrollView {
+        id: menuPage
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.topMargin: 46
+        anchors.leftMargin: 8
+        anchors.rightMargin: 8
+        visible: gallery.page == -1
+        contentWidth: 720
+        contentHeight: 380
+
+        Grid {
+            columns: 4
+            spacing: 10
+            Repeater {
+                model: menuModel
+                Button {
+                    width: 165
+                    height: 36
+                    text: model.label
+                    onClicked: gallery.showPage(index)
+                }
+            }
+        }
+    }
+
+    // ------------------------- page 0: Button ---------------------------
+    Item {
+        anchors.fill: parent
+        anchors.topMargin: 46
+        visible: gallery.page == 0
+        property number clicks: 0
+
+        Button {
+            x: 8
+            y: 8
+            width: 96
+            height: 32
+            text: "< Menu"
+            onClicked: gallery.showMenu()
+        }
+        Text {
+            x: 116
+            y: 13
+            fontSize: 18
+            color: "#F5F8FC"
+            text: "Button"
+        }
+        Text {
+            x: 20
+            y: 65
+            fontSize: 18
+            color: "#E6EBF2"
+            text: "Clicked: " + parent.clicks
+        }
+        Button {
+            x: 20
+            y: 105
+            width: 170
+            height: 42
+            text: "Push me"
+            onClicked: parent.clicks = parent.clicks + 1
+        }
+        Button {
+            x: 20
+            y: 160
+            width: 170
+            height: 42
+            text: "Second button"
+        }
+        Button {
+            x: 20
+            y: 215
+            width: 170
+            height: 42
+            text: "Disabled"
+            enabled: false
+        }
+    }
+
+    // ------------------ page 1: CheckBox / RadioButton / Switch -----------
+    Item {
+        anchors.fill: parent
+        anchors.topMargin: 46
+        visible: gallery.page == 1
+
+        Button {
+            x: 8
+            y: 8
+            width: 96
+            height: 32
+            text: "< Menu"
+            onClicked: gallery.showMenu()
+        }
+        Text {
+            x: 116
+            y: 13
+            fontSize: 18
+            color: "#F5F8FC"
+            text: "CheckBox, RadioButton, Switch"
+        }
+        CheckBox {
+            x: 20
+            y: 65
+            width: 240
+            height: 36
+            text: "Tristate CheckBox"
+            tristate: true
+        }
+        RadioButton {
+            x: 20
+            y: 112
+            width: 230
+            height: 34
+            text: "First choice"
+            checked: true
+        }
+        RadioButton {
+            x: 20
+            y: 150
+            width: 230
+            height: 34
+            text: "Second choice"
+        }
+        RadioButton {
+            x: 20
+            y: 188
+            width: 230
+            height: 34
+            text: "Third choice"
+        }
+        Switch {
+            x: 20
+            y: 235
+            width: 180
+            height: 34
+            text: "Enabled"
+            checked: true
+        }
+    }
+
+    // ------------------------- page 2: ScrollView --------------------------
+    Item {
+        anchors.fill: parent
+        anchors.topMargin: 46
+        visible: gallery.page == 2
+
+        Button {
+            x: 8
+            y: 8
+            width: 96
+            height: 32
+            text: "< Menu"
+            onClicked: gallery.showMenu()
+        }
+        Text {
+            x: 116
+            y: 13
+            fontSize: 18
+            color: "#F5F8FC"
+            text: "ScrollView"
+        }
+        ScrollView {
+            x: 12
+            y: 56
+            width: root.width - 36
+            height: root.height - 112
+            contentWidth: root.width - 52
+            contentHeight: 18 * 42 + 12
+
+            Column {
+                Repeater {
+                    model: 18
+                    Item {
+                        width: 400
+                        height: 42
+                        Rectangle {
+                            width: 392
+                            height: 34
+                            color: index % 2 == 1 ? "#2A3C50" : "#233040"
+                        }
+                        Text {
+                            x: 12
+                            y: 6
+                            fontSize: 15
+                            color: "#E6EBF2"
+                            text: "Scrollable row " + (index + 1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ------------------------- page 3: SplitView ---------------------------
+    Item {
+        anchors.fill: parent
+        anchors.topMargin: 46
+        visible: gallery.page == 3
+
+        Button {
+            x: 8
+            y: 8
+            width: 96
+            height: 32
+            text: "< Menu"
+            onClicked: gallery.showMenu()
+        }
+        Text {
+            x: 116
+            y: 13
+            fontSize: 18
+            color: "#F5F8FC"
+            text: "SplitView - drag the separator"
+        }
+        SplitView {
+            x: 12
+            y: 58
+            width: root.width - 36
+            height: root.height - 112
+            orientation: "Horizontal"
+
+            Rectangle {
+                color: "#264B69"
+                Text {
+                    x: 16
+                    y: 16
+                    fontSize: 18
+                    color: "#FFFFFF"
+                    text: "Left panel"
+                }
+            }
+            Rectangle {
+                color: "#503764"
+                Text {
+                    x: 16
+                    y: 16
+                    fontSize: 18
+                    color: "#FFFFFF"
+                    text: "Right panel"
+                }
+            }
+        }
+    }
+
+    // ------------------------- page 4: StackView ---------------------------
+    Item {
+        anchors.fill: parent
+        anchors.topMargin: 46
+        visible: gallery.page == 4
+
+        Button {
+            x: 8
+            y: 8
+            width: 96
+            height: 32
+            text: "< Menu"
+            onClicked: gallery.showMenu()
+        }
+        Text {
+            x: 116
+            y: 13
+            fontSize: 18
+            color: "#F5F8FC"
+            text: "StackView"
+        }
+        Button {
+            x: 20
+            y: 55
+            width: 110
+            height: 34
+            text: "Push"
+            onClicked: gallery.pushStackPage()
+        }
+        Button {
+            x: 140
+            y: 55
+            width: 110
+            height: 34
+            text: "Pop"
+            onClicked: gallery.popStackPage()
+        }
+        Text {
+            x: 270
+            y: 62
+            fontSize: 16
+            color: "#E6EBF2"
+            text: gallery.depthText
+        }
+        StackView {
+            id: galleryStack
+            x: 20
+            y: 100
+            width: root.width - 56
+            height: root.height - 167
+
+            Item {
+                Rectangle {
+                    anchors.fill: parent
+                    color: "#285569"
+                }
+                Text {
+                    x: 20
+                    y: 20
+                    fontSize: 20
+                    color: "#FFFFFF"
+                    text: "Page 1"
+                }
+            }
+        }
+    }
+
+    // ------------------------- page 5: SwipeView ---------------------------
+    Item {
+        anchors.fill: parent
+        anchors.topMargin: 46
+        visible: gallery.page == 5
+
+        Button {
+            x: 8
+            y: 8
+            width: 96
+            height: 32
+            text: "< Menu"
+            onClicked: gallery.showMenu()
+        }
+        Text {
+            x: 116
+            y: 13
+            fontSize: 18
+            color: "#F5F8FC"
+            text: "SwipeView"
+        }
+        Button {
+            x: 20
+            y: 55
+            width: 115
+            height: 36
+            text: "Previous"
+            onClicked: swipe.currentIndex = swipe.currentIndex - 1
+        }
+        Button {
+            x: 145
+            y: 55
+            width: 115
+            height: 36
+            text: "Next"
+            onClicked: swipe.currentIndex = swipe.currentIndex + 1
+        }
+        SwipeView {
+            id: swipe
+            x: 20
+            y: 105
+            width: root.width - 56
+            height: root.height - 167
+
+            Rectangle {
+                color: "#285573"
+                Text {
+                    x: 20
+                    y: 20
+                    fontSize: 20
+                    color: "#FFFFFF"
+                    text: "Swipe page 1"
+                }
+            }
+            Rectangle {
+                color: "#55376E"
+                Text {
+                    x: 20
+                    y: 20
+                    fontSize: 20
+                    color: "#FFFFFF"
+                    text: "Swipe page 2"
+                }
+            }
+            Rectangle {
+                color: "#2D694B"
+                Text {
+                    x: 20
+                    y: 20
+                    fontSize: 20
+                    color: "#FFFFFF"
+                    text: "Swipe page 3"
+                }
+            }
+        }
+    }
+
+    // --------------------------- page 6: TabBar ----------------------------
+    Item {
+        anchors.fill: parent
+        anchors.topMargin: 46
+        visible: gallery.page == 6
+
+        Button {
+            x: 8
+            y: 8
+            width: 96
+            height: 32
+            text: "< Menu"
+            onClicked: gallery.showMenu()
+        }
+        Text {
+            x: 116
+            y: 13
+            fontSize: 18
+            color: "#F5F8FC"
+            text: "TabBar"
+        }
+        TabBar {
+            id: tabs
+            x: 16
+            y: 56
+            width: root.width - 36
+            height: 40
+        }
+        Rectangle {
+            x: 16
+            y: 104
+            width: root.width - 36
+            height: root.height - 160
+            color: "#233040"
+            visible: tabs.currentIndex == 0
+            Text {
+                x: 18
+                y: 18
+                fontSize: 18
+                color: "#FFFFFF"
+                text: "General settings"
+            }
+        }
+        Rectangle {
+            x: 16
+            y: 104
+            width: root.width - 36
+            height: root.height - 160
+            color: "#2F3846"
+            visible: tabs.currentIndex == 1
+            Text {
+                x: 18
+                y: 18
+                fontSize: 18
+                color: "#FFFFFF"
+                text: "Detailed information"
+            }
+        }
+        Rectangle {
+            x: 16
+            y: 104
+            width: root.width - 36
+            height: root.height - 160
+            color: "#33414E"
+            visible: tabs.currentIndex == 2
+            Text {
+                x: 18
+                y: 18
+                fontSize: 18
+                color: "#FFFFFF"
+                text: "Firmir gallery"
+            }
+        }
+    }
+
+    // ------------------- page 7: BusyIndicator & ProgressBar ----------------
+    Item {
+        anchors.fill: parent
+        anchors.topMargin: 46
+        visible: gallery.page == 7
+
+        Button {
+            x: 8
+            y: 8
+            width: 96
+            height: 32
+            text: "< Menu"
+            onClicked: gallery.showMenu()
+        }
+        Text {
+            x: 116
+            y: 13
+            fontSize: 18
+            color: "#F5F8FC"
+            text: "BusyIndicator & ProgressBar"
+        }
+        BusyIndicator {
+            x: 24
+            y: 65
+            width: 64
+            height: 64
+        }
+        Text {
+            x: 100
+            y: 83
+            fontSize: 17
+            color: "#E6EBF2"
+            text: "Busy"
+        }
+        ProgressBar {
+            id: progress
+            x: 24
+            y: 155
+            width: root.width - 66
+            height: 16
+            to: 100
+            value: 35
+        }
+        Button {
+            x: 24
+            y: 185
+            width: 120
+            height: 34
+            text: "Advance"
+            onClicked: progress.value = progress.value >= 100 ? 0 : progress.value + 10
+        }
+        Text {
+            x: 24
+            y: 232
+            fontSize: 14
+            color: "#B8C4D0"
+            text: "Indeterminate"
+        }
+        ProgressBar {
+            x: 24
+            y: 254
+            width: root.width - 66
+            height: 16
+            indeterminate: true
+        }
+    }
+
+    // ------------------------ page 8: Text & Fonts -------------------------
+    Item {
+        anchors.fill: parent
+        anchors.topMargin: 46
+        visible: gallery.page == 8
+
+        Button {
+            x: 8
+            y: 8
+            width: 96
+            height: 32
+            text: "< Menu"
+            onClicked: gallery.showMenu()
+        }
+        Text {
+            x: 116
+            y: 13
+            fontSize: 18
+            color: "#F5F8FC"
+            text: "Text & Fonts"
+        }
+        Text {
+            x: 20
+            y: 70
+            fontSize: 14
+            color: "#B8C4D0"
+            text: "The default font is built-in; size is per-item."
+        }
+        Text {
+            x: 20
+            y: 110
+            fontSize: 24
+            color: "#E6EBF2"
+            text: "Regular 24 px"
+        }
+        Text {
+            x: 20
+            y: 150
+            fontSize: 24
+            color: "#7FB4E8"
+            text: "Same size, another color"
+        }
+    }
+
+    // ---------------------------- page 9: Image ----------------------------
+    Item {
+        anchors.fill: parent
+        anchors.topMargin: 46
+        visible: gallery.page == 9
+
+        Button {
+            x: 8
+            y: 8
+            width: 96
+            height: 32
+            text: "< Menu"
+            onClicked: gallery.showMenu()
+        }
+        Text {
+            x: 116
+            y: 13
+            fontSize: 18
+            color: "#F5F8FC"
+            text: "Image"
+        }
+        Text {
+            x: 20
+            y: 60
+            fontSize: 14
+            color: "#B8C4D0"
+            text: "A procedural 16x16 pattern scaled to 160x160:"
+        }
+        Image {
+            id: galleryImage
+            x: 20
+            y: 90
+            width: 160
+            height: 160
+            fillMode: "Stretch"
+        }
+        Image {
+            id: galleryImageFit
+            x: 200
+            y: 90
+            width: 160
+            height: 80
+            fillMode: "PreserveAspectFit"
+        }
+        Text {
+            x: 200
+            y: 180
+            fontSize: 13
+            color: "#B8C4D0"
+            text: "PreserveAspectFit"
+        }
+    }
+
+    // ------------------------- page 10: ShaderEffect -------------------------
+    Item {
+        anchors.fill: parent
+        anchors.topMargin: 46
+        visible: gallery.page == 10
+
+        Button {
+            x: 8
+            y: 8
+            width: 96
+            height: 32
+            text: "< Menu"
+            onClicked: gallery.showMenu()
+        }
+        Text {
+            x: 116
+            y: 13
+            fontSize: 18
+            color: "#F5F8FC"
+            text: "ShaderEffect"
+        }
+        ShaderEffect {
+            x: 20
+            y: 70
+            width: 190
+            height: 160
+            fragmentShader: "gl_FragColor = vec4(v_uv.y, 1.0 - v_uv.x, 1.0, 1.0) * v_color;"
+        }
+        Text {
+            x: 20
+            y: 240
+            fontSize: 14
+            color: "#B8C4D0"
+            text: "Custom fragment shader"
+        }
+        Image {
+            id: shaderSource
+            x: 240
+            y: 10
+            width: 16
+            height: 16
+            visible: false
+        }
+        ShaderEffect {
+            id: texturedEffect
+            x: 240
+            y: 70
+            width: 190
+            height: 160
+            fragmentShader: "vec4 c = texture2D(u_texture, v_uv); gl_FragColor = vec4(c.b, c.g, c.r, c.a) * (0.5 + 0.5 * v_uv.y);"
+        }
+        Text {
+            x: 240
+            y: 240
+            fontSize: 14
+            color: "#B8C4D0"
+            text: "Textured shader"
+        }
+    }
+
+    // --------------------------- page 11: MouseArea --------------------------
+    Item {
+        anchors.fill: parent
+        anchors.topMargin: 46
+        visible: gallery.page == 11
+
+        Button {
+            x: 8
+            y: 8
+            width: 96
+            height: 32
+            text: "< Menu"
+            onClicked: gallery.showMenu()
+        }
+        Text {
+            x: 116
+            y: 13
+            fontSize: 18
+            color: "#F5F8FC"
+            text: "MouseArea"
+        }
+        Rectangle {
+            x: 20
+            y: 70
+            width: root.width - 40
+            height: root.height - 132
+            color: "#2D4B64"
+        }
+        MouseArea {
+            id: area
+            x: 20
+            y: 70
+            width: root.width - 40
+            height: root.height - 132
+            hoverEnabled: true
+        }
+        Text {
+            x: 34
+            y: 86
+            fontSize: 17
+            color: "#E6EBF2"
+            text: area.containsMouse
+                ? "Pointer: " + area.mouseX + ", " + area.mouseY + (area.pressed ? " (pressed)" : "")
+                : "Click or move the pointer"
+        }
+    }
+
+    // --------------------------- page 12: Flickable --------------------------
+    Item {
+        anchors.fill: parent
+        anchors.topMargin: 46
+        visible: gallery.page == 12
+
+        Button {
+            x: 8
+            y: 8
+            width: 96
+            height: 32
+            text: "< Menu"
+            onClicked: gallery.showMenu()
+        }
+        Text {
+            x: 116
+            y: 13
+            fontSize: 18
+            color: "#F5F8FC"
+            text: "Flickable - drag with inertia"
+        }
+        Flickable {
+            x: 16
+            y: 58
+            width: root.width - 36
+            height: root.height - 112
+            contentWidth: root.width - 44
+            contentHeight: 16 * 40 + 12
+
+            Column {
+                Repeater {
+                    model: 16
+                    Item {
+                        width: 400
+                        height: 40
+                        Rectangle {
+                            width: 392
+                            height: 30
+                            color: "#283C50"
+                        }
+                        Text {
+                            x: 10
+                            y: 4
+                            fontSize: 14
+                            color: "#E6EBF2"
+                            text: "Flickable item " + (index + 1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

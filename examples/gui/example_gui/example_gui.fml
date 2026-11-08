@@ -6,6 +6,7 @@
 // timer flips its position every 100 ms and the behaviors animate the move.
 #include <firmir/items/Window.hpp>
 #include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Button.hpp>
 #include <firmir/items/Timer.hpp>
 
 Firmir.Gui.Window {
@@ -52,5 +53,42 @@ Firmir.Gui.Window {
             mainRect.x = root.width * 0.75 - mainRect.x
             mainRect.y = root.height * 0.75 - mainRect.y
         }
+    }
+
+    // Window controls (declared last: they paint on top).
+    Button {
+        id: closeButton
+        text: "X"
+        width: 36
+        height: 28
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.rightMargin: 4
+        anchors.topMargin: 4
+        onClicked: Firmir.Gui.App.close()
+    }
+
+    Button {
+        id: maximizeButton
+        text: "[]"
+        width: 36
+        height: 28
+        anchors.right: closeButton.left
+        anchors.top: parent.top
+        anchors.rightMargin: 4
+        anchors.topMargin: 4
+        onClicked: Firmir.Gui.App.toggleMaximized()
+    }
+
+    Button {
+        id: minimizeButton
+        text: "_"
+        width: 36
+        height: 28
+        anchors.right: maximizeButton.left
+        anchors.top: parent.top
+        anchors.rightMargin: 4
+        anchors.topMargin: 4
+        onClicked: Firmir.Gui.App.showMinimized()
     }
 }

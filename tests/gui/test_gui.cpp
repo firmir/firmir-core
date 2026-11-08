@@ -832,6 +832,65 @@ TEST_CASE(gui_text_implicit_size) {
 }
 
 #ifdef FIRMIR_RENDER_TEST_SOFT
+TEST_CASE(gui_painter_draw_texture_subrect) {
+    // Painter::drawTexture draws an arbitrary device texture; the source
+    // rect samples a sub-region (left half = red, right half = green).
+    auto device = Render::Render::createDevice("soft");
+    CHECK(device != nullptr);
+    if (!device)
+        return;
+    RenderResources resources(device.get());
+    std::unique_ptr<Render::RenderTarget> target(
+        device->createRenderTarget({8, 4, Render::TextureFormat::Rgba8, false}));
+    std::unique_ptr<Render::RenderCommandBuffer> commands(
+        device->createCommandBuffer());
+    CHECK(target && commands);
+    if (!target || !commands)
+        return;
+
+    // 4x2 texture: left half red, right half green.
+    Render::TextureDesc textureDesc;
+    textureDesc.width = 4;
+    textureDesc.height = 2;
+    textureDesc.format = Render::TextureFormat::Rgba8;
+    std::unique_ptr<Render::RenderTexture> texture(
+        device->createTexture(textureDesc));
+    CHECK(texture != nullptr);
+    if (!texture)
+        return;
+    std::uint32_t pixels[8];
+    for (int y = 0; y < 2; ++y)
+        for (int x = 0; x < 4; ++x)
+            pixels[y * 4 + x] = x < 2 ? 0xFF0000FFu : 0xFF00FF00u;
+    CHECK(texture->write(pixels, sizeof(pixels)));
+    CHECK(!texture->isExternal());
+
+    commands->begin();
+    Render::ClearValue clear; // opaque black
+    clear.a = 1;
+    commands->beginRenderPass(target.get(), clear);
+    {
+        Painter painter(resources, commands.get(), target.get());
+        CHECK(painter.device() == device.get());
+        // Whole texture stretched over the 8x4 target.
+        CHECK(painter.drawTexture(RectF{0, 0, 8, 4}, texture.get()));
+        // Sub-rect: the red left half drawn at 1:1 over the top-left 2x2.
+        CHECK(painter.drawTexture(RectF{0, 0, 2, 2}, texture.get(),
+                                  RectF{0, 0, 2, 2}));
+    }
+    commands->endRenderPass();
+    commands->end();
+    device->submit(commands.get());
+    const auto* cpu = dynamic_cast<Render::CpuRenderTarget*>(target.get());
+    CHECK(cpu != nullptr);
+    if (!cpu)
+        return;
+    CHECK_EQ(cpu->pixels()[0], 0xFFFF0000u);   // sub-rect overpaint: red
+    CHECK_EQ(cpu->pixels()[1], 0xFFFF0000u);
+    CHECK_EQ(cpu->pixels()[2 * 8 + 5], 0xFF00FF00u); // stretched right half
+    CHECK_EQ(cpu->pixels()[3 * 8 + 1], 0xFFFF0000u); // stretched left half
+}
+
 TEST_CASE(gui_painter_draws_text_glyphs) {
     auto device = Render::Render::createDevice("soft");
     CHECK(device != nullptr);

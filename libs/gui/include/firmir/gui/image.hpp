@@ -24,6 +24,10 @@ public:
     Size sourceSize() const { return m_sourceSize; }
     FillMode fillMode() const { return m_fillMode; }
     void setFillMode(FillMode mode);
+    /// String form for the property system / Firml ("Stretch",
+    /// "PreserveAspectFit", "PreserveAspectCrop", "Pad").
+    String fillModeName() const;
+    void setFillModeName(const String& name);
     bool smooth() const { return m_smooth; }
     void setSmooth(bool smooth) { auto lock = lockScene(); m_smooth = smooth; update(); }
     /// Replaces the image with caller-owned content copied as RGBA8.
