@@ -6,7 +6,7 @@
 #include <firmir/items/Button.hpp>
 #include <firmir/items/Timer.hpp>
 
-namespace Firmir::Gui { class Item; }
+namespace Firmir::Gui { class Item; class Component; }
 
 /// Pointers into the created item tree (owned by the parent).
 struct F81ConnectionsBindingObjects {

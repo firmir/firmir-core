@@ -1,6 +1,7 @@
-#include <firmir/gui/translator.hpp>
+#include <firmir/translator.hpp>
 
 #include <firmir/json.hpp>
+#include <firmir/locale.hpp>
 #include <firmir/log.hpp>
 
 #include <cstdlib>
@@ -8,34 +9,8 @@
 #include <sstream>
 
 namespace Firmir {
-namespace Gui {
 
 namespace {
-
-/// The default language from the process locale (LANG / LC_ALL, e.g.
-/// "ru_RU.UTF-8" -> "ru"); "en" when unset. FIRMIR_LANGUAGE wins over the
-/// locale (an explicit override for tests and embedded setups).
-std::string systemLanguage() {
-    const char* env = std::getenv("FIRMIR_LANGUAGE");
-    if (env && *env)
-        return env;
-    env = std::getenv("LC_ALL");
-    if (!env || !*env)
-        env = std::getenv("LANG");
-    if (!env || !*env)
-        return "en";
-    std::string locale(env);
-    // Strip codeset/modifier first: "C.UTF-8", "ru_RU.UTF-8@latin".
-    const std::size_t dot = locale.find_first_of(".@");
-    if (dot != std::string::npos)
-        locale.resize(dot);
-    const std::size_t underscore = locale.find('_');
-    if (underscore != std::string::npos)
-        locale.resize(underscore);
-    if (locale.empty() || locale == "C" || locale == "POSIX")
-        return "en";
-    return locale;
-}
 
 /// Index of the plural form for @p n under @p language's rules
 /// (CLDR-style, reduced to the languages Firmir ships examples for).
@@ -84,17 +59,31 @@ std::string substitute(std::string text, std::initializer_list<String> args,
 } // namespace
 
 Translator::Translator(Object* parent)
-    : Object(parent), m_language(systemLanguage()) {
+    : Object(parent), m_language(Locale::instance()->language().toStdString()) {
+    // Follow the Locale (system language, or the application override set on
+    // it) until the application sets the Translator language directly.
+    m_localeConnection = Locale::instance()->connect<std::string, std::any>(
+        this, Object::signalPropertyChanged,
+        [this](const std::string& name, const std::any& value) {
+            if (name != "language")
+                return;
+            const auto* lang = std::any_cast<String>(&value);
+            const std::string next = lang ? lang->toStdString() : std::string();
+            if (next.empty() || next == m_language)
+                return;
+            m_language = next;
+            notifyLanguageChanged();
+        });
     registerProperty<String>("language", &Translator::language,
                              &Translator::setLanguage);
 }
 
 Translator* Translator::instance() {
     static Translator* translator = [] {
-        if (auto* existing = Object::singleton<Translator>("Firmir.Gui.Translator"))
+        if (auto* existing = Object::singleton<Translator>("Firmir.Core.Translator"))
             return existing;
         auto* created = new Translator;
-        Object::registerSingleton("Firmir.Gui.Translator", created);
+        Object::registerSingleton("Firmir.Core.Translator", created);
         return created;
     }();
     return translator;
@@ -141,6 +130,9 @@ void Translator::setLanguage(String language) {
     const std::string lang = language.toStdString();
     if (lang.empty() || lang == m_language)
         return;
+    // Explicit application choice: stop following the Locale (mirrors how
+    // Locale::setLanguage stops following the system backend).
+    m_localeConnection.disconnect();
     m_language = lang;
     notifyLanguageChanged();
 }
@@ -214,5 +206,4 @@ void Translator::notifyLanguageChanged() {
     notifyPropertyChanged("language");
 }
 
-} // namespace Gui
 } // namespace Firmir

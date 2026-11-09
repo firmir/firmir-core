@@ -45,7 +45,11 @@ enum class TypeKind {
     // QML-style attachable constructs; they create no runtime object — sema
     // resolves their target and codegen inlines the connects/bindings.
     Connections,
-    Binding
+    Binding,
+    // Component: a deferred subtree template. Creates a Firmir::Gui::Component
+    // factory object; the child subtree is instantiated per createObject()
+    // call, not at startup.
+    Component
 };
 
 /// Static description of an item type known to firmlc. Types from project

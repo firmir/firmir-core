@@ -31,9 +31,10 @@ Vulkan/OpenGL, FreeType/Fontconfig/HarfBuzz, PNG/JPEG и базовую libwayla
 ```
 libs/
   core/         firmir-core     — Object, Thread, Timer, String, ByteArray,
-                                  Variant, Settings, RegExp, Log, Future, файлы/потоки
-  json/         firmir-json     — JsonValue/JsonDocument
-  xml/          firmir-xml      — XmlElement/XmlDocument
+                                  Variant, Settings, RegExp, Log, Future,
+                                  файлы/потоки, JsonValue/JsonDocument,
+                                  XmlElement/XmlDocument, Translator (trId),
+                                  Locale (язык системы, бэкенд-плагины)
   dbus/         firmir-dbus     — DBusConnection + утилита firmir-dbus-tool
   networking/   firmir-networking — NetworkAccessManager/NetworkReply (OpenSSL)
   gui/          firmir-gui      — Screen, Window, Item, Text, Painter, Platform,
@@ -44,6 +45,7 @@ libs/
 plugins/gui/    подгружаемые бэкенды firmir-gui-<имя>.so (headless, evdev, drm, wayland)
 plugins/render/ подгружаемые рендер-бэкенды firmir-render-<имя>.so
                 (null, soft, opengl, vulkan)
+plugins/core/   бэкенды сервисов firmir-core (locale/test: системный язык)
 tools/doc/      firmir-doc      — генератор Markdown из ///-комментариев
 tools/firml/    firmlc          — транспайлер Firml (.fml) → C++ (лексер/парсер, semantic
                 analysis, кодогенерация: статические свойства, anchors, привязки
@@ -160,6 +162,7 @@ cmake --install build --prefix /opt/firmir
 | заголовки | `include/firmir/<модуль>/` |
 | GUI-бэкенды `firmir-gui-*.so` | `lib/firmir/plugins/gui/` |
 | render-бэкенды `firmir-render-*.so` | `lib/firmir/plugins/render/` |
+| core-бэкенды `firmir-<сервис>-*.so` | `lib/firmir/plugins/core/` |
 | pkg-config `firmir-<модуль>.pc` | `lib/pkgconfig/` |
 
 Установленные бинарники находят плагины в системном каталоге без

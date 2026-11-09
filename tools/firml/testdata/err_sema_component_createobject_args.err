@@ -1,0 +1,1 @@
+err_sema_component_createobject_args.fml:15:20: error: createObject() expects exactly 1 argument (the parent object)

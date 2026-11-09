@@ -1,0 +1,1 @@
+err_sema_function_duplicate.fml:10:5: error: function 'helper' is declared twice

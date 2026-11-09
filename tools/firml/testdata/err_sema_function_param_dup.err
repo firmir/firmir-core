@@ -1,0 +1,1 @@
+err_sema_function_param_dup.fml:6:29: error: duplicate function argument 'a'

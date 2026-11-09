@@ -51,6 +51,13 @@ struct AssignExpr {
     ExprPtr target;
     ExprPtr value;
 };
+/// `const name = someComponent.createObject(parent)` — a local object
+/// declaration inside a handler body (the right side is validated by sema
+/// as a Component createObject() call).
+struct ConstDeclExpr {
+    std::string name;
+    ExprPtr value;
+};
 struct UnaryExpr {
     char op; // '-' or '!'
     ExprPtr operand;
@@ -68,7 +75,8 @@ struct ConditionalExpr {
 
 using ExprNode = std::variant<NumberLit, StringLit, BoolLit, UndefinedLit,
                               IdentExpr, MemberExpr, CallExpr, MethodCallExpr,
-                              AssignExpr, UnaryExpr, BinaryExpr, ConditionalExpr>;
+                              AssignExpr, ConstDeclExpr, UnaryExpr, BinaryExpr,
+                              ConditionalExpr>;
 
 struct Expr {
     SourceLoc loc;
@@ -138,8 +146,23 @@ struct HandlerStmt {
     std::vector<Expr> commands; // each expression is validated as MethodCallExpr
 };
 
+/// `function name(arg: type, ...) -> type { <commands> return <expr> }` — a
+/// script-declared method of the enclosing object. The body holds the same
+/// commands as a signal handler; `returnValue` is the trailing `return <expr>`
+/// (nullptr when absent). An empty `returnTypeName` means a void function.
+struct FunctionDecl {
+    SourceLoc loc;
+    std::string name;
+    std::vector<HandlerParam> params; // written `name: type`
+    std::string returnTypeName;
+    SourceLoc returnTypeLoc;
+    std::vector<Expr> commands;
+    ExprPtr returnValue;
+    SourceLoc returnLoc; // the 'return' keyword (valid when returnValue)
+};
+
 using MemberNode = std::variant<PropertyStmt, PropertyDecl, AnchorStmt, BehaviorStmt,
-                                HandlerStmt, ObjectPtr>;
+                                HandlerStmt, FunctionDecl, ObjectPtr>;
 
 /// `TypeName { <members> }` — a Firml object instance.
 struct Object {

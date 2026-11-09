@@ -136,8 +136,9 @@ const TypeInfo themeType{"Theme",
                          {},
                          false};
 
-// Translator: runtime string translation (Firmir::Gui::Translator singleton).
-// trId() bindings depend on "language"; the methods manage the file set.
+// Translator: runtime string translation (Firmir::Translator singleton,
+// registered as "Firmir.Core.Translator"). trId() bindings depend on
+// "language"; the methods manage the file set.
 const TypeInfo translatorType{"Translator",
                               nullptr,
                               {{"language", ValueType::String}},
@@ -180,6 +181,18 @@ const TypeInfo connectionsType{"Connections", nullptr, {}, {}, {}, false,
                                TypeKind::Connections};
 const TypeInfo bindingType{"Binding", nullptr, {}, {}, {}, false,
                            TypeKind::Binding};
+
+// Component: a deferred item template (Firmir::Gui::Component). The child
+// subtree is built per createObject() call; the only member is `id` plus the
+// single template child.
+const TypeInfo componentType{"Component",
+                             nullptr,
+                             {},
+                             {{"createObject", {ValueType::Any}}},
+                             {},
+                             false,
+                             TypeKind::Component,
+                             "Firmir::Gui::Component"};
 
 // Column/Row/Grid: positioner items (Firmir::Gui::Column/Row/Grid).
 const TypeInfo columnType{"Column",
@@ -507,6 +520,8 @@ const TypeInfo* builtinType(const std::string& name) {
         return &connectionsType;
     if (name == "Binding")
         return &bindingType;
+    if (name == "Component")
+        return &componentType;
     return nullptr;
 }
 
@@ -515,7 +530,8 @@ const TypeInfo* builtinSingleton(const std::string& name) {
         return &appType;
     if (name == "Firmir.Gui.Theme" || name == "Theme")
         return &themeType;
-    if (name == "Firmir.Gui.Translator" || name == "Translator")
+    if (name == "Firmir.Core.Translator" || name == "Translator" ||
+        name == "Firmir.Gui.Translator") // legacy name, pre-move to core
         return &translatorType;
     return nullptr;
 }
@@ -527,8 +543,9 @@ std::string canonicalSingletonName(const std::string& name) {
         return "Firmir.Gui.App";
     if (name == "Firmir.Gui.Theme" || name == "Theme")
         return "Firmir.Gui.Theme";
-    if (name == "Firmir.Gui.Translator" || name == "Translator")
-        return "Firmir.Gui.Translator";
+    if (name == "Firmir.Core.Translator" || name == "Translator" ||
+        name == "Firmir.Gui.Translator") // legacy name, pre-move to core
+        return "Firmir.Core.Translator";
     return {};
 }
 

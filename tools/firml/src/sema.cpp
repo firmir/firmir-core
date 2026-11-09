@@ -81,6 +81,7 @@ private:
         // (codegen inlines them); available in every file without an include.
         m_types["Connections"] = builtinType("Connections");
         m_types["Binding"] = builtinType("Binding");
+        m_types["Component"] = builtinType("Component");
         for (const IncludeDirective& inc : m_file.includes) {
             const std::string shown =
                 inc.angled ? "<" + inc.path + ">" : "\"" + inc.path + "\"";
@@ -176,7 +177,8 @@ private:
         if (info->type->kind == TypeKind::Window && parent)
             throw Error(node.loc, "'Window' is only allowed as the root object");
         if (!parent && (info->type->kind == TypeKind::Connections ||
-                        info->type->kind == TypeKind::Binding))
+                        info->type->kind == TypeKind::Binding ||
+                        info->type->kind == TypeKind::Component))
             throw Error(node.loc, "'" + info->type->name +
                                       "' is only allowed as a child object");
         if (parent) {
@@ -208,7 +210,24 @@ private:
                 (info->type->kind == TypeKind::Connections ||
                  info->type->kind == TypeKind::Binding))
                 throw Error(node.loc, "'" + info->type->name +
-                                          "' is not supported inside a Repeater delegate yet");
+                                           "' is not supported inside a Repeater delegate yet");
+            // The direct child of a Component is its template root; deeper
+            // objects inherit the component scope.
+            if (parent->type->kind == TypeKind::Component)
+                info->componentScope = parent;
+            else
+                info->componentScope = parent->componentScope;
+            if (info->type->kind == TypeKind::Component) {
+                if (info->componentScope)
+                    throw Error(node.loc, "a Component cannot be nested inside "
+                                          "another Component");
+                if (info->delegateScope)
+                    throw Error(node.loc, "a Component is not supported inside "
+                                          "a Repeater delegate");
+            }
+            if (info->componentScope && info->type == builtinType("Repeater"))
+                throw Error(node.loc, "a Repeater is not supported inside a "
+                                      "Component yet");
         }
         info->declIndex = m_declCounter++;
         info->internalName = "_obj_" + std::to_string(info->declIndex);
@@ -229,6 +248,12 @@ private:
             if (!result->propLocs.emplace(prop->name, prop->loc).second)
                 throw Error(prop->loc, "property '" + prop->name + "' is assigned twice");
         }
+        // Function signatures are registered in pass 1 (after the id loop, so
+        // the receiver check sees the id wherever it is declared); bodies are
+        // checked lazily in pass 2 (checkFunctionBody).
+        for (const MemberNode& member : node.members)
+            if (const auto* fn = std::get_if<FunctionDecl>(&member))
+                registerFunction(*result, *fn);
         for (const MemberNode& member : node.members)
             if (const auto* child = std::get_if<ObjectPtr>(&member))
                 registerObject(**child, result);
@@ -305,6 +330,153 @@ private:
         obj.propLocs.emplace("id", stmt.loc);
     }
 
+    // ------------------------- script functions ---------------------------
+
+    /// The value type of a function parameter/return type name.
+    static ValueType functionValueType(const std::string& typeName,
+                                       const SourceLoc& loc) {
+        if (typeName == "number")
+            return ValueType::Number;
+        if (typeName == "string")
+            return ValueType::String;
+        if (typeName == "bool")
+            return ValueType::Bool;
+        if (typeName == "color")
+            return ValueType::Color;
+        throw Error(loc, "unsupported function type '" + typeName +
+                             "' (supported: number, string, bool, color)");
+    }
+
+    /// Pass 1: registers a `function name(arg: type, ...) -> type` signature
+    /// so calls resolve regardless of the declaration order (bodies are
+    /// checked lazily by checkFunctionBody).
+    void registerFunction(ObjectInfo& obj, const FunctionDecl& decl) {
+        if (obj.type->kind == TypeKind::Timer || obj.type->kind == TypeKind::Model ||
+            obj.type->kind == TypeKind::ModelElement ||
+            obj.type->kind == TypeKind::Connections ||
+            obj.type->kind == TypeKind::Binding ||
+            obj.type->kind == TypeKind::Component)
+            throw Error(decl.loc, "'" + obj.type->name + "' does not support functions");
+        if (obj.delegateScope)
+            throw Error(decl.loc, "functions are not supported inside a "
+                                  "Repeater delegate");
+        if (obj.id.empty())
+            throw Error(decl.loc, "a function requires the object to have an id "
+                                  "(the call receiver)");
+        if (decl.name.empty() || decl.name[0] < 'a' || decl.name[0] > 'z')
+            throw Error(decl.loc, "function name '" + decl.name +
+                                      "' must start with a lowercase letter");
+        if (obj.type->findProperty(decl.name) || obj.type->findMethod(decl.name))
+            throw Error(decl.loc, "type '" + obj.type->name +
+                                      "' already has a member '" + decl.name + "'");
+        if (findCustomFunction(obj, decl.name))
+            throw Error(decl.loc, "function '" + decl.name + "' is declared twice");
+
+        FunctionInfo info;
+        info.loc = decl.loc;
+        info.decl = &decl;
+        info.owner = &obj;
+        std::set<std::string> paramNames;
+        for (const HandlerParam& param : decl.params) {
+            if (!paramNames.insert(param.name).second)
+                throw Error(param.loc, "duplicate function argument '" + param.name + "'");
+            info.paramTypes.push_back(functionValueType(param.typeName, param.loc));
+        }
+        info.isVoid = decl.returnTypeName.empty();
+        if (!info.isVoid)
+            info.returnType = functionValueType(decl.returnTypeName, decl.returnTypeLoc);
+        if (info.isVoid && decl.returnValue)
+            throw Error(decl.returnLoc,
+                        "function '" + decl.name + "' has no return type but returns "
+                            "a value (add '-> <type>' or drop the 'return')");
+        if (!info.isVoid && !decl.returnValue)
+            throw Error(decl.loc, "function '" + decl.name + "' must end with "
+                                      "'return <expression>' (or drop '-> " +
+                                      decl.returnTypeName + "')");
+        obj.functions.push_back(std::move(info));
+    }
+
+    /// Validates a function body (once, lazily): the commands follow the
+    /// handler-command rules; the trailing `return <expr>` is type-checked
+    /// against the declared return type and its property deps are recorded so
+    /// call sites in bindings can re-export them.
+    void checkFunctionBody(ObjectInfo& owner, FunctionInfo& fn) {
+        if (fn.bodyChecked)
+            return;
+        if (fn.bodyChecking)
+            throw Error(fn.loc, "recursive call of function '" + fn.decl->name +
+                                    "' (recursion is not supported)");
+        fn.bodyChecking = true;
+        // The body's scope is the owner object plus the parameters; any
+        // handler locals of an enclosing check are saved and restored.
+        const auto savedLocals = std::move(m_expressionLocals);
+        const auto savedObjects = std::move(m_localObjects);
+        m_expressionLocals.clear();
+        m_localObjects.clear();
+        for (std::size_t i = 0; i < fn.decl->params.size(); ++i)
+            m_expressionLocals[fn.decl->params[i].name] = fn.paramTypes[i];
+        for (const Expr& command : fn.decl->commands)
+            checkBodyCommand(owner, fn.componentLocals, command);
+        if (fn.decl->returnValue) {
+            std::vector<std::string> deps;
+            const ValueType actual = checkExpr(*fn.decl->returnValue, owner, deps);
+            checkFunctionValue(fn, "the return value", fn.returnType, actual,
+                               *fn.decl->returnValue);
+            fn.returnDeps = std::move(deps);
+        }
+        m_expressionLocals = std::move(savedLocals);
+        m_localObjects = std::move(savedObjects);
+        fn.bodyChecking = false;
+        fn.bodyChecked = true;
+    }
+
+    /// Type-checks one function call argument or the return expression.
+    void checkFunctionValue(const FunctionInfo& fn, const std::string& what,
+                            ValueType expected, ValueType actual,
+                            const Expr& value) const {
+        if (expected == actual || actual == ValueType::Any ||
+            expected == ValueType::Any)
+            return;
+        // A String is accepted where a Color is expected; bare literals are
+        // validated against the #RRGGBB form.
+        if (expected == ValueType::Color && actual == ValueType::String) {
+            if (const auto* lit = std::get_if<StringLit>(&value.node))
+                if (!isColorLiteral(lit->value))
+                    throw Error(value.loc, "invalid color literal '" + lit->value +
+                                               "' (expected #RRGGBB)");
+            return;
+        }
+        throw Error(value.loc, what + " of function '" + fn.decl->name + "' expects " +
+                                   valueTypeName(expected) + ", got " +
+                                   valueTypeName(actual));
+    }
+
+    /// Shared validation of a script-function call: the body is checked (once)
+    /// and the argument count/types are validated. When `deps` is non-null
+    /// (expression context) the argument deps and the callee's
+    /// return-expression deps are appended to it.
+    void checkFunctionCall(FunctionInfo& fn, const MethodCallExpr& call,
+                           ObjectInfo& scope, const SourceLoc& loc,
+                           std::vector<std::string>* deps) {
+        checkFunctionBody(*fn.owner, fn);
+        if (call.args.size() != fn.paramTypes.size())
+            throw Error(loc, "function '" + fn.decl->name + "' expects " +
+                                 std::to_string(fn.paramTypes.size()) +
+                                 " argument(s)");
+        for (std::size_t i = 0; i < call.args.size(); ++i) {
+            std::vector<std::string> argDeps;
+            const ValueType actual = checkExpr(call.args[i], scope, argDeps);
+            checkFunctionValue(fn, "argument " + std::to_string(i + 1),
+                               fn.paramTypes[i], actual, call.args[i]);
+            if (deps)
+                for (const std::string& dep : argDeps)
+                    addDep(*deps, dep);
+        }
+        if (deps)
+            for (const std::string& dep : fn.returnDeps)
+                addDep(*deps, dep);
+    }
+
     // ---------------------- pass 2: members, anchors ----------------------
 
     void processObject(ObjectInfo& obj) {
@@ -330,6 +502,12 @@ private:
         }
         if (obj.type->kind == TypeKind::Binding) {
             processBinding(obj);
+            return;
+        }
+        // A Component declares a deferred subtree: only `id` plus exactly one
+        // child object (the template root) are allowed as members.
+        if (obj.type->kind == TypeKind::Component) {
+            processComponent(obj);
             return;
         }
         const bool isRepeater = obj.type == builtinType("Repeater");
@@ -361,6 +539,10 @@ private:
                 processBehavior(obj, *behavior);
             } else if (const auto* handler = std::get_if<HandlerStmt>(&member)) {
                 processHandler(obj, obj, *handler);
+            } else if (const auto* fn = std::get_if<FunctionDecl>(&member)) {
+                // The signature was registered in pass 1; make sure the body
+                // is checked even when the function is never called.
+                checkFunctionBody(obj, *findCustomFunction(obj, fn->name));
             }
         }
         if (isRepeater)
@@ -368,6 +550,42 @@ private:
         checkOverconstrained(obj);
         for (ObjectInfo* child : obj.children)
             processObject(*child);
+    }
+
+    /// Component: requires an id (the createObject() receiver) and exactly
+    /// one child object — the deferred subtree template.
+    void processComponent(ObjectInfo& obj) {
+        if (obj.id.empty())
+            throw Error(obj.node->loc,
+                        "a Component needs an id (used as the createObject() "
+                        "receiver)");
+        const Object* templateNode = nullptr;
+        for (const MemberNode& member : obj.node->members) {
+            if (const auto* prop = std::get_if<PropertyStmt>(&member)) {
+                if (prop->name == "id")
+                    continue;
+                throw Error(prop->loc, "a Component has no properties (only a "
+                                       "single child object — the template)");
+            }
+            if (const auto* child = std::get_if<ObjectPtr>(&member)) {
+                if (templateNode)
+                    throw Error((*child)->loc, "a Component holds exactly one "
+                                               "child object (the template)");
+                templateNode = child->get();
+                continue;
+            }
+            throw Error(obj.node->loc,
+                        "a Component cannot have handlers, anchors, behaviors "
+                        "or property declarations of its own");
+        }
+        if (!templateNode)
+            throw Error(obj.node->loc, "a Component needs exactly one child "
+                                       "object (the template)");
+        if (obj.children.empty())
+            throw Error(obj.node->loc, "internal error: Component template was "
+                                       "not registered");
+        obj.componentRoot = obj.children.front();
+        processObject(*obj.componentRoot);
     }
 
     /// Repeater: resolves the `model` property (a ListModel id or a delegate
@@ -445,6 +663,9 @@ private:
             throw Error(decl.loc, "property '" + decl.name + "' is already assigned");
         if (findCustomProp(obj, decl.name))
             throw Error(decl.loc, "property '" + decl.name + "' is declared twice");
+        if (findCustomFunction(obj, decl.name))
+            throw Error(decl.loc, "a function named '" + decl.name +
+                                      "' is already declared");
 
         CustomPropInfo info;
         info.loc = decl.loc;
@@ -570,8 +791,8 @@ private:
                                           valueTypeName(elseType) + ")");
             return thenType;
         }
-        if (std::get_if<MethodCallExpr>(&expr.node))
-            throw Error(expr.loc, "method calls are only allowed in signal/property handlers");
+        if (const auto* call = std::get_if<MethodCallExpr>(&expr.node))
+            return checkScriptCall(*call, expr.loc, scope, deps);
         if (std::get_if<AssignExpr>(&expr.node))
             throw Error(expr.loc, "assignments are only allowed in signal/property handlers");
         throw Error(expr.loc, "unsupported expression");
@@ -727,7 +948,7 @@ private:
                             "'trId' expects a String id argument, got " +
                                 std::string(valueTypeName(argType)));
             m_result.usesTranslatorSingleton = true;
-            addDep(deps, "Firmir.Gui.Translator.language");
+            addDep(deps, "Firmir.Core.Translator.language");
             return ValueType::String;
         }
         if (function == BuiltinFunction::Min || function == BuiltinFunction::Max) {
@@ -757,6 +978,43 @@ private:
                                               valueTypeName(argType));
         }
         return ValueType::Color;
+    }
+
+    /// An `id.function(...)` / `parent.function(...)` call inside a value
+    /// expression: only script-declared functions are callable here (native
+    /// methods stay handler-only). The call site depends on the argument
+    /// expressions plus the callee's return-expression deps.
+    ValueType checkScriptCall(const MethodCallExpr& call, const SourceLoc& loc,
+                              ObjectInfo& scope, std::vector<std::string>& deps) {
+        const auto* receiverIdent = std::get_if<IdentExpr>(&call.object->node);
+        if (!receiverIdent)
+            throw Error(loc, "only script-declared functions can be called in "
+                             "expressions (id.function(...))");
+        ObjectInfo* target = nullptr;
+        if (receiverIdent->name == "parent") {
+            if (!scope.parent)
+                throw Error(loc, "the root object has no 'parent'");
+            target = scope.parent;
+        } else {
+            const auto it = m_result.byId.find(receiverIdent->name);
+            if (it == m_result.byId.end())
+                throw Error(loc, "unknown object id '" + receiverIdent->name +
+                                     "' in the function call");
+            target = it->second;
+        }
+        if (target->componentScope != scope.componentScope)
+            throw Error(loc, "'" + receiverIdent->name +
+                                 "' is local to a Component and cannot be used here");
+        FunctionInfo* fn = findCustomFunction(*target, call.method);
+        if (!fn)
+            throw Error(loc, "unknown function '" + call.method + "' of object '" +
+                                 receiverIdent->name + "'");
+        if (fn->isVoid)
+            throw Error(loc, "function '" + call.method +
+                                 "' does not return a value and cannot be used in "
+                                 "an expression");
+        checkFunctionCall(*fn, call, scope, loc, &deps);
+        return fn->returnType;
     }
 
     ValueType checkBinary(const BinaryExpr& binary, const SourceLoc& loc,
@@ -1081,8 +1339,28 @@ private:
             } else {
                 const auto it = m_result.byId.find(base->name);
                 if (it == m_result.byId.end()) {
-                    throw Error(targetExpr.loc,
-                                "unknown identifier '" + base->name + "'");
+                    // A `const obj = comp.createObject(...)` local: the write
+                    // goes to the created object's dynamic property bag.
+                    const auto local = m_localObjects.find(base->name);
+                    if (local == m_localObjects.end())
+                        throw Error(targetExpr.loc,
+                                    "unknown identifier '" + base->name + "'");
+                    const ObjectInfo* localRoot = local->second;
+                    const PropertyInfo* localProp =
+                        localRoot->type->findProperty(member->name);
+                    const bool known = localProp ||
+                        findCustomProp(*localRoot, member->name);
+                    if (!known && !localRoot->type->opaque)
+                        throw Error(targetExpr.loc,
+                                    "unknown property '" + member->name +
+                                        "' of type '" + localRoot->type->name + "'");
+                    if (localProp && localProp->readOnly)
+                        throw Error(targetExpr.loc,
+                                    "property '" + member->name + "' of type '" +
+                                        localRoot->type->name + "' is read-only");
+                    std::vector<std::string> ignoredDeps;
+                    checkExpr(*assign.value, obj, ignoredDeps);
+                    return;
                 }
                 targetObj = it->second;
                 propName = member->name;
@@ -1236,6 +1514,156 @@ private:
             addEdge(from, dep, valueStmt->loc);
     }
 
+    /// Finds a Component by id (nullptr when the id is unknown or not a
+    /// Component).
+    const ObjectInfo* findComponentById(const std::string& name) {
+        const auto it = m_result.byId.find(name);
+        if (it == m_result.byId.end() ||
+            it->second->type->kind != TypeKind::Component)
+            return nullptr;
+        return it->second;
+    }
+
+    /// Validates the single parent argument of comp.createObject(parent):
+    /// an object id or 'parent' (inside a Component template root it is the
+    /// factory's runtime parent).
+    void checkCreateObjectArgs(ObjectInfo& context, const MethodCallExpr& call,
+                               const SourceLoc& loc) {
+        if (call.args.size() != 1)
+            throw Error(loc, "createObject() expects exactly 1 argument "
+                             "(the parent object)");
+        const auto* argIdent = std::get_if<IdentExpr>(&call.args[0].node);
+        if (!argIdent)
+            throw Error(call.args[0].loc,
+                        "the createObject() parent must be an object id or "
+                        "'parent'");
+        if (argIdent->name == "parent") {
+            if (!context.parent)
+                throw Error(call.args[0].loc, "the root object has no 'parent'");
+            return;
+        }
+        const auto it = m_result.byId.find(argIdent->name);
+        if (it == m_result.byId.end())
+            throw Error(call.args[0].loc,
+                        "unknown object id '" + argIdent->name + "'");
+        // Ids inside a Component template are per-instance factory locals:
+        // only handlers of the same component may use them.
+        if (it->second->componentScope &&
+            it->second->componentScope != context.componentScope)
+            throw Error(call.args[0].loc,
+                        "'" + argIdent->name +
+                            "' is local to a Component and cannot be used here");
+        if (it->second->type->kind != TypeKind::Item &&
+            it->second->type->kind != TypeKind::Window)
+            throw Error(call.args[0].loc, "the createObject() parent must be an "
+                                          "item (or a window), not '" +
+                                              it->second->type->name + "'");
+    }
+
+    /// `const name = someComponent.createObject(parent)` — declares a handler
+    /// local holding the freshly created object.
+    void checkConstDeclCommand(
+        ObjectInfo& context,
+        std::vector<std::pair<std::string, const ObjectInfo*>>& localsOut,
+        const ConstDeclExpr& decl, const SourceLoc& loc) {
+        const auto* call = std::get_if<MethodCallExpr>(&decl.value->node);
+        if (!call)
+            throw Error(loc, "'const <name> = ...' in a handler requires a "
+                             "Component createObject() call on the right side");
+        const auto* receiverIdent = std::get_if<IdentExpr>(&call->object->node);
+        const ObjectInfo* component =
+            receiverIdent ? findComponentById(receiverIdent->name) : nullptr;
+        if (!component)
+            throw Error(loc, "the receiver of createObject() must be a "
+                             "Component id");
+        if (call->method != "createObject")
+            throw Error(loc, "a Component has only the createObject() method");
+        checkCreateObjectArgs(context, *call, loc);
+        if (m_expressionLocals.count(decl.name) || m_localObjects.count(decl.name) ||
+            m_result.byId.count(decl.name))
+            throw Error(loc, "duplicate name '" + decl.name + "'");
+        m_localObjects[decl.name] = component->componentRoot;
+        localsOut.push_back({decl.name, component->componentRoot});
+    }
+
+    /// Validates one handler/function body command: a method call (native or
+    /// script-declared), a property assignment or a `const` local declaration.
+    void checkBodyCommand(
+        ObjectInfo& context,
+        std::vector<std::pair<std::string, const ObjectInfo*>>& localsOut,
+        const Expr& command) {
+        if (const auto* decl = std::get_if<ConstDeclExpr>(&command.node)) {
+            checkConstDeclCommand(context, localsOut, *decl, command.loc);
+            return;
+        }
+        if (const auto* assign = std::get_if<AssignExpr>(&command.node)) {
+            checkAssignCommand(context, *assign);
+            return;
+        }
+        const auto* call = std::get_if<MethodCallExpr>(&command.node);
+        if (!call)
+            throw Error(command.loc,
+                        "a handler command must be a method call (id.method(...)), "
+                        "a property assignment (id.prop = ...) or a constant "
+                        "declaration (const x = someComponent.createObject(...))");
+        const std::string receiver = dottedName(*call->object);
+        const TypeInfo* receiverType = nullptr;
+        ObjectInfo* receiverObject = nullptr; // nullptr for singletons
+        bool componentLocal = false;
+        if (const TypeInfo* singleton = builtinSingleton(receiver)) {
+            receiverType = singleton;
+            noteSingletonUse(receiver);
+        } else if (receiver == "parent") {
+            if (!context.parent)
+                throw Error(command.loc, "the root object has no 'parent'");
+            receiverType = context.parent->type;
+            receiverObject = context.parent;
+        } else if (const auto local = m_localObjects.find(receiver);
+                   local != m_localObjects.end()) {
+            // A `const obj = comp.createObject(...)` local of this handler.
+            receiverType = local->second->type;
+            componentLocal = true;
+        } else if (const auto it = m_result.byId.find(receiver);
+                   it != m_result.byId.end()) {
+            receiverType = it->second->type;
+            receiverObject = it->second;
+        } else {
+            throw Error(command.loc, "unknown method receiver '" + receiver + "'");
+        }
+        // A Component's createObject(): the argument is an object
+        // reference, not a value expression — checked separately.
+        if (receiverType->kind == TypeKind::Component &&
+            call->method == "createObject") {
+            checkCreateObjectArgs(context, *call, command.loc);
+            return;
+        }
+        // A script-declared function of the receiver object (shadows nothing:
+        // registerFunction rejects names clashing with native members).
+        if (receiverObject && !componentLocal) {
+            if (FunctionInfo* fn = findCustomFunction(*receiverObject, call->method)) {
+                if (receiverObject->componentScope != context.componentScope)
+                    throw Error(command.loc, "'" + receiver +
+                                                 "' is local to a Component and "
+                                                 "cannot be used here");
+                checkFunctionCall(*fn, *call, context, command.loc, nullptr);
+                return;
+            }
+        }
+        if (const MethodInfo* method = receiverType->findMethod(call->method)) {
+            if (method->parameters.size() != call->args.size())
+                throw Error(command.loc, "method '" + call->method + "' expects " +
+                                             std::to_string(method->parameters.size()) +
+                                             " argument(s)");
+        } else if (!receiverType->opaque) {
+            throw Error(command.loc, "unknown method '" + call->method +
+                                         "' of type '" + receiverType->name + "'");
+        }
+        for (const Expr& arg : call->args) {
+            std::vector<std::string> ignoredDeps;
+            checkExpr(arg, context, ignoredDeps);
+        }
+    }
+
     void processHandler(ObjectInfo& context, ObjectInfo& obj, const HandlerStmt& stmt) {
         if (stmt.name.size() <= 2)
             throw Error(stmt.loc, "invalid handler name '" + stmt.name + "'");
@@ -1275,6 +1703,7 @@ private:
         info.name = target;
 
         m_expressionLocals.clear();
+        m_localObjects.clear();
         for (std::size_t i = 0; i < stmt.params.size(); ++i) {
             const HandlerParam& param = stmt.params[i];
             if (!m_expressionLocals.emplace(param.name, handlerParamType(param)).second)
@@ -1282,46 +1711,10 @@ private:
             if (propertyChanged)
                 break;
         }
-        for (const Expr& command : stmt.commands) {
-            if (const auto* assign = std::get_if<AssignExpr>(&command.node)) {
-                checkAssignCommand(context, *assign);
-                continue;
-            }
-            const auto* call = std::get_if<MethodCallExpr>(&command.node);
-            if (!call)
-                throw Error(command.loc,
-                            "a handler command must be a method call (id.method(...)) "
-                            "or a property assignment (id.prop = ...)");
-            const std::string receiver = dottedName(*call->object);
-            const TypeInfo* receiverType = nullptr;
-            if (const TypeInfo* singleton = builtinSingleton(receiver)) {
-                receiverType = singleton;
-                noteSingletonUse(receiver);
-            } else if (receiver == "parent") {
-                if (!context.parent)
-                    throw Error(command.loc, "the root object has no 'parent'");
-                receiverType = context.parent->type;
-            } else if (const auto it = m_result.byId.find(receiver);
-                       it != m_result.byId.end()) {
-                receiverType = it->second->type;
-            } else {
-                throw Error(command.loc, "unknown method receiver '" + receiver + "'");
-            }
-            if (const MethodInfo* method = receiverType->findMethod(call->method)) {
-                if (method->parameters.size() != call->args.size())
-                    throw Error(command.loc, "method '" + call->method + "' expects " +
-                                                 std::to_string(method->parameters.size()) +
-                                                 " argument(s)");
-            } else if (!receiverType->opaque) {
-                throw Error(command.loc, "unknown method '" + call->method +
-                                             "' of type '" + receiverType->name + "'");
-            }
-            for (const Expr& arg : call->args) {
-                std::vector<std::string> ignoredDeps;
-                checkExpr(arg, context, ignoredDeps);
-            }
-        }
+        for (const Expr& command : stmt.commands)
+            checkBodyCommand(context, info.componentLocals, command);
         m_expressionLocals.clear();
+        m_localObjects.clear();
         m_result.handlers.push_back(std::move(info));
     }
 
@@ -1520,6 +1913,9 @@ private:
     std::set<std::string> m_usedTypes;
     std::map<std::string, std::string> m_aliases;
     std::map<std::string, ValueType> m_expressionLocals;
+    /// The current handler's `const obj = comp.createObject(...)` locals:
+    /// name -> the created root ObjectInfo.
+    std::map<std::string, const ObjectInfo*> m_localObjects;
     std::map<std::string, SourceLoc> m_idLocs;           // id -> first declaration
     std::map<std::string, SourceLoc> m_nodeLocs;         // dep-graph node -> writer loc
     int m_declCounter = 0;

@@ -56,6 +56,8 @@ private:
     PropertyStmt parseProperty();           // name: expr
     PropertyDecl parsePropertyDecl();       // property <type> <name>[: expr]
     HandlerStmt parseHandler();             // onSignal(...) / onPropertyChanged
+    FunctionDecl parseFunction();           // function <name>(<arg>: <type>, ...) [-> <type>] { ... }
+    Expr parseCommand();                    // one handler/function body command
 
     Expr parseExpression(); // alias for the top of the expression grammar
     Expr parseConditional();

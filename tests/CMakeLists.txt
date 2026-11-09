@@ -6,6 +6,8 @@ if(FIRMIR_BUILD_LIB_CORE)
         core/test_byte_array.cpp
         core/test_future.cpp
         core/test_io.cpp
+        core/test_json.cpp
+        core/test_locale.cpp
         core/test_log.cpp
         core/test_object.cpp
         core/test_regexp.cpp
@@ -14,17 +16,11 @@ if(FIRMIR_BUILD_LIB_CORE)
         core/test_string.cpp
         core/test_thread.cpp
         core/test_timer.cpp
+        core/test_translator.cpp
         core/test_variant.cpp
+        core/test_xml.cpp
     )
     list(APPEND TEST_LIBS firmir-core)
-endif()
-if(FIRMIR_BUILD_LIB_JSON)
-    list(APPEND TEST_SOURCES json/test_json.cpp)
-    list(APPEND TEST_LIBS firmir-json)
-endif()
-if(FIRMIR_BUILD_LIB_XML)
-    list(APPEND TEST_SOURCES xml/test_xml.cpp)
-    list(APPEND TEST_LIBS firmir-xml)
 endif()
 if(FIRMIR_BUILD_LIB_DBUS)
     list(APPEND TEST_SOURCES dbus/test_dbus.cpp)

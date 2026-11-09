@@ -182,6 +182,10 @@ void Parser::parseMember(Object& object) {
         object.members.push_back(parsePropertyDecl());
         return;
     }
+    if (m_cur.text == "function" && peekKind() == TokenKind::Identifier) {
+        object.members.push_back(parseFunction());
+        return;
+    }
     if (m_cur.text.size() > 2 && m_cur.text.compare(0, 2, "on") == 0 &&
         (isUppercase(m_cur.text.substr(2, 1)) ||
          (m_cur.text.size() > 8 &&
@@ -320,31 +324,95 @@ HandlerStmt Parser::parseHandler() {
         expect(TokenKind::RParen, "')' after handler arguments");
     }
     expect(TokenKind::Colon, "':' after the handler name");
-    auto parseCommand = [this, &handler] {
-        Expr command = parseExpression();
-        if (m_cur.kind == TokenKind::Equal) {
-            // Property assignment command: `<target> = <expr>`; the target
-            // shape (id.prop / parent.prop / own property) is checked by sema.
-            const SourceLoc loc = command.loc;
-            advance();
-            Expr value = parseExpression();
-            command = Expr(loc, AssignExpr{makeExpr(std::move(command)),
-                                           makeExpr(std::move(value))});
-        }
-        accept(TokenKind::Semicolon);
-        handler.commands.push_back(std::move(command));
-    };
     if (accept(TokenKind::LBrace)) {
         while (m_cur.kind != TokenKind::RBrace) {
             if (m_cur.kind == TokenKind::EndOfFile)
                 throw Error(m_cur.loc, "unterminated handler block");
-            parseCommand();
+            handler.commands.push_back(parseCommand());
         }
         advance();
     } else {
-        parseCommand();
+        handler.commands.push_back(parseCommand());
     }
     return handler;
+}
+
+Expr Parser::parseCommand() {
+    // `const name = expr` — a local object declaration (sema restricts
+    // the right side to `someComponent.createObject(parent)`).
+    if (m_cur.kind == TokenKind::Identifier && m_cur.text == "const" &&
+        peekKind() == TokenKind::Identifier) {
+        const SourceLoc constLoc = m_cur.loc;
+        advance(); // 'const'
+        const Token name = m_cur;
+        advance();
+        expect(TokenKind::Equal, "'=' after the constant name");
+        Expr value = parseExpression();
+        accept(TokenKind::Semicolon);
+        return Expr(constLoc, ConstDeclExpr{name.text, makeExpr(std::move(value))});
+    }
+    Expr command = parseExpression();
+    if (m_cur.kind == TokenKind::Equal) {
+        // Property assignment command: `<target> = <expr>`; the target
+        // shape (id.prop / parent.prop / own property) is checked by sema.
+        const SourceLoc loc = command.loc;
+        advance();
+        Expr value = parseExpression();
+        command = Expr(loc, AssignExpr{makeExpr(std::move(command)),
+                                       makeExpr(std::move(value))});
+    }
+    accept(TokenKind::Semicolon);
+    return command;
+}
+
+FunctionDecl Parser::parseFunction() {
+    FunctionDecl function;
+    const Token keyword = m_cur;
+    function.loc = keyword.loc;
+    advance(); // 'function'
+    const Token name = expect(TokenKind::Identifier, "a function name after 'function'");
+    function.name = name.text;
+    expect(TokenKind::LParen, "'(' after the function name");
+    if (m_cur.kind != TokenKind::RParen) {
+        for (;;) {
+            const Token arg =
+                expect(TokenKind::Identifier, "a function argument name");
+            expect(TokenKind::Colon,
+                   "':' between the argument name and its type");
+            const Token type =
+                expect(TokenKind::Identifier, "a function argument type");
+            function.params.push_back({arg.loc, type.text, arg.text});
+            if (!accept(TokenKind::Comma))
+                break;
+        }
+    }
+    expect(TokenKind::RParen, "')' after the function arguments");
+    if (m_cur.kind == TokenKind::Minus && peekKind() == TokenKind::Greater) {
+        advance(); // '-'
+        advance(); // '>'  (`-> type` — the return type)
+        const Token type = expect(TokenKind::Identifier, "a return type after '->'");
+        function.returnTypeName = type.text;
+        function.returnTypeLoc = type.loc;
+    }
+    expect(TokenKind::LBrace, "'{' to open the body of '" + function.name + "'");
+    while (m_cur.kind != TokenKind::RBrace) {
+        if (m_cur.kind == TokenKind::EndOfFile)
+            throw Error(m_cur.loc, "unterminated function body");
+        if (m_cur.kind == TokenKind::Identifier && m_cur.text == "return") {
+            function.returnLoc = m_cur.loc;
+            advance(); // 'return'
+            function.returnValue = makeExpr(parseExpression());
+            accept(TokenKind::Semicolon);
+            if (m_cur.kind != TokenKind::RBrace)
+                throw Error(m_cur.loc, "'return' must be the last statement of '" +
+                                           function.name + "'");
+            break;
+        }
+        function.commands.push_back(parseCommand());
+    }
+    advance(); // '}'
+    accept(TokenKind::Semicolon);
+    return function;
 }
 
 PropertyStmt Parser::parseProperty() {

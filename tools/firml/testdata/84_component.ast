@@ -1,0 +1,41 @@
+(file 84_component.fml
+  (include <firmir/items/Rectangle.hpp> 2:1)
+  (include <firmir/items/Text.hpp> 3:1)
+  (include <firmir/items/Button.hpp> 4:1)
+  (object Rectangle 6:1
+    (property id 7:5 (ident root))
+    (property width 8:5 (number 300))
+    (property height 9:5 (number 200))
+    (object Rectangle 11:5
+      (property id 12:9 (ident container))
+      (anchor fill 13:17 (ident parent))
+    )
+    (object Component 16:5
+      (property id 17:9 (ident badgeComponent))
+      (object Rectangle 19:9
+        (property id 20:13 (ident badge))
+        (property width 21:13 (number 100))
+        (property height 22:13 (number 40))
+        (property color 23:13 (string "#336699"))
+        (object Text 25:13
+          (property id 26:17 (ident badgeText))
+          (property text 27:17 (string "Badge"))
+          (property color 28:17 (string "#FFFFFF"))
+          (anchor centerIn 29:25 (ident parent))
+        )
+        (object Button 32:13
+          (property id 33:17 (ident badgeButton))
+          (property text 34:17 (string "Hi"))
+          (handler onClicked 35:17
+(assign (member (ident badgeText) text) (string "clicked"))          )
+        )
+      )
+    )
+    (object Button 40:5
+      (property id 41:9 (ident spawnButton))
+      (property text 42:9 (string "Spawn"))
+      (handler onClicked 43:9
+(const badge1 (method (ident badgeComponent) createObject (ident container)))(assign (member (ident badge1) color) (string "#FF0000"))(method (ident badgeComponent) createObject (ident container))      )
+    )
+  )
+)

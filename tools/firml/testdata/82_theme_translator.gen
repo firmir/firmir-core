@@ -6,7 +6,7 @@
 #include <firmir/items/Text.hpp>
 #include <firmir/items/Button.hpp>
 
-namespace Firmir::Gui { class Item; }
+namespace Firmir::Gui { class Item; class Component; }
 
 /// Pointers into the created item tree (owned by the parent).
 struct F82ThemeTranslatorObjects {
@@ -27,7 +27,7 @@ F82ThemeTranslatorObjects createF82ThemeTranslator(Firmir::Gui::Item* parent);
 #include <firmir/string.hpp>
 #include <firmir/gui/painter.hpp>
 #include <firmir/gui/theme.hpp>
-#include <firmir/gui/translator.hpp>
+#include <firmir/translator.hpp>
 
 F82ThemeTranslatorObjects createF82ThemeTranslator(Firmir::Gui::Item* parent) {
     F82ThemeTranslatorObjects objects;
@@ -95,12 +95,12 @@ F82ThemeTranslatorObjects createF82ThemeTranslator(Firmir::Gui::Item* parent) {
                 label->setProperty("color", Firmir::detail::anyConvert<Firmir::Gui::Color>(Firmir::Gui::Theme::instance()->getProperty("primaryColor")));
         },
         Firmir::ConnectionMode::Direct);
-    label->setProperty("text", Firmir::Gui::Translator::instance()->trId(Firmir::String("hello-text")));
-    Firmir::Gui::Translator::instance()->connect<std::string, std::any>(
+    label->setProperty("text", Firmir::Translator::instance()->trId(Firmir::String("hello-text")));
+    Firmir::Translator::instance()->connect<std::string, std::any>(
         label, Firmir::Object::signalPropertyChanged,
         [label](const std::string& name, const std::any&) {
             if (name == "language")
-                label->setProperty("text", Firmir::Gui::Translator::instance()->trId(Firmir::String("hello-text")));
+                label->setProperty("text", Firmir::Translator::instance()->trId(Firmir::String("hello-text")));
         },
         Firmir::ConnectionMode::Direct);
     schemeLabel->setProperty("color", Firmir::detail::anyConvert<Firmir::Gui::Color>(Firmir::Gui::Theme::instance()->getProperty("secondaryColor")));
@@ -119,12 +119,12 @@ F82ThemeTranslatorObjects createF82ThemeTranslator(Firmir::Gui::Item* parent) {
                 schemeLabel->setProperty("text", Firmir::detail::anyConvert<Firmir::String>(Firmir::Gui::Theme::instance()->getProperty("colorScheme")));
         },
         Firmir::ConnectionMode::Direct);
-    accentButton->setProperty("text", Firmir::Gui::Translator::instance()->trId(Firmir::String("accent-button")));
-    Firmir::Gui::Translator::instance()->connect<std::string, std::any>(
+    accentButton->setProperty("text", Firmir::Translator::instance()->trId(Firmir::String("accent-button")));
+    Firmir::Translator::instance()->connect<std::string, std::any>(
         accentButton, Firmir::Object::signalPropertyChanged,
         [accentButton](const std::string& name, const std::any&) {
             if (name == "language")
-                accentButton->setProperty("text", Firmir::Gui::Translator::instance()->trId(Firmir::String("accent-button")));
+                accentButton->setProperty("text", Firmir::Translator::instance()->trId(Firmir::String("accent-button")));
         },
         Firmir::ConnectionMode::Direct);
 

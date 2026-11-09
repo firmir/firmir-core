@@ -1,0 +1,1 @@
+err_sema_component_no_id.fml:6:5: error: a Component needs an id (used as the createObject() receiver)

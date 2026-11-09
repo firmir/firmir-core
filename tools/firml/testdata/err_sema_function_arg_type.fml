@@ -1,0 +1,15 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+
+Rectangle {
+    id: root
+
+    function greet(name: string) -> string {
+        return "hi " + name
+    }
+
+    Text {
+        id: title
+        text: root.greet(42)
+    }
+}

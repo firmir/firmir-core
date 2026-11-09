@@ -5,7 +5,7 @@
 #include <firmir/items/Rectangle.hpp>
 #include <firmir/items/Button.hpp>
 
-namespace Firmir::Gui { class Item; }
+namespace Firmir::Gui { class Item; class Component; }
 
 /// Pointers into the created item tree (owned by the parent).
 struct F40HandlersObjects {

@@ -1,0 +1,9 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+
+    function fact(n: number) -> number {
+        return n <= 1 ? 1 : n * root.fact(n - 1)
+    }
+}

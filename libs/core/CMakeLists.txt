@@ -4,6 +4,8 @@ add_library(firmir-core SHARED
     src/dir.cpp
     src/file.cpp
     src/fileinfo.cpp
+    src/json.cpp
+    src/locale.cpp
     src/log.cpp
     src/object.cpp
     src/regexp.cpp
@@ -13,7 +15,9 @@ add_library(firmir-core SHARED
     src/textstream.cpp
     src/thread.cpp
     src/timer.cpp
+    src/translator.cpp
     src/variant.cpp
+    src/xml.cpp
 )
 
 target_include_directories(firmir-core
@@ -21,6 +25,10 @@ target_include_directories(firmir-core
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(firmir-core PUBLIC Threads::Threads)
+target_link_libraries(firmir-core PUBLIC Threads::Threads
+    PRIVATE ${CMAKE_DL_LIBS})
+# Locale backend plugins are dlopen()ed from here as a last resort.
+target_compile_definitions(firmir-core PRIVATE
+    FIRMIR_SYSTEM_PLUGIN_DIR="${FIRMIR_SYSTEM_PLUGIN_DIR}/core")
 
 firmir_install_library(firmir-core MODULE core)

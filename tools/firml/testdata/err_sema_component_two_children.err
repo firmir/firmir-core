@@ -1,0 +1,1 @@
+err_sema_component_two_children.fml:10:9: error: a Component holds exactly one child object (the template)

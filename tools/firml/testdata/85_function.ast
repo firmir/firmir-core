@@ -1,0 +1,41 @@
+(file 85_function.fml
+  (include <firmir/items/Rectangle.hpp> 4:1)
+  (include <firmir/items/Text.hpp> 5:1)
+  (include <firmir/items/Button.hpp> 6:1)
+  (object Rectangle 8:1
+    (property id 9:5 (ident root))
+    (property width 10:5 (number 400))
+    (property height 11:5 (number 300))
+    (property color 12:5 (string "#202020"))
+    (decl number clicks 13:5 (number 0))
+    (function greet 16:5 (param string name) -> string
+(return (binary + (binary + (string "Hello, ") (ident name)) (string "!")))    )
+    (function accent 21:5 (param color base) -> color
+(return (call lighter (ident base)))    )
+    (function doubleClicks 26:5 -> number
+(return (binary * (ident clicks) (number 2)))    )
+    (function applySize 31:5 (param number w) (param number h)
+(assign (ident width) (ident w))(assign (ident height) (ident h))    )
+    (function summary 37:5 -> string
+(return (binary + (method (ident root) greet (string "count")) (method (ident root) doubleClicks)))    )
+    (function stateLabel 41:5 (param bool active) -> string
+(return (cond (ident active) (string "on") (string "off")))    )
+    (object Text 45:5
+      (property id 46:9 (ident title))
+      (property text 47:9 (method (ident root) summary))
+      (property x 48:9 (method (ident root) doubleClicks))
+      (property color 49:9 (method (ident root) accent (string "#336699")))
+    )
+    (object Text 52:5
+      (property id 53:9 (ident subtitle))
+      (property text 54:9 (method (ident root) stateLabel (binary > (member (ident root) clicks) (number 1))))
+      (property y 55:9 (number 30))
+    )
+    (object Button 58:5
+      (property id 59:9 (ident btn))
+      (property text 60:9 (method (ident root) greet (string "World")))
+      (handler onClicked 61:9
+(assign (member (ident root) clicks) (binary + (member (ident root) clicks) (number 1)))(method (ident root) applySize (number 500) (number 400))(assign (member (ident title) text) (method (ident root) summary))(assign (member (ident subtitle) text) (method (ident parent) stateLabel (bool false)))      )
+    )
+  )
+)

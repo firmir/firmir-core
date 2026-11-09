@@ -51,6 +51,8 @@ if(FIRMIR_BUILD_TESTS)
         80_rectangle_border
         81_connections_binding
         83_property_group
+        84_component
+        85_function
         err_bad_token
         err_two_roots
         err_unclosed_brace
@@ -79,6 +81,7 @@ if(FIRMIR_BUILD_TESTS)
         80_rectangle_border
         81_connections_binding
         83_property_group
+        84_component
         err_sema_anchor_axis_conflict
         err_sema_anchor_center_conflict
         err_sema_anchor_fill_conflict
@@ -103,6 +106,18 @@ if(FIRMIR_BUILD_TESTS)
         err_sema_model_not_model
         err_sema_model_unknown_role
         err_sema_nested_repeater
+        err_sema_component_no_id
+        err_sema_component_two_children
+        err_sema_component_createobject_args
+        err_sema_component_const_rhs
+        err_sema_function_no_id
+        err_sema_function_duplicate
+        err_sema_function_recursion
+        err_sema_function_return_type
+        err_sema_function_arg_type
+        err_sema_function_args
+        err_sema_function_void_in_expr
+        err_sema_function_param_dup
         err_sema_repeater_delegates
         err_sema_repeater_no_model
         err_sema_binding_readonly
@@ -166,6 +181,8 @@ if(FIRMIR_BUILD_TESTS)
         81_connections_binding
         82_theme_translator
         83_property_group
+        84_component
+        85_function
     )
     foreach(case IN LISTS FIRML_GEN_CASES)
         add_test(
@@ -249,6 +266,22 @@ if(FIRMIR_BUILD_TESTS)
                          COMMAND $<TARGET_FILE:firmlc_handlers_app>)
             endif()
 
+            # Deferred Component templates: createObject() instantiates the
+            # subtree at runtime; the result is a writable local object.
+            firml_add_target(firmlc_component_codegen
+                ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/testdata/e2e
+                SOURCES testdata/e2e/component.fml)
+            add_executable(firmlc_component_app testdata/e2e/component_main.cpp)
+            target_link_libraries(firmlc_component_app PRIVATE
+                firmlc_component_codegen firmir-gui-headless)
+            if(FIRMIR_SANITIZER STREQUAL "thread")
+                add_test(NAME firmlc.component.app
+                         COMMAND setarch -R $<TARGET_FILE:firmlc_component_app>)
+            else()
+                add_test(NAME firmlc.component.app
+                         COMMAND $<TARGET_FILE:firmlc_component_app>)
+            endif()
+
             # QML-style Connections/Binding attached to a target object.
             firml_add_target(firmlc_connections_codegen
                 ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/testdata/e2e
@@ -262,6 +295,22 @@ if(FIRMIR_BUILD_TESTS)
             else()
                 add_test(NAME firmlc.connections.app
                          COMMAND $<TARGET_FILE:firmlc_connections_app>)
+            endif()
+
+            # Script-declared functions: called from bindings (with dep
+            # propagation) and from handler commands.
+            firml_add_target(firmlc_function_codegen
+                ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/testdata/e2e
+                SOURCES testdata/e2e/function.fml)
+            add_executable(firmlc_function_app testdata/e2e/function_main.cpp)
+            target_link_libraries(firmlc_function_app PRIVATE
+                firmlc_function_codegen firmir-gui-headless)
+            if(FIRMIR_SANITIZER STREQUAL "thread")
+                add_test(NAME firmlc.function.app
+                         COMMAND setarch -R $<TARGET_FILE:firmlc_function_app>)
+            else()
+                add_test(NAME firmlc.function.app
+                         COMMAND $<TARGET_FILE:firmlc_function_app>)
             endif()
         endif()
 

@@ -1,0 +1,68 @@
+// User-defined functions: `function name(arg: type, ...) -> type { ... }`
+// on an object with an id; callable as id.name(args) from bindings and
+// handler commands.
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+#include <firmir/items/Button.hpp>
+
+Rectangle {
+    id: root
+    width: 400
+    height: 300
+    color: "#202020"
+    property number clicks: 0
+
+    // A pure value function (no deps): static at the call site.
+    function greet(name: string) -> string {
+        return "Hello, " + name + "!"
+    }
+
+    // A color helper built on the lighter() global.
+    function accent(base: color) -> color {
+        return lighter(base)
+    }
+
+    // The return expression's deps (root.clicks) become the call site's deps.
+    function doubleClicks() -> number {
+        return clicks * 2
+    }
+
+    // A void function: callable from handlers only.
+    function applySize(w: number, h: number) {
+        width = w
+        height = h
+    }
+
+    // Functions call each other regardless of the declaration order.
+    function summary() -> string {
+        return root.greet("count") + root.doubleClicks()
+    }
+
+    function stateLabel(active: bool) -> string {
+        return active ? "on" : "off"
+    }
+
+    Text {
+        id: title
+        text: root.summary()
+        x: root.doubleClicks()
+        color: root.accent("#336699")
+    }
+
+    Text {
+        id: subtitle
+        text: root.stateLabel(root.clicks > 1)
+        y: 30
+    }
+
+    Button {
+        id: btn
+        text: root.greet("World")
+        onClicked: {
+            root.clicks = root.clicks + 1
+            root.applySize(500, 400)
+            title.text = root.summary()
+            subtitle.text = parent.stateLabel(false)
+        }
+    }
+}

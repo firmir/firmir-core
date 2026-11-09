@@ -40,12 +40,16 @@ struct VideoFrame {
 
     /// GPU-resident frame (zero-copy path); when set, rgba may be empty.
     std::shared_ptr<GpuFrameHandle> gpu;
-    /// Backend-provided GPU->CPU readback used by ensureCpuPixels(); fills
-    /// rgba/width/height. Only ever invoked on the fallback path.
+    /// Backend-provided pixel fetch used by ensureCpuPixels(); fills
+    /// rgba/width/height. For GPU frames this is the GPU->CPU readback; for
+    /// the CPU path the backend may keep the native buffer alive and copy
+    /// pixels lazily, so frames that are dropped before display never pay
+    /// for the copy.
     std::function<bool(VideoFrame&)> readback;
 
     bool isValid() const {
-        return width > 0 && height > 0 && (!rgba.empty() || gpu != nullptr);
+        return width > 0 && height > 0 &&
+               (!rgba.empty() || gpu != nullptr || readback != nullptr);
     }
     bool hasGpuPixels() const { return gpu != nullptr; }
     /// Ensures CPU pixels are available, reading the GPU frame back through

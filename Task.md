@@ -8,13 +8,13 @@ Firmir — C++17 фреймворк без внешних зависимосте
 ```
 libs/
   core/         Object, Thread, Timer, EventLoop, String, ByteArray,
-                Variant, Settings, RegExp, Log, Concurrent, файлы/потоки
-  json/         JsonValue, JsonArray, JsonObject, JsonDocument
-  xml/          XmlElement, XmlDocument
+                Variant, Settings, RegExp, Log, Concurrent, файлы/потоки,
+                JsonValue/JsonDocument, XmlElement/XmlDocument,
+                Translator (trId/i18n), Locale (язык системы)
   dbus/         DBusConnection + утилита firmir-dbus-tool
   networking/   NetworkAccessManager, NetworkRequest, NetworkReply
   gui/          Screen, Window, Item (2D scene graph), Painter, Platform,
-                Theme (синглтон оформления), Translator (trId/i18n)
+                Theme (синглтон оформления), Component (отложенные шаблоны)
   gui-controls/ контролы (скруглены, цвета из Theme)
 plugins/
   gui/          подгружаемые бэкенды firmir-gui-<имя>.so:
@@ -70,12 +70,20 @@ tests/          собственный мини-фреймворк, один б�
   "#RRGGBB"/"#AARRGGBB" (`detail::anyToColor`); `controlRadius()` =
   clamp(paddingSmall*1.5, 2, 12). Window подписан на
   `signalPropertyChanged` → полная перерисовка (Queued).
-- **Translator/i18n** — синглтон `Firmir::Gui::Translator`
-  (`gui/translator.hpp`, тип "Firmir.Gui.Translator"): JSON-файлы
-  `{"language":"ru","strings":{...}}`, `trId(id)` с фолбэком на id, язык по
-  умолчанию из LC_ALL/LANG (codeset отрезается до проверки C/POSIX);
-  addTranslationFile/removeTranslationFile/setLanguage эмитят
-  `propertyChanged("language")` → биндинги trId пересчитываются сами.
+- **Translator/i18n** — синглтон `Firmir::Translator` (firmir-core,
+  `translator.hpp`, тип "Firmir.Core.Translator"): JSON-файлы
+  `{"language":"ru","strings":{...}}`, `trId(id)` с фолбэком на id;
+  язык по умолчанию следует `Firmir::Locale` (явный `setLanguage`
+  отключает слежение); addTranslationFile/removeTranslationFile/setLanguage
+  эмитят `propertyChanged("language")` → биндинги trId пересчитываются сами.
+- **Locale** — синглтон `Firmir::Locale` (firmir-core): системный язык от
+  бэкенд-плагина `firmir-locale-<name>.so` (поиск: FIRMIR_CORE_PLUGIN_PATH,
+  `plugins/core` рядом с бинарём, системный каталог; фолбэк —
+  FIRMIR_LANGUAGE/LC_ALL/LANG), сигнал бэкенда о смене языка пробрасывается
+  в `propertyChanged("language")`; `setLanguage()` — override приложения,
+  отключает слежение за системой. Тестовый бэкенд `plugins/core/locale`
+  (возвращает "ru", переключение через свойство `simulateLanguage`).
+  Документация: `doc/core/locale.md`.
 - **Скруглённые контролы** — `Painter::fillRoundedRect` (общая
   SDF-растеризация `detail/rounded_rect.hpp`, append-only кэш битмапов:
   указатели — ключи текстурного кэша RenderDevice, eviction → ABA);
@@ -251,9 +259,21 @@ ctest --test-dir build --output-on-failure
 - [x] Theme singleton `Firmir.Gui.Theme` (~45 записываемых свойств, X-macro
       `FIRMIR_THEME_PROPS`, цвета "#RRGGBB"); контролы скруглены
       (SDF `Painter::fillRoundedRect`, append-only кэш) и берут цвета из темы
-- [x] Локализация: синглтон `Firmir.Gui.Translator` (JSON
+- [x] Локализация: синглтон `Firmir.Core.Translator` (JSON
       `{"language","strings"}`), builtin `trId()` в firmlc, язык из
-      LC_ALL/LANG, переключение в рантайме (демо — firmir-weather)
+      Locale/окружения, переключение в рантайме (демо — firmir-weather)
+- [x] firmir-json и firmir-xml влиты в firmir-core (отдельных библиотек
+      больше нет; заголовки `firmir/json.hpp`/`firmir/xml.hpp` на месте);
+      Translator перенесён из firmir-gui в firmir-core
+      (`Firmir::Translator`, синглтон "Firmir.Core.Translator"; старое имя
+      `Firmir.Gui.Translator` в .fml принимается как алиас)
+- [x] `Firmir::Locale` + бэкенд-плагины `firmir-locale-*.so` (тестовый —
+      plugins/core/locale, "ru" + смена через `simulateLanguage`);
+      `Locale::setLanguage` — override приложения, отключает слежение за
+      системным языком (doc/core/locale.md)
+- [x] Firml `Component { id: c; ... }` + `c.createObject(parent)` в
+      обработчиках (`const obj = c.createObject(p)`, запись свойств и вызов
+      методов на obj); snapshot 84_component + e2e firmlc.component.app
 - [ ] DRM-бэкенд: page flip vsync вместо простого memcpy, окна меньше
       экрана (сейчас только fullscreen-поверхность на коннектор)
 

@@ -166,8 +166,8 @@ std::string dottedExprName(const Expr& expr) {
 std::string singletonAccess(const std::string& canonical) {
     if (canonical == "Firmir.Gui.Theme")
         return "Firmir::Gui::Theme::instance()";
-    if (canonical == "Firmir.Gui.Translator")
-        return "Firmir::Gui::Translator::instance()";
+    if (canonical == "Firmir.Core.Translator")
+        return "Firmir::Translator::instance()";
     // Firmir.Gui.App is created and registered by the generated window
     // function, so it is looked up dynamically here.
     return "Firmir::Object::singleton<Firmir::Gui::App>(\"Firmir.Gui.App\")";
@@ -261,6 +261,12 @@ public:
                     return ValueType::String;
             }
             return ValueType::Number;
+        }
+        if (const auto* call = std::get_if<MethodCallExpr>(&expr.node)) {
+            // A script-function call (validated by sema).
+            if (const FunctionInfo* fn = resolveScriptCall(*call, scope))
+                return fn->returnType;
+            return ValueType::Number; // unreachable: sema validated it
         }
         return ValueType::Number;
     }
@@ -380,7 +386,7 @@ public:
             }
             if (function == BuiltinFunction::TrId) {
                 usesTranslator = true;
-                return "Firmir::Gui::Translator::instance()->trId(" +
+                return "Firmir::Translator::instance()->trId(" +
                        emit(call->args[0], ValueType::String, scope) + ")";
             }
             // lighter/darker: single Color argument
@@ -388,8 +394,49 @@ public:
             return "(" + arg + (function == BuiltinFunction::Lighter ? ").lighter()"
                                                                      : ").darker()");
         }
+        if (const auto* call = std::get_if<MethodCallExpr>(&expr.node)) {
+            // A script-function call (validated by sema).
+            if (const FunctionInfo* fn = resolveScriptCall(*call, scope))
+                return emitScriptCall(*fn, *call, scope);
+        }
         throw Error(expr.loc,
                     "internal: expression cannot be emitted as a static value");
+    }
+
+    /// The generated std::function variable name of a script function.
+    static std::string functionVarName(const FunctionInfo& fn) {
+        return fn.owner->internalName + "_" + fn.decl->name;
+    }
+
+    /// Resolves `id.function(...)` / `parent.function(...)` to the declared
+    /// script function (nullptr when the receiver has no such function);
+    /// sema has already validated the call.
+    const FunctionInfo* resolveScriptCall(const MethodCallExpr& call,
+                                          const ObjectInfo& scope) const {
+        const auto* ident = std::get_if<IdentExpr>(&call.object->node);
+        if (!ident)
+            return nullptr;
+        const ObjectInfo* target = nullptr;
+        if (ident->name == "parent")
+            target = scope.parent;
+        else if (const auto it = sema->byId.find(ident->name);
+                 it != sema->byId.end())
+            target = it->second;
+        if (!target)
+            return nullptr;
+        return findCustomFunction(*target, call.method);
+    }
+
+    /// `id.function(args)` → the std::function variable invocation.
+    std::string emitScriptCall(const FunctionInfo& fn, const MethodCallExpr& call,
+                               const ObjectInfo& scope) {
+        std::string out = functionVarName(fn) + "(";
+        for (std::size_t i = 0; i < call.args.size(); ++i) {
+            if (i)
+                out += ", ";
+            out += emit(call.args[i], fn.paramTypes[i], scope);
+        }
+        return out + ")";
     }
 
 private:
@@ -500,13 +547,19 @@ public:
         body << "    " << structName << " objects;\n";
         for (const ObjectInfo* obj : m_sema.objects) {
             // Delegate subtrees are emitted by their Repeater (inside the
-            // instantiation loop); ListElements compile into append() calls
+            // instantiation loop); Component subtrees live in the component's
+            // factory lambda; ListElements compile into append() calls
             // of their ListModel; Connections/Binding are declarative — sema
             // already turned them into handler/binding table entries.
-            if (obj->delegateScope || obj->type->kind == TypeKind::ModelElement ||
+            if (obj->delegateScope || obj->componentScope ||
+                obj->type->kind == TypeKind::ModelElement ||
                 obj->type->kind == TypeKind::Connections ||
                 obj->type->kind == TypeKind::Binding)
                 continue;
+            if (obj->type->kind == TypeKind::Component) {
+                m_components.push_back(obj); // emitted after the object loop
+                continue;
+            }
             emitObject(*obj, body);
         }
         if (windowRoot && m_sema.usesAppSingleton) {
@@ -516,6 +569,14 @@ public:
             body << "    Firmir::Object::registerSingleton(\"Firmir.Gui.App\", app);\n";
             body << "    objects.app = app;\n";
         }
+        // Script functions come before component factories (a template
+        // expression may call a main-scope function) and before the bindings
+        // (whose lambdas reference them).
+        emitFunctions(body);
+        // Component factories capture the objects above by value, so they are
+        // created after every main-tree object exists.
+        for (const ObjectInfo* component : m_components)
+            emitComponent(*component, body);
         emitBindings(body);
         emitAnchors(body);
         emitBehaviors(body);
@@ -542,7 +603,9 @@ private:
     void emitObject(const ObjectInfo& obj, std::ostringstream& body) {
         const std::string& var = obj.internalName;
         std::string parentVar;
-        if (!obj.parent)
+        if (obj.parent && obj.parent->type->kind == TypeKind::Component)
+            parentVar = "parent"; // the template root: the factory argument
+        else if (!obj.parent)
             parentVar = obj.type->kind == TypeKind::Window ? "screen" : "parent";
         else if (obj.parent->type->kind == TypeKind::Window ||
                  obj.parent->type->contentItemParent)
@@ -558,8 +621,9 @@ private:
             body << "    " << obj.parent->internalName << "->"
                  << obj.parent->type->childAddMethod << "(" << var << ");\n";
         }
-        if (!obj.parent || !obj.id.empty()) {
+        if (!m_currentComponent && (!obj.parent || !obj.id.empty())) {
             // The root is always exposed; children only when they have an id.
+            // Component template objects are per-instance factory locals.
             const std::string field =
                 obj.parent ? obj.id : (obj.id.empty() ? "root" : obj.id);
             body << "    objects." << field << " = " << var << ";\n";
@@ -587,6 +651,15 @@ private:
         for (const BindingInfo& binding : m_sema.bindings) {
             if (binding.object != &obj || !binding.isStatic)
                 continue;
+            // A static value calling a script function references a
+            // std::function lambda defined later — emitFunctions emits it
+            // after the function definitions.
+            std::vector<std::string> fnRefs;
+            collectFunctionRefs(binding.stmt->value, obj, fnRefs);
+            if (!fnRefs.empty()) {
+                m_deferredStatics.push_back(&binding);
+                continue;
+            }
             const ValueType type =
                 propValueType(obj, binding.property, binding.stmt->value);
             if ((binding.property == "transformOrigin" ||
@@ -606,6 +679,44 @@ private:
         }
         if (obj.type == builtinType("Repeater"))
             m_repeaters.push_back(&obj); // the delegate loop is emitted last
+    }
+
+    /// Emits a Component: a Firmir::Gui::Component whose factory lambda builds
+    /// the template subtree on each createObject() call. The subtree objects,
+    /// their static properties, bindings, anchors, behaviors and handlers are
+    /// emitted inside the lambda (they capture the surrounding objects by
+    /// value — the Component is constructed after all of them exist).
+    void emitComponent(const ObjectInfo& comp, std::ostringstream& body) {
+        m_usesComponent = true;
+        const ObjectInfo* root = comp.componentRoot;
+        std::string parentVar;
+        if (!comp.parent)
+            parentVar = "parent";
+        else if (comp.parent->type->kind == TypeKind::Window ||
+                 comp.parent->type->contentItemParent)
+            parentVar = comp.parent->internalName + "->contentItem()";
+        else
+            parentVar = comp.parent->internalName;
+        body << "\n    // Component " << comp.id << " (deferred subtree)\n";
+        body << "    auto* " << comp.internalName << " = new Firmir::Gui::Component(\n";
+        body << "        [=](Firmir::Gui::Item* parent) -> Firmir::Gui::Item* {\n";
+        const ObjectInfo* savedComponent = m_currentComponent;
+        m_currentComponent = &comp;
+        for (const ObjectInfo* obj : m_sema.objects) {
+            if (obj->componentScope != &comp)
+                continue;
+            emitObject(*obj, body);
+        }
+        emitFunctions(body);
+        emitBindings(body);
+        emitAnchors(body);
+        emitBehaviors(body);
+        emitHandlers(body);
+        m_currentComponent = savedComponent;
+        body << "            return " << root->internalName << ";\n";
+        body << "        }, " << parentVar << ");\n";
+        body << "    " << comp.internalName << "->setName(\"" << comp.id << "\");\n";
+        body << "    objects." << comp.id << " = " << comp.internalName << ";\n";
     }
 
     /// Emits the ListElement children of a ListModel as append() calls. Sema
@@ -790,6 +901,13 @@ private:
             if (!m_expr.delegateModelVar.empty())
                 captures.push_back(m_expr.delegateModelVar);
         }
+        // Script-function lambdas referenced by the expression are captured
+        // as well (they are create()-scope local variables).
+        std::vector<std::string> functionRefs;
+        collectFunctionRefs(value, obj, functionRefs);
+        for (const std::string& fnVar : functionRefs)
+            if (std::find(captures.begin(), captures.end(), fnVar) == captures.end())
+                captures.push_back(fnVar);
         for (const std::string& dep : deps) {
             const std::string depObj = dep.substr(0, dep.rfind('.'));
             if (builtinSingleton(depObj))
@@ -819,6 +937,44 @@ private:
         }
     }
 
+    /// Collects the `<id>_<name>` lambda variables of the script functions
+    /// referenced by the expression (for the binding lambda capture list).
+    void collectFunctionRefs(const Expr& expr, const ObjectInfo& scope,
+                             std::vector<std::string>& out) const {
+        if (const auto* call = std::get_if<MethodCallExpr>(&expr.node)) {
+            if (const FunctionInfo* fn = m_expr.resolveScriptCall(*call, scope)) {
+                const std::string var = ExprEmitter::functionVarName(*fn);
+                if (std::find(out.begin(), out.end(), var) == out.end())
+                    out.push_back(var);
+            }
+            for (const Expr& arg : call->args)
+                collectFunctionRefs(arg, scope, out);
+            return;
+        }
+        if (const auto* call = std::get_if<CallExpr>(&expr.node)) {
+            for (const Expr& arg : call->args)
+                collectFunctionRefs(arg, scope, out);
+            return;
+        }
+        if (const auto* bin = std::get_if<BinaryExpr>(&expr.node)) {
+            collectFunctionRefs(*bin->lhs, scope, out);
+            collectFunctionRefs(*bin->rhs, scope, out);
+            return;
+        }
+        if (const auto* un = std::get_if<UnaryExpr>(&expr.node)) {
+            collectFunctionRefs(*un->operand, scope, out);
+            return;
+        }
+        if (const auto* cond = std::get_if<ConditionalExpr>(&expr.node)) {
+            collectFunctionRefs(*cond->condition, scope, out);
+            collectFunctionRefs(*cond->thenExpr, scope, out);
+            collectFunctionRefs(*cond->elseExpr, scope, out);
+            return;
+        }
+        if (const auto* member = std::get_if<MemberExpr>(&expr.node))
+            collectFunctionRefs(*member->object, scope, out);
+    }
+
     /// `delegate` selects the emission scope: nullptr for top-level objects,
     /// or the Repeater whose delegate subtree is being emitted in its loop.
     void emitBindings(std::ostringstream& body, const ObjectInfo* delegate = nullptr) {
@@ -827,6 +983,8 @@ private:
             if (binding.isStatic)
                 continue;
             if (binding.object->delegateScope != delegate)
+                continue;
+            if (binding.object->componentScope != m_currentComponent)
                 continue;
             if (!wroteComment) {
                 body << "\n    // bindings\n";
@@ -844,6 +1002,8 @@ private:
     void emitAnchors(std::ostringstream& body) {
         bool wroteComment = false;
         for (const AnchorInfo& anchor : m_sema.anchors) {
+            if (anchor.object->componentScope != m_currentComponent)
+                continue;
             if (!wroteComment) {
                 body << "\n    // anchors\n";
                 wroteComment = true;
@@ -891,6 +1051,24 @@ private:
     }
 
     static std::string dottedName(const Expr& expr) { return dottedExprName(expr); }
+
+    /// The C++ variable for a createObject() parent argument (validated by
+    /// sema as an object id or 'parent'). Inside a Component template root
+    /// 'parent' is the factory parameter.
+    std::string createObjectParentArg(const Expr& arg, const ObjectInfo& scope) {
+        const auto& ident = std::get<IdentExpr>(arg.node);
+        if (ident.name == "parent") {
+            if (scope.parent && scope.parent->type->kind == TypeKind::Component)
+                return "parent"; // the factory parameter
+            if (scope.parent->type->kind == TypeKind::Window)
+                return scope.parent->internalName + "->contentItem()";
+            return scope.parent->internalName;
+        }
+        const ObjectInfo* target = m_sema.byId.at(ident.name);
+        if (target->type->kind == TypeKind::Window)
+            return target->internalName + "->contentItem()";
+        return target->internalName;
+    }
 
     static std::string handlerCppType(const std::string& type) {
         if (type == "int") return "int";
@@ -969,6 +1147,22 @@ private:
                     m_usesAppSingleton = true;
             } else {
                 const auto& base = std::get<IdentExpr>(member.object->node);
+                // A `const obj = comp.createObject(...)` local of this handler.
+                if (const auto local = m_componentLocals.find(base.name);
+                    local != m_componentLocals.end()) {
+                    const PropertyInfo* prop =
+                        local->second->type->findProperty(member.name);
+                    const CustomPropInfo* custom =
+                        prop ? nullptr : findCustomProp(*local->second, member.name);
+                    const ValueType type =
+                        prop ? prop->type
+                             : (custom ? custom->type
+                                       : m_expr.typeOf(*assign.value, scope));
+                    body << "        " << base.name << "->setProperty(\""
+                         << member.name << "\", "
+                         << m_expr.emit(*assign.value, type, scope) << ");\n";
+                    return;
+                }
                 targetObj =
                     base.name == "parent" ? scope.parent : m_sema.byId.at(base.name);
             }
@@ -1003,9 +1197,14 @@ private:
         for (const HandlerInfo& handler : m_sema.handlers) {
             if (handler.object->delegateScope != delegate)
                 continue;
+            if (handler.object->componentScope != m_currentComponent)
+                continue;
             const HandlerStmt& stmt = *handler.stmt;
             const std::string& var = handler.object->internalName;
             m_expr.locals.clear();
+            m_componentLocals.clear();
+            for (const auto& local : handler.componentLocals)
+                m_componentLocals[local.first] = local.second;
             for (const HandlerParam& param : stmt.params) {
                 ValueType type = ValueType::Number;
                 if (param.typeName == "string") type = ValueType::String;
@@ -1032,28 +1231,151 @@ private:
             // The command scope differs from the signal owner for Connections.
             const ObjectInfo& scope =
                 handler.context ? *handler.context : *handler.object;
-            for (const Expr& command : stmt.commands) {
-                if (const auto* assign = std::get_if<AssignExpr>(&command.node)) {
-                    emitAssignCommand(body, scope, *assign);
-                    continue;
-                }
-                const auto& call = std::get<MethodCallExpr>(command.node);
-                body << "        " << methodReceiver(*call.object) << "->" << call.method << "(";
-                for (std::size_t i = 0; i < call.args.size(); ++i) {
-                    if (i)
-                        body << ", ";
-                    body << m_expr.emit(call.args[i], handlerExprType(call.args[i], scope),
-                                        scope);
-                }
-                body << ");\n";
-            }
+            for (const Expr& command : stmt.commands)
+                emitCommand(body, scope, command);
             body << "    });\n";
         }
         m_expr.locals.clear();
     }
 
+    /// Emits one handler/function body command at 8-space indent: a method
+    /// call (native or script-declared), a property assignment or a `const`
+    /// local declaration.
+    void emitCommand(std::ostringstream& body, const ObjectInfo& scope,
+                     const Expr& command) {
+        if (const auto* decl = std::get_if<ConstDeclExpr>(&command.node)) {
+            // const name = someComponent.createObject(parent)
+            const auto& call = std::get<MethodCallExpr>(decl->value->node);
+            const auto& receiver = std::get<IdentExpr>(call.object->node);
+            body << "        auto* " << decl->name << " = "
+                 << m_sema.byId.at(receiver.name)->internalName
+                 << "->createObject("
+                 << createObjectParentArg(call.args[0], scope)
+                 << ");\n";
+            return;
+        }
+        if (const auto* assign = std::get_if<AssignExpr>(&command.node)) {
+            emitAssignCommand(body, scope, *assign);
+            return;
+        }
+        const auto& call = std::get<MethodCallExpr>(command.node);
+        if (const auto* receiver = std::get_if<IdentExpr>(&call.object->node)) {
+            const auto it = m_sema.byId.find(receiver->name);
+            // someComponent.createObject(parent) without a local binding.
+            if (it != m_sema.byId.end() &&
+                it->second->type->kind == TypeKind::Component &&
+                call.method == "createObject") {
+                body << "        " << it->second->internalName
+                     << "->createObject("
+                     << createObjectParentArg(call.args[0], scope)
+                     << ");\n";
+                return;
+            }
+            // A script-declared function of the receiver object.
+            const ObjectInfo* target =
+                receiver->name == "parent"
+                    ? scope.parent
+                    : (it != m_sema.byId.end() ? it->second : nullptr);
+            if (target)
+                if (const FunctionInfo* fn =
+                        findCustomFunction(*target, call.method)) {
+                    body << "        " << m_expr.emitScriptCall(*fn, call, scope)
+                         << ";\n";
+                    return;
+                }
+        }
+        body << "        " << methodReceiver(*call.object) << "->" << call.method << "(";
+        for (std::size_t i = 0; i < call.args.size(); ++i) {
+            if (i)
+                body << ", ";
+            body << m_expr.emit(call.args[i], handlerExprType(call.args[i], scope),
+                                scope);
+        }
+        body << ");\n";
+    }
+
+    /// The C++ signature type of a script function: `double(double, bool)`.
+    static std::string functionCppType(const FunctionInfo& fn) {
+        std::string out = fn.isVoid ? "void(" : cppValueType(fn.returnType) + "(";
+        for (std::size_t i = 0; i < fn.paramTypes.size(); ++i) {
+            if (i)
+                out += ", ";
+            out += cppValueType(fn.paramTypes[i]);
+        }
+        return out + ")";
+    }
+
+    /// Emits the script-declared functions of the current scope as
+    /// std::function lambdas (`<id>_<name>`); the declarations precede the
+    /// definitions so the call order between functions does not matter.
+    /// Afterwards the static property assignments deferred by emitObject
+    /// (they call a function) are emitted.
+    void emitFunctions(std::ostringstream& body) {
+        std::vector<const FunctionInfo*> functions;
+        for (const ObjectInfo* obj : m_sema.objects) {
+            if (obj->functions.empty() || obj->delegateScope ||
+                obj->componentScope != m_currentComponent)
+                continue;
+            for (const FunctionInfo& fn : obj->functions)
+                functions.push_back(&fn);
+        }
+        if (!functions.empty()) {
+            m_usesFunctions = true;
+            body << "\n    // functions\n";
+            for (const FunctionInfo* fn : functions)
+                body << "    std::function<" << functionCppType(*fn) << "> "
+                     << ExprEmitter::functionVarName(*fn) << ";\n";
+            for (const FunctionInfo* fn : functions)
+                emitFunctionDefinition(body, *fn);
+        }
+        for (auto it = m_deferredStatics.begin(); it != m_deferredStatics.end();) {
+            const BindingInfo* binding = *it;
+            if (binding->object->componentScope != m_currentComponent ||
+                binding->object->delegateScope) {
+                ++it;
+                continue;
+            }
+            const ObjectInfo& obj = *binding->object;
+            const ValueType type =
+                propValueType(obj, binding->property, binding->stmt->value);
+            body << "    " << obj.internalName << "->setProperty(\""
+                 << binding->property << "\", "
+                 << m_expr.emit(binding->stmt->value, type, obj) << ");\n";
+            it = m_deferredStatics.erase(it);
+        }
+    }
+
+    void emitFunctionDefinition(std::ostringstream& body, const FunctionInfo& fn) {
+        m_expr.locals.clear();
+        m_componentLocals.clear();
+        for (const auto& local : fn.componentLocals)
+            m_componentLocals[local.first] = local.second;
+        for (std::size_t i = 0; i < fn.decl->params.size(); ++i)
+            m_expr.locals[fn.decl->params[i].name] = fn.paramTypes[i];
+        body << "    " << ExprEmitter::functionVarName(fn) << " = [=](";
+        for (std::size_t i = 0; i < fn.decl->params.size(); ++i) {
+            if (i)
+                body << ", ";
+            body << cppValueType(fn.paramTypes[i]) << " " << fn.decl->params[i].name;
+        }
+        body << ")";
+        if (!fn.isVoid)
+            body << " -> " << cppValueType(fn.returnType);
+        body << " {\n";
+        for (const Expr& command : fn.decl->commands)
+            emitCommand(body, *fn.owner, command);
+        if (fn.decl->returnValue)
+            body << "        return "
+                 << m_expr.emit(*fn.decl->returnValue, fn.returnType, *fn.owner)
+                 << ";\n";
+        body << "    };\n";
+        m_expr.locals.clear();
+    }
+
     void emitBehaviors(std::ostringstream& body) {
         for (const BehaviorInfo& behavior : m_sema.behaviors) {
+            if (behavior.object->componentScope != m_currentComponent)
+                continue;
             body << "\n    // behavior on " << behavior.property << "\n";
             const std::string rootVar = emitAnimationTree(
                 body, *behavior.animation, behavior.object->internalName);
@@ -1101,7 +1423,7 @@ private:
         }
         const bool windowRoot =
             m_sema.objects.front()->type->kind == TypeKind::Window;
-        out << "\nnamespace Firmir::Gui { class Item;";
+        out << "\nnamespace Firmir::Gui { class Item; class Component;";
         if (windowRoot)
             out << " class Screen;";
         if (windowRoot && m_sema.usesAppSingleton)
@@ -1113,6 +1435,8 @@ private:
                     : "/// Pointers into the created item tree (owned by the parent).\n");
         out << "struct " << structName << " {\n";
         for (const ObjectInfo* obj : m_sema.objects) {
+            if (obj->componentScope)
+                continue; // per-instance factory locals, not exposed
             if (obj->parent && obj->id.empty())
                 continue;
             const std::string field =
@@ -1154,6 +1478,8 @@ private:
                 out << "#include <chrono>\n";
             out << "#include <functional>\n#include <memory>\n#include <vector>\n";
             out << "#include <firmir/gui/listmodel.hpp>\n#include <firmir/timer.hpp>\n";
+        } else if (m_usesFunctions) {
+            out << "#include <functional>\n";
         }
         if (m_usesAppSingleton || m_sema.usesAppSingleton)
             out << "#include <firmir/gui/app.hpp>\n";
@@ -1161,7 +1487,9 @@ private:
             out << "#include <firmir/gui/theme.hpp>\n";
         if (m_expr.usesTranslator || m_usesTranslatorSingleton ||
             m_sema.usesTranslatorSingleton)
-            out << "#include <firmir/gui/translator.hpp>\n";
+            out << "#include <firmir/translator.hpp>\n";
+        if (m_usesComponent)
+            out << "#include <firmir/gui/component.hpp>\n";
         out << "\n" << body;
         return out.str();
     }
@@ -1175,12 +1503,28 @@ private:
     /// must be rebuilt when the model count changes (needs <functional>,
     /// <memory>, <vector>, <chrono> and <firmir/timer.hpp>).
     bool m_usesDynamicRepeater = false;
+    /// Script-declared functions compile into std::function lambdas (needs
+    /// <functional>).
+    bool m_usesFunctions = false;
+    /// Static bindings whose value calls a script function: emitted by
+    /// emitFunctions once the function lambdas exist.
+    std::vector<const BindingInfo*> m_deferredStatics;
     int m_animationCounter = 0;
     bool m_usesAnimation = false;
     bool m_usesTimer = false;
     bool m_usesAppSingleton = false;
     bool m_usesThemeSingleton = false;
     bool m_usesTranslatorSingleton = false;
+    /// Component nodes of the file (emitted as factory lambdas after the
+    /// main object tree).
+    std::vector<const ObjectInfo*> m_components;
+    /// The Component whose template subtree is being emitted (nullptr for the
+    /// main pass); filters bindings/anchors/behaviors/handlers by scope.
+    const ObjectInfo* m_currentComponent = nullptr;
+    /// The current handler's `const obj = comp.createObject(...)` locals:
+    /// name -> the created root ObjectInfo.
+    std::map<std::string, const ObjectInfo*> m_componentLocals;
+    bool m_usesComponent = false;
 };
 
 } // namespace

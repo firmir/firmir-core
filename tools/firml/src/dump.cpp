@@ -78,6 +78,11 @@ void dumpExpr(const Expr& expr, std::ostream& out) {
             dumpExpr(*assign.value, out);
             out << ")";
         }
+        void operator()(const ConstDeclExpr& decl) const {
+            out << "(const " << decl.name << " ";
+            dumpExpr(*decl.value, out);
+            out << ")";
+        }
         void operator()(const UnaryExpr& unary) const {
             out << "(unary " << unary.op << " ";
             dumpExpr(*unary.operand, out);
@@ -142,6 +147,22 @@ void dumpMember(const MemberNode& member, std::ostream& out, int indent) {
             out << "\n";
             for (const Expr& command : handler.commands)
                 dumpExpr(command, out);
+            out << pad << ")\n";
+        }
+        void operator()(const FunctionDecl& fn) const {
+            out << pad << "(function " << fn.name << " " << pos(fn.loc);
+            for (const HandlerParam& param : fn.params)
+                out << " (param " << param.typeName << " " << param.name << ")";
+            if (!fn.returnTypeName.empty())
+                out << " -> " << fn.returnTypeName;
+            out << "\n";
+            for (const Expr& command : fn.commands)
+                dumpExpr(command, out);
+            if (fn.returnValue) {
+                out << "(return ";
+                dumpExpr(*fn.returnValue, out);
+                out << ")";
+            }
             out << pad << ")\n";
         }
         void operator()(const ObjectPtr& child) const { dumpObject(*child, out, indent); }
@@ -231,6 +252,20 @@ void dumpSema(const File& file, const SemaResult& result, std::ostream& out) {
         for (const HandlerParam& param : handler.stmt->params)
             out << " (" << param.typeName << " " << param.name << ")";
         out << ")\n";
+    }
+    for (const ObjectInfo* obj : result.objects) {
+        for (const FunctionInfo& fn : obj->functions) {
+            out << "  (function " << obj->internalName << "." << fn.decl->name;
+            for (const HandlerParam& param : fn.decl->params)
+                out << " (" << param.typeName << " " << param.name << ")";
+            out << " -> " << (fn.isVoid ? "void" : valueTypeName(fn.returnType));
+            if (!fn.returnDeps.empty()) {
+                out << " deps:";
+                for (const std::string& dep : fn.returnDeps)
+                    out << " " << dep;
+            }
+            out << ")\n";
+        }
     }
     for (const BehaviorInfo& behavior : result.behaviors) {
         out << "  (behavior " << behavior.object->internalName << "." << behavior.property

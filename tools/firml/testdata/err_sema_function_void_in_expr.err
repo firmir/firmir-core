@@ -1,0 +1,1 @@
+err_sema_function_void_in_expr.fml:13:12: error: function 'applyWidth' does not return a value and cannot be used in an expression

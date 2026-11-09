@@ -1,0 +1,13 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+
+    function helper() -> number {
+        return 1
+    }
+
+    function helper() -> number {
+        return 2
+    }
+}

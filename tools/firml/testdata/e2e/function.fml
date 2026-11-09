@@ -1,0 +1,41 @@
+// E2E: script-declared functions called from bindings (with dependency
+// propagation) and from handler commands.
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+#include <firmir/items/Button.hpp>
+
+Rectangle {
+    id: root
+    width: 300
+    height: 200
+    property number clicks: 0
+
+    function greet(name: string) -> string {
+        return "Hello, " + name + "!"
+    }
+
+    function doubleClicks() -> number {
+        return clicks * 2
+    }
+
+    function applySize(w: number, h: number) {
+        width = w
+        height = h
+    }
+
+    Text {
+        id: title
+        text: root.greet("World")
+        x: root.doubleClicks()
+    }
+
+    Button {
+        id: btn
+        text: "Go"
+        onClicked: {
+            root.clicks = root.clicks + 1
+            root.applySize(500, 400)
+            title.text = root.greet("Firmir")
+        }
+    }
+}

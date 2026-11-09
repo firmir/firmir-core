@@ -144,7 +144,9 @@ std::vector<std::string> installedBackends() {
 bool VideoFrame::ensureCpuPixels() {
     if (!rgba.empty())
         return true;
-    if (gpu && readback)
+    // The readback exists for GPU frames and for lazy CPU frames (the
+    // backend holds the native buffer and copies pixels on first use).
+    if (readback)
         return readback(*this);
     return false;
 }

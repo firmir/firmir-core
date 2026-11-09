@@ -1,0 +1,10 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+
+    Component {
+        Rectangle {
+        }
+    }
+}

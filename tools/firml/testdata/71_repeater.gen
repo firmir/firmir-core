@@ -9,7 +9,7 @@
 #include <firmir/items/ListModel.hpp>
 #include <firmir/items/ListElement.hpp>
 
-namespace Firmir::Gui { class Item; }
+namespace Firmir::Gui { class Item; class Component; }
 
 /// Pointers into the created item tree (owned by the parent).
 struct F71RepeaterObjects {

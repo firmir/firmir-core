@@ -1,0 +1,15 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+
+Rectangle {
+    id: root
+
+    function applyWidth(w: number) {
+        width = w
+    }
+
+    Text {
+        id: title
+        x: root.applyWidth(4)
+    }
+}

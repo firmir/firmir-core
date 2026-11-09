@@ -1,0 +1,1 @@
+err_sema_function_return_type.fml:7:16: error: the return value of function 'name' expects Number, got String

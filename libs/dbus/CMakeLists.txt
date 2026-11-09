@@ -12,9 +12,9 @@ target_include_directories(firmir-dbus
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-target_link_libraries(firmir-dbus PUBLIC firmir-core firmir-xml)
+target_link_libraries(firmir-dbus PUBLIC firmir-core)
 
 add_executable(firmir-dbus-tool tool/main.cpp)
 target_link_libraries(firmir-dbus-tool PRIVATE firmir-dbus)
 
-firmir_install_library(firmir-dbus MODULE dbus REQUIRES firmir-core firmir-xml)
+firmir_install_library(firmir-dbus MODULE dbus REQUIRES firmir-core)

@@ -7,6 +7,14 @@
 namespace Firmir {
 namespace Multimedia {
 
+namespace {
+
+/// Event type posted (at most one at a time) when a decoded frame waits in
+/// the pending slot.
+constexpr int kFramePendingEvent = Event::User + 400;
+
+} // namespace
+
 VideoOutput::VideoOutput(Object* parent) : Gui::Item(parent) {
     setClip(true);
     registerPropertyImpl("fillMode", typeid(Firmir::String),
@@ -22,16 +30,51 @@ void VideoOutput::setSource(VideoSource* source) {
     m_frameConnection.disconnect();
     m_source = source;
     m_frame = VideoFrame();
+    {
+        std::lock_guard<std::mutex> lock(m_pendingMutex);
+        m_pendingFrame = VideoFrame();
+        m_pendingValid = false;
+    }
     ++m_generation;
     ++m_sourceGeneration; // a new decoder pool may recycle pool keys
     update();
     if (m_source) {
-        // The decoder emits from its worker thread; queue into the GUI thread.
+        // The decoder emits from its worker thread; a direct connection feeds
+        // the coalescing slot, which posts a single event per shown frame.
         m_frameConnection = m_source->connect<VideoFrame>(
             this, VideoSource::signalFrameReady,
-            [this](const VideoFrame& frame) { onFrame(frame); },
-            ConnectionMode::Queued);
+            [this](const VideoFrame& frame) { onFrameDecoded(frame); },
+            ConnectionMode::Direct);
     }
+}
+
+void VideoOutput::onFrameDecoded(const VideoFrame& frame) {
+    {
+        std::lock_guard<std::mutex> lock(m_pendingMutex);
+        m_pendingFrame = frame;
+        m_pendingValid = true;
+    }
+    if (!m_framePosted.exchange(true))
+        Object::postEvent(this, std::make_unique<Event>(kFramePendingEvent));
+}
+
+bool VideoOutput::event(Event& e) {
+    if (e.type() == kFramePendingEvent) {
+        m_framePosted.store(false);
+        VideoFrame frame;
+        {
+            std::lock_guard<std::mutex> lock(m_pendingMutex);
+            if (m_pendingValid) {
+                frame = std::move(m_pendingFrame);
+                m_pendingFrame = VideoFrame();
+                m_pendingValid = false;
+            }
+        }
+        if (frame.isValid())
+            onFrame(frame);
+        return true;
+    }
+    return Gui::Item::event(e);
 }
 
 void VideoOutput::setFillMode(FillMode mode) {

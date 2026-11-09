@@ -1,0 +1,9 @@
+#include <firmir/items/Rectangle.hpp>
+
+Rectangle {
+    id: root
+
+    function name() -> number {
+        return "oops"
+    }
+}

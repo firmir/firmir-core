@@ -1,0 +1,1 @@
+err_sema_function_no_id.fml:7:9: error: a function requires the object to have an id (the call receiver)

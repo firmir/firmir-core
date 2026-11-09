@@ -1,0 +1,51 @@
+// E2E: a Component template instantiated at runtime via createObject().
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+#include <firmir/items/Button.hpp>
+
+Rectangle {
+    id: root
+    width: 300
+    height: 200
+    property number spawned: 0
+
+    Rectangle {
+        id: container
+        width: 200
+        height: 200
+    }
+
+    Component {
+        id: badgeComponent
+
+        Rectangle {
+            id: badge
+            width: 50
+            height: 20
+            color: "#336699"
+            property string label: "badge"
+
+            Text {
+                id: badgeText
+                text: "Badge"
+                anchors.centerIn: parent
+            }
+
+            Button {
+                id: badgeButton
+                text: "Hi"
+                onClicked: badge.label = "clicked"
+            }
+        }
+    }
+
+    Button {
+        id: spawnButton
+        text: "Spawn"
+        onClicked: {
+            const badge1 = badgeComponent.createObject(container)
+            badge1.label = "spawned"
+            root.spawned = root.spawned + 1
+        }
+    }
+}

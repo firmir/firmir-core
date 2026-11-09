@@ -21,6 +21,7 @@
 #include <gst/video/video.h>
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <utility>
@@ -139,7 +140,7 @@ public:
         m.path = m_zeroCopyFrames > 0 ? VideoPath::ZeroCopy
                                       : VideoPath::CpuFallback;
         m.framesDecoded = m_frames.load();
-        m.cpuCopies = m_cpuFrames.load();
+        m.cpuCopies = m_cpuCopies.load();
         m.activeSurfaces = m_inFlight.load();
         return m;
     }
@@ -172,7 +173,14 @@ public:
             ? gst_caps_from_string("video/x-raw(memory:DMABuf),format=NV12; "
                                    "video/x-raw,format=RGBA")
             : gst_caps_from_string("video/x-raw,format=RGBA");
-        g_object_set(m_sink, "caps", caps, "sync", TRUE, nullptr);
+        // sync=true paces frames against the pipeline clock; max-buffers=1 +
+        // drop=true keeps only the newest frame when the consumer (decode
+        // conversion, GUI render) is slower than the stream, and qos=true
+        // reports the lateness upstream so the decoder skips frames instead
+        // of producing them all late — otherwise playback progressively lags
+        // behind realtime (visible as slow motion on heavy 4K clips).
+        g_object_set(m_sink, "caps", caps, "sync", TRUE, "max-buffers", 1,
+                     "drop", TRUE, "qos", TRUE, nullptr);
         gst_caps_unref(caps);
         g_object_set(m_pipeline, "video-sink", m_sink, nullptr);
 
@@ -341,7 +349,7 @@ private:
                 if (w > 0 && h > 0 && dmaBuf)
                     emitGpuFrame(sample, buffer, w, h);
                 else if (w > 0 && h > 0)
-                    emitCpuFrame(buffer, w, h);
+                    emitCpuFrame(sample, buffer, w, h);
             }
             gst_sample_unref(sample);
         }
@@ -392,20 +400,31 @@ private:
         emitFrame(std::move(frame));
     }
 
-    /// CPU fallback path: plain RGBA buffer copy (as negotiated).
-    void emitCpuFrame(GstBuffer* buffer, int w, int h) {
-        GstMapInfo map;
-        if (!gst_buffer_map(buffer, &map, GST_MAP_READ))
-            return;
+    /// CPU fallback path: the sample (RGBA, as negotiated) is kept alive and
+    /// copied only when the frame is actually displayed — the VideoOutput
+    /// coalescing drops most frames before they ever need pixels, so a slow
+    /// renderer no longer pays a 33 MB copy per dropped 4K frame.
+    void emitCpuFrame(GstSample* sample, GstBuffer* buffer, int w, int h) {
         VideoFrame frame;
         frame.width = w;
         frame.height = h;
-        frame.rgba.assign(map.data, map.data + map.size);
         const GstClockTime pts = GST_BUFFER_PTS(buffer);
         frame.pts = GST_CLOCK_TIME_IS_VALID(pts)
                         ? static_cast<double>(pts) / GST_SECOND
                         : position();
-        gst_buffer_unmap(buffer, &map);
+        auto keep = std::shared_ptr<GstSample>(
+            gst_sample_ref(sample),
+            [](GstSample* s) { gst_sample_unref(s); });
+        frame.readback = [this, keep](VideoFrame& f) {
+            GstBuffer* buf = gst_sample_get_buffer(keep.get());
+            GstMapInfo map;
+            if (!gst_buffer_map(buf, &map, GST_MAP_READ))
+                return false;
+            f.rgba.assign(map.data, map.data + map.size);
+            gst_buffer_unmap(buf, &map);
+            ++m_cpuCopies;
+            return true;
+        };
         ++m_frames;
         ++m_cpuFrames;
         m_frameWidth = w;
@@ -436,6 +455,8 @@ private:
     std::atomic<std::uint64_t> m_frames{0};
     std::atomic<std::uint64_t> m_zeroCopyFrames{0};
     std::atomic<std::uint64_t> m_cpuFrames{0};
+    /// Actual pixel copies (lazy readbacks of displayed frames).
+    std::atomic<std::uint64_t> m_cpuCopies{0};
     std::atomic<int> m_inFlight{0};
 
     static std::once_flag s_initFlag;

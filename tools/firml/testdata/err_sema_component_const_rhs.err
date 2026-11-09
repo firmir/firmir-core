@@ -1,0 +1,1 @@
+err_sema_component_const_rhs.fml:15:20: error: 'const <name> = ...' in a handler requires a Component createObject() call on the right side

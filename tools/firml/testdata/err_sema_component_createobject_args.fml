@@ -1,0 +1,17 @@
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Button.hpp>
+
+Rectangle {
+    id: root
+
+    Component {
+        id: comp
+        Rectangle {
+        }
+    }
+
+    Button {
+        id: spawn
+        onClicked: comp.createObject()
+    }
+}

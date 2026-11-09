@@ -1,7 +1,8 @@
 #pragma once
 
-// Firmir D-Bus code generation: parses D-Bus introspection XML (via
-// firmir-xml) and generates C++ proxy (client) and adaptor (service) classes.
+// Firmir D-Bus code generation: parses D-Bus introspection XML (via the
+// XML parser in firmir-core) and generates C++ proxy (client) and adaptor
+// (service) classes.
 // Used by the firmir-dbus-tool command line utility; also usable directly.
 
 #include <firmir/dbusconnection.hpp>

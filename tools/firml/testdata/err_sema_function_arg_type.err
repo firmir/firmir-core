@@ -1,0 +1,1 @@
+err_sema_function_arg_type.fml:13:26: error: argument 1 of function 'greet' expects String, got Number

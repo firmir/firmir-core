@@ -6,7 +6,7 @@
 #include <firmir/items/Rectangle.hpp>
 #include <firmir/items/Timer.hpp>
 
-namespace Firmir::Gui { class Item; class Screen; class App; }
+namespace Firmir::Gui { class Item; class Component; class Screen; class App; }
 
 /// Pointers into the created window and object tree (owned
 /// by the window).

@@ -58,6 +58,10 @@ struct HandlerInfo {
     // Scope for the handler commands (`parent` resolution): the object the
     // handler was declared in — differs from `object` for Connections.
     const ObjectInfo* context = nullptr;
+    /// `const name = someComponent.createObject(...)` declarations of this
+    /// handler, in order: the local name -> the created root ObjectInfo
+    /// (its type plus the script-declared custom properties).
+    std::vector<std::pair<std::string, const ObjectInfo*>> componentLocals;
 };
 
 /// One script-declared (`property <type> <name>[: <expr>]`) dynamic property.
@@ -67,6 +71,27 @@ struct CustomPropInfo {
     SourceLoc loc;
     const PropertyDecl* decl = nullptr; // the AST node (for codegen)
     ValueType type = ValueType::Number;
+};
+
+/// One script-declared function (`function name(arg: type, ...) -> type`).
+/// The body is validated lazily (on the first call site or when the owner's
+/// members are processed): recursion is detected through `bodyChecking`.
+struct FunctionInfo {
+    SourceLoc loc;
+    const FunctionDecl* decl = nullptr; // the AST node (for codegen)
+    ObjectInfo* owner = nullptr;
+    std::vector<ValueType> paramTypes;
+    ValueType returnType = ValueType::Number; // meaningless when isVoid
+    bool isVoid = false;
+    /// Deps of the return expression (absolute "obj.prop"); calls in
+    /// bindings re-export them so the binding re-evaluates when the function
+    /// result would change.
+    std::vector<std::string> returnDeps;
+    /// `const obj = comp.createObject(...)` locals declared by the body:
+    /// the local name -> the created root ObjectInfo (for codegen).
+    std::vector<std::pair<std::string, const ObjectInfo*>> componentLocals;
+    bool bodyChecked = false;
+    bool bodyChecking = false; // recursion guard
 };
 
 struct ObjectInfo {
@@ -80,11 +105,19 @@ struct ObjectInfo {
     int declIndex = 0;
     std::map<std::string, SourceLoc> propLocs; // for duplicate/overconstraint checks
     std::set<std::string> anchorKeys;          // filled while processing members
-    std::vector<CustomPropInfo> customProps;   // `property` declarations, in order
+    std::vector<CustomPropInfo> customProps;   // `property` declarations
+    std::vector<FunctionInfo> functions;       // `function` declarations, in order
 
     /// The enclosing Repeater when this object is part of a delegate subtree
     /// (the delegate root's delegateScope is the Repeater itself).
     ObjectInfo* delegateScope = nullptr;
+    /// The enclosing Component when this object is part of a deferred
+    /// template subtree (the template root's componentScope is the Component
+    /// itself). Such objects are emitted inside the component's factory
+    /// lambda, once per createObject() call.
+    ObjectInfo* componentScope = nullptr;
+    /// Component: the single template child (nullptr for other types).
+    ObjectInfo* componentRoot = nullptr;
     /// Repeater: the resolved ListModel object, or nullptr when `model` is a
     /// plain number (then modelCount is the delegate count).
     const ObjectInfo* modelObject = nullptr;
@@ -100,6 +133,21 @@ inline const CustomPropInfo* findCustomProp(const ObjectInfo& obj,
     for (const CustomPropInfo& prop : obj.customProps)
         if (prop.decl->name == name)
             return &prop;
+    return nullptr;
+}
+
+/// Finds a script-declared function of the object (nullptr when none).
+inline FunctionInfo* findCustomFunction(ObjectInfo& obj, const std::string& name) {
+    for (FunctionInfo& fn : obj.functions)
+        if (fn.decl->name == name)
+            return &fn;
+    return nullptr;
+}
+inline const FunctionInfo* findCustomFunction(const ObjectInfo& obj,
+                                              const std::string& name) {
+    for (const FunctionInfo& fn : obj.functions)
+        if (fn.decl->name == name)
+            return &fn;
     return nullptr;
 }
 
@@ -133,7 +181,7 @@ struct SemaResult {
     /// reads/writes). The singleton self-creates on first access, so codegen
     /// only needs the theme.hpp include.
     bool usesThemeSingleton = false;
-    /// True when the file calls trId() (the Firmir.Gui.Translator singleton).
+    /// True when the file calls trId() (the Firmir.Core.Translator singleton).
     /// The singleton self-creates on first access.
     bool usesTranslatorSingleton = false;
 };

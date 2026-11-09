@@ -1,0 +1,1 @@
+err_sema_function_recursion.fml:6:5: error: recursive call of function 'fact' (recursion is not supported)

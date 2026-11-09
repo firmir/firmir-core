@@ -1,12 +1,18 @@
 #pragma once
 
 // Firmir::Multimedia::VideoOutput — an Item that shows the frames of a
-// VideoSource (the frameReady signal is consumed through a queued connection,
-// so the source may emit from its decoder thread).
+// VideoSource. The source emits frameReady from its decoder thread; the
+// frames are coalesced (only the newest one is handed to the GUI thread) so
+// a slow renderer drops frames instead of piling them up in the event
+// queue — an unprocessed 4K RGBA frame is ~33 MB, and a growing queue shows
+// up as video progressively lagging behind realtime ("slow motion").
 
 #include <firmir/gui/item.hpp>
 #include <firmir/multimedia/videosource.hpp>
 #include <firmir/multimedia/videotexture.hpp>
+
+#include <atomic>
+#include <mutex>
 
 namespace Firmir {
 namespace Multimedia {
@@ -47,12 +53,21 @@ public:
 
 protected:
     void paint(Gui::Painter& painter) override;
+    bool event(Event& e) override;
 
 private:
-    void onFrame(const VideoFrame& frame);
+    void onFrame(const VideoFrame& frame);        // GUI thread: show the frame
+    void onFrameDecoded(const VideoFrame& frame); // decoder thread: coalesce
 
     VideoSource* m_source = nullptr;
     Connection m_frameConnection;
+    // Latest decoded frame waiting for the GUI thread; guarded by the mutex.
+    // m_framePosted is set while a "frame pending" event sits in the GUI
+    // queue, so the decoder posts at most one event per consumed frame.
+    std::mutex m_pendingMutex;
+    VideoFrame m_pendingFrame;
+    bool m_pendingValid = false;
+    std::atomic<bool> m_framePosted{false};
     VideoFrame m_frame;
     /// Previously shown frame: its GPU surface is released one frame late so
     /// the renderer never races a surface the decoder has reclaimed

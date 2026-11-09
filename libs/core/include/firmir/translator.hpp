@@ -1,6 +1,6 @@
 #pragma once
 
-// Firmir::Gui::Translator — runtime string translation for UIs.
+// Firmir::Translator — runtime string translation for UIs.
 //
 // Strings in code/Firml are written as trId("some-stable-id"); the actual
 // wording per language comes from translation files (JSON):
@@ -27,7 +27,7 @@
 // translations catch up.
 //
 // The instance is a process-wide singleton registered under the name
-// "Firmir.Gui.Translator".
+// "Firmir.Core.Translator".
 
 #include <firmir/object.hpp>
 #include <firmir/string.hpp>
@@ -38,7 +38,6 @@
 #include <vector>
 
 namespace Firmir {
-namespace Gui {
 
 class Translator : public Object {
 public:
@@ -59,8 +58,9 @@ public:
     /// value gets only the %n substitution; an unknown id yields @p id.
     String trIdPlural(const String& id, long long n) const;
 
-    /// The active language tag ("en", "ru", ...). The default is the system
-    /// locale (LANG/LC_ALL), falling back to "en".
+    /// The active language tag ("en", "ru", ...). The default follows
+    /// Locale::language() (system language, or the application override set
+    /// on Locale); calling setLanguage() detaches from the Locale.
     String language() const { return m_language; }
     void setLanguage(String language);
 
@@ -92,6 +92,8 @@ private:
     };
     // path -> file contents (insertion order: later files win for trId)
     std::map<std::string, File> m_files;
+    // Follows Locale::language() until setLanguage() is called explicitly.
+    Connection m_localeConnection;
 };
 
 /// Convenience free function: Translator::instance()->trId(id).
@@ -104,5 +106,4 @@ inline String trIdPlural(const String& id, long long n) {
     return Translator::instance()->trIdPlural(id, n);
 }
 
-} // namespace Gui
 } // namespace Firmir

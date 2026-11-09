@@ -1,0 +1,49 @@
+// Component: a deferred subtree template instantiated via createObject().
+#include <firmir/items/Rectangle.hpp>
+#include <firmir/items/Text.hpp>
+#include <firmir/items/Button.hpp>
+
+Rectangle {
+    id: root
+    width: 300
+    height: 200
+
+    Rectangle {
+        id: container
+        anchors.fill: parent
+    }
+
+    Component {
+        id: badgeComponent
+
+        Rectangle {
+            id: badge
+            width: 100
+            height: 40
+            color: "#336699"
+
+            Text {
+                id: badgeText
+                text: "Badge"
+                color: "#FFFFFF"
+                anchors.centerIn: parent
+            }
+
+            Button {
+                id: badgeButton
+                text: "Hi"
+                onClicked: badgeText.text = "clicked"
+            }
+        }
+    }
+
+    Button {
+        id: spawnButton
+        text: "Spawn"
+        onClicked: {
+            const badge1 = badgeComponent.createObject(container)
+            badge1.color = "#FF0000"
+            badgeComponent.createObject(container)
+        }
+    }
+}

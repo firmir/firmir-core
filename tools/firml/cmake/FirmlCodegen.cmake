@@ -89,4 +89,12 @@ function(firml_add_target target)
     target_link_libraries(${target} PUBLIC firmir-gui)
     target_include_directories(${target} PUBLIC "${gen_dir}")
     set_target_properties(${target} PROPERTIES FOLDER "firml")
+    # Generated create*() functions are one big flat function per .fml file;
+    # in debug builds GCC's variable tracking hits its limit ("variable
+    # tracking size limit exceeded", a note that becomes noise next to real
+    # warnings). Debug info for the generated code is of little use anyway.
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(${target} PRIVATE
+            $<$<CONFIG:Debug>:-fno-var-tracking-assignments>)
+    endif()
 endfunction()

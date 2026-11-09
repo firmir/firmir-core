@@ -518,7 +518,16 @@ private:
                         ++m_dropped; // vaapi frame without vaapi build
 #endif
                     } else {
-                        deliverCpuFrame(frame, sws, pts);
+                        // More than ~2 frame periods late (the decode+convert
+                        // path is slower than the stream): drop BEFORE the
+                        // swscale/delivery work, so playback stays realtime
+                        // instead of lagging progressively ("slow motion").
+                        if (m_clockStart + pts + 0.040 <
+                            av_gettime_relative() / 1.0e6) {
+                            ++m_dropped;
+                        } else {
+                            deliverCpuFrame(frame, sws, pts);
+                        }
                     }
                     if (m_paused || m_seekRequested)
                         break;
