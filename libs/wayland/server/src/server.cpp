@@ -29,6 +29,7 @@ void Display::flushClients() { if (d->display) wl_display_flush_clients(d->displ
 int Display::dispatch(int timeoutMs) {
     return d->display ? wl_event_loop_dispatch(eventLoop(), timeoutMs) : -1;
 }
+void Display::destroyClients() { if (d->display) wl_display_destroy_clients(d->display); }
 std::uint32_t Display::nextSerial() { return d->display ? wl_display_next_serial(d->display) : 0; }
 wl_global* Display::createGlobal(const wl_interface* interface, int version,
                                  wl_global_bind_func_t bind, void* data) {

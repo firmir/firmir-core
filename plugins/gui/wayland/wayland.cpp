@@ -397,12 +397,20 @@ public:
     }
     static void keyboardEnterCb(void*, wl_keyboard*, std::uint32_t, wl_surface*,
                                 wl_array*) {}
-    static void keyboardLeaveCb(void*, wl_keyboard*, std::uint32_t,
-                                wl_surface*) {}
+    static void keyboardLeaveCb(void* data, wl_keyboard*, std::uint32_t,
+                                wl_surface*) {
+        static_cast<WaylandBackend*>(data)->stopRepeat();
+    }
     static void keyCb(void* data, wl_keyboard*, std::uint32_t, std::uint32_t,
                       std::uint32_t wlKey, std::uint32_t state) {
-        static_cast<WaylandBackend*>(data)->emitKey(
-            state == WL_KEYBOARD_KEY_STATE_PRESSED, wlKey);
+        auto* self = static_cast<WaylandBackend*>(data);
+        const bool pressed = state == WL_KEYBOARD_KEY_STATE_PRESSED;
+        self->emitKey(pressed, wlKey);
+        // Key repeat is client-side in Wayland (wl_keyboard.repeat_info).
+        if (pressed)
+            self->startRepeat(wlKey);
+        else
+            self->stopRepeat(wlKey);
     }
     static void modifiersCb(void* data, wl_keyboard*, std::uint32_t,
                             std::uint32_t depressed, std::uint32_t latched,
@@ -412,7 +420,112 @@ public:
             xkb_state_update_mask(self->m_xkbState, depressed, latched, locked,
                                   0, 0, group);
     }
-    static void repeatInfoCb(void*, wl_keyboard*, std::int32_t, std::int32_t) {}
+    static void repeatInfoCb(void* data, wl_keyboard*, std::int32_t rate,
+                             std::int32_t delay) {
+        auto* self = static_cast<WaylandBackend*>(data);
+        std::lock_guard<std::mutex> lock(self->m_repeatMutex);
+        self->m_repeatRate = rate;
+        self->m_repeatDelay = delay;
+        if (rate <= 0)
+            self->m_repeatActive = false;
+    }
+
+    // ---- client-side key repeat ----
+    // startRepeat/stopRepeat run on the dispatch thread (api held); the
+    // repeat thread only touches m_repeatMutex and takes api just around
+    // emitKey, so the two mutexes are never held together.
+
+    void startRepeat(std::uint32_t wlKey) {
+        {
+            std::lock_guard<std::mutex> lock(m_repeatMutex);
+            m_repeatActive = false; // cancel any previous key
+            if (m_repeatRate <= 0)
+                return;
+            if (m_xkbKeymap &&
+                !xkb_keymap_key_repeats(m_xkbKeymap, wlKey + 8))
+                return; // modifiers and other non-repeatable keys
+            if (m_debugRepeat)
+                std::fprintf(stderr, "firmir-wayland: repeat start key %u rate %d delay %d\n",
+                             wlKey, m_repeatRate, m_repeatDelay);
+            m_repeatKey = wlKey;
+            m_repeatActive = true;
+        }
+        if (!m_repeatThread.joinable())
+            m_repeatThread = std::thread([this] { repeatLoop(); });
+        m_repeatCv.notify_all();
+    }
+
+    void stopRepeat(std::uint32_t wlKey) {
+        bool notify = false;
+        {
+            std::lock_guard<std::mutex> lock(m_repeatMutex);
+            if (m_repeatActive && m_repeatKey == wlKey) {
+                m_repeatActive = false;
+                notify = true;
+            }
+        }
+        if (notify)
+            m_repeatCv.notify_all();
+    }
+
+    void stopRepeat() {
+        {
+            std::lock_guard<std::mutex> lock(m_repeatMutex);
+            if (!m_repeatActive)
+                return;
+            m_repeatActive = false;
+        }
+        m_repeatCv.notify_all();
+    }
+
+    void shutdownRepeat() {
+        {
+            std::lock_guard<std::mutex> lock(m_repeatMutex);
+            m_repeatQuit = true;
+            m_repeatActive = false;
+        }
+        m_repeatCv.notify_all();
+        if (m_repeatThread.joinable())
+            m_repeatThread.join();
+    }
+
+    void repeatLoop() {
+        std::unique_lock<std::mutex> lock(m_repeatMutex);
+        for (;;) {
+            m_repeatCv.wait(lock, [this] { return m_repeatQuit || m_repeatActive; });
+            if (m_repeatQuit)
+                return;
+            const std::uint32_t key = m_repeatKey;
+            auto waitMs = std::chrono::milliseconds(m_repeatDelay > 0 ? m_repeatDelay : 1);
+            for (;;) {
+                if (m_repeatCv.wait_for(lock, waitMs,
+                                        [this] { return m_repeatQuit || !m_repeatActive; }))
+                    break; // cancelled, superseded or shutting down
+                const std::int32_t rate = m_repeatRate;
+                lock.unlock();
+                if (m_debugRepeat)
+                    std::fprintf(stderr, "firmir-wayland: repeat tick key %u\n", key);
+                {
+                    std::lock_guard<std::mutex> apiLock(api);
+                    emitKey(true, key);
+                }
+                lock.lock();
+                waitMs = std::chrono::milliseconds(rate > 0 ? 1000 / rate : 100);
+            }
+            if (m_repeatQuit)
+                return;
+        }
+    }
+
+    const bool m_debugRepeat = std::getenv("FIRMIR_WAYLAND_DEBUG_REPEAT") != nullptr;
+    std::int32_t m_repeatRate = 0;
+    std::int32_t m_repeatDelay = 0;
+    std::uint32_t m_repeatKey = 0;
+    bool m_repeatActive = false;
+    bool m_repeatQuit = false;
+    std::mutex m_repeatMutex;
+    std::condition_variable m_repeatCv;
+    std::thread m_repeatThread;
 
     inline static const wl_keyboard_listener keyboardListener = {
         keymapCb, keyboardEnterCb, keyboardLeaveCb, keyCb, modifiersCb,
@@ -512,6 +625,7 @@ WaylandBackend::WaylandBackend() {
 }
 
 WaylandBackend::~WaylandBackend() {
+    shutdownRepeat(); // before the xkb state and the dispatch thread go away
     m_running = false;
     if (m_thread.joinable())
         m_thread.join();

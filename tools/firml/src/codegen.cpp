@@ -192,6 +192,11 @@ public:
     std::string delegateModelVar;
     std::string delegateIndexVar;
     const std::map<std::string, ValueType>* delegateRoles = nullptr;
+    /// While emitting the handlers of a dynamic-model Repeater delegate:
+    /// `index` reads the delegate's live "_row" property (kept current across
+    /// incremental model changes) instead of the creation-time loop variable.
+    bool inDelegateHandler = false;
+    std::string delegateRowHolder; // delegate root variable name
 
     /// The Firml type of an expression, re-derived for emission decisions
     /// (string conversion on `+`); sema has already validated the expression.
@@ -288,8 +293,13 @@ public:
         if (const auto* ident = std::get_if<IdentExpr>(&expr.node)) {
             if (const auto local = locals.find(ident->name); local != locals.end())
                 return ident->name; // handler argument
-            if (ident->name == "index" && !delegateIndexVar.empty())
+            if (ident->name == "index" && !delegateIndexVar.empty()) {
+                if (inDelegateHandler && !delegateRowHolder.empty())
+                    return "(double)Firmir::detail::anyConvert<double>(" +
+                           delegateRowHolder +
+                           "->getProperty(\"_row\"))"; // live row (updated on shifts)
                 return "(double)" + delegateIndexVar; // delegate row index
+            }
             return memberAccess(scope.internalName, ident->name, type); // own property
         }
         if (const auto* member = std::get_if<MemberExpr>(&expr.node)) {
@@ -630,6 +640,12 @@ private:
         }
         if (!obj.id.empty())
             body << "    " << var << "->setName(\"" << obj.id << "\");\n";
+        // Dynamic-model Repeater delegates get a stable lookup name so the
+        // in-place update lambda can find them via findChild().
+        if (m_collectingUpdates && obj.delegateScope &&
+            obj.delegateScope->modelObject && obj.id.empty())
+            body << "    " << var << "->setName(\"_d" << obj.delegateScope->declIndex
+                 << "_" << obj.declIndex << "\");\n";
 
         // Script-declared properties without an initializer get the type
         // default; initialized ones are emitted as static/bound assignments.
@@ -676,6 +692,41 @@ private:
             }
             body << "    " << var << "->setProperty(\"" << binding.property
                  << "\", " << m_expr.emit(binding.stmt->value, type, obj) << ");\n";
+            // Model/index-driven delegate properties are re-applied in place
+            // on itemsDataChanged: record an update statement targeting the
+            // object via findChild() (self/parent references are redirected).
+            if (m_collectingUpdates && obj.delegateScope &&
+                obj.delegateScope->modelObject &&
+                exprMentionsModelOrIndex(binding.stmt->value)) {
+                const ObjectInfo& repeater = *obj.delegateScope;
+                const std::string dbase = std::to_string(repeater.declIndex);
+                const ObjectInfo* root = delegateRootOf(repeater);
+                if (delegateSafeExpr(binding.stmt->value, obj, repeater)) {
+                    const std::string target =
+                        root == &obj ? "_del_" + dbase : "_u";
+                    std::string expr = m_expr.emit(binding.stmt->value, type, obj);
+                    expr = replaceAll(expr, var + "->", target + "->");
+                    if (root && root != &obj)
+                        expr = replaceAll(expr, root->internalName + "->",
+                                          "_del_" + dbase + "->");
+                    std::ostringstream stmt;
+                    if (root == &obj) {
+                        stmt << "            " << target << "->setProperty(\""
+                             << binding.property << "\", " << expr << ");\n";
+                    } else {
+                        const std::string findName =
+                            obj.id.empty()
+                                ? "_d" + dbase + "_" + std::to_string(obj.declIndex)
+                                : obj.id;
+                        stmt << "            if (auto* _u = _del_" << dbase
+                             << "->findChild<Firmir::Object>(\"" << findName
+                             << "\"))\n"
+                             << "                _u->setProperty(\"" << binding.property
+                             << "\", " << expr << ");\n";
+                    }
+                    m_delegateUpdates.push_back(stmt.str());
+                }
+            }
         }
         if (obj.type == builtinType("Repeater"))
             m_repeaters.push_back(&obj); // the delegate loop is emitted last
@@ -756,6 +807,120 @@ private:
         return "Firmir::String(\"" + escapeCpp(lit.value) + "\")";
     }
 
+    /// The delegate root of a Repeater: the single declared child object
+    /// parented directly to it (nullptr when missing).
+    const ObjectInfo* delegateRootOf(const ObjectInfo& repeater) const {
+        for (const ObjectInfo* sub : m_sema.objects)
+            if (sub->delegateScope == &repeater && sub->parent == &repeater)
+                return sub;
+        return nullptr;
+    }
+
+    /// True when the expression reads the delegate's model roles or `index`.
+    bool exprMentionsModelOrIndex(const Expr& expr) const {
+        if (const auto* ident = std::get_if<IdentExpr>(&expr.node))
+            return ident->name == "index";
+        if (const auto* member = std::get_if<MemberExpr>(&expr.node)) {
+            if (const auto* base = std::get_if<IdentExpr>(&member->object->node);
+                base && base->name == "model")
+                return true;
+            return exprMentionsModelOrIndex(*member->object);
+        }
+        if (const auto* un = std::get_if<UnaryExpr>(&expr.node))
+            return exprMentionsModelOrIndex(*un->operand);
+        if (const auto* bin = std::get_if<BinaryExpr>(&expr.node))
+            return exprMentionsModelOrIndex(*bin->lhs) ||
+                   exprMentionsModelOrIndex(*bin->rhs);
+        if (const auto* cond = std::get_if<ConditionalExpr>(&expr.node))
+            return exprMentionsModelOrIndex(*cond->condition) ||
+                   exprMentionsModelOrIndex(*cond->thenExpr) ||
+                   exprMentionsModelOrIndex(*cond->elseExpr);
+        if (const auto* call = std::get_if<CallExpr>(&expr.node))
+            for (const Expr& arg : call->args)
+                if (exprMentionsModelOrIndex(arg))
+                    return true;
+        if (const auto* call = std::get_if<MethodCallExpr>(&expr.node)) {
+            if (exprMentionsModelOrIndex(*call->object))
+                return true;
+            for (const Expr& arg : call->args)
+                if (exprMentionsModelOrIndex(arg))
+                    return true;
+        }
+        return false;
+    }
+
+    /// True when the expression can be re-evaluated inside the in-place
+    /// delegate update lambda: it may reference model roles, `index`, own or
+    /// delegate-root properties, outer (non-delegate) ids, enum names and
+    /// builtin functions — but not sibling delegate objects (their variables
+    /// only exist inside the build lambda).
+    bool delegateSafeExpr(const Expr& expr, const ObjectInfo& scope,
+                          const ObjectInfo& repeater) const {
+        if (std::get_if<NumberLit>(&expr.node) ||
+            std::get_if<StringLit>(&expr.node) ||
+            std::get_if<BoolLit>(&expr.node) ||
+            std::get_if<UndefinedLit>(&expr.node))
+            return true;
+        if (const auto* ident = std::get_if<IdentExpr>(&expr.node)) {
+            if (ident->name == "index")
+                return true;
+            if (scope.type->findProperty(ident->name) ||
+                findCustomProp(scope, ident->name))
+                return true; // own property
+            if (ident->name == "parent")
+                return scope.parent == delegateRootOf(repeater) ||
+                       scope.parent == &repeater;
+            const auto it = m_sema.byId.find(ident->name);
+            if (it != m_sema.byId.end())
+                return it->second->delegateScope != &repeater; // outer ids only
+            return true; // enum constants and the like
+        }
+        if (const auto* member = std::get_if<MemberExpr>(&expr.node)) {
+            if (const auto* base = std::get_if<IdentExpr>(&member->object->node);
+                base && base->name == "model")
+                return true;
+            return delegateSafeExpr(*member->object, scope, repeater);
+        }
+        if (const auto* un = std::get_if<UnaryExpr>(&expr.node))
+            return delegateSafeExpr(*un->operand, scope, repeater);
+        if (const auto* bin = std::get_if<BinaryExpr>(&expr.node))
+            return delegateSafeExpr(*bin->lhs, scope, repeater) &&
+                   delegateSafeExpr(*bin->rhs, scope, repeater);
+        if (const auto* cond = std::get_if<ConditionalExpr>(&expr.node))
+            return delegateSafeExpr(*cond->condition, scope, repeater) &&
+                   delegateSafeExpr(*cond->thenExpr, scope, repeater) &&
+                   delegateSafeExpr(*cond->elseExpr, scope, repeater);
+        if (const auto* call = std::get_if<CallExpr>(&expr.node)) {
+            for (const Expr& arg : call->args)
+                if (!delegateSafeExpr(arg, scope, repeater))
+                    return false;
+            return true; // builtin functions only (sema)
+        }
+        if (const auto* call = std::get_if<MethodCallExpr>(&expr.node)) {
+            const auto* base = std::get_if<IdentExpr>(&call->object->node);
+            if (!base)
+                return false;
+            const auto it = m_sema.byId.find(base->name);
+            if (it != m_sema.byId.end() && it->second->delegateScope == &repeater)
+                return false; // a method of another delegate object
+            for (const Expr& arg : call->args)
+                if (!delegateSafeExpr(arg, scope, repeater))
+                    return false;
+            return true;
+        }
+        return false;
+    }
+
+    static std::string replaceAll(std::string text, const std::string& from,
+                                  const std::string& to) {
+        std::string::size_type pos = 0;
+        while ((pos = text.find(from, pos)) != std::string::npos) {
+            text.replace(pos, from.size(), to);
+            pos += to.size();
+        }
+        return text;
+    }
+
     /// Emits the delegate instantiation loop of a Repeater: one delegate
     /// subtree per model row, with `model.<role>`/`index` in scope.
     ///
@@ -774,75 +939,184 @@ private:
         const std::string repeaterVar = obj.internalName;
         std::string modelVar;
         body << "    {\n";
+        const ObjectInfo* delegateRoot = delegateRootOf(obj);
         if (obj.modelObject) {
+            // Dynamic model: delegates are maintained incrementally. A
+            // per-row builder lambda is used for the initial fill and for
+            // appended rows; removals are deferred (a delegate may remove its
+            // own row from inside its signal handler); row data changes are
+            // re-applied in place; only mid-list inserts and resets fall back
+            // to a full rebuild (deferred, coalesced per event-loop turn).
             m_usesDynamicRepeater = true;
+            m_expr.usesAlgorithm = true; // std::find in the live-view helper
             modelVar = "_model_" + base;
-            const std::string rebuildVar = "_rebuild_" + base;
-            const std::string pendingVar = "_rebuild_pending_" + base;
             body << "        auto* " << modelVar << " = "
                  << obj.modelObject->internalName << ";\n";
-            body << "        auto " << rebuildVar
-                 << " = std::make_shared<std::function<void()>>();\n";
-            body << "        auto " << pendingVar
+            body << "        auto _removed_" << base
+                 << " = std::make_shared<std::vector<Firmir::Gui::Item*>>();\n";
+            body << "        auto _flushPending_" << base
                  << " = std::make_shared<bool>(false);\n";
-            body << "        *" << rebuildVar << " = [=]() {\n";
-            // Drop the delegates of the previous generation (all the
-            // Repeater's children are delegate instances).
-            body << "            const std::vector<Firmir::Gui::Item*> _old_"
-                 << base << " = " << repeaterVar << "->childItems();\n";
-            body << "            for (Firmir::Gui::Item* _child_" << base
-                 << " : _old_" << base << ")\n";
-            body << "                delete _child_" << base << ";\n";
+            body << "        auto _rebuildPending_" << base
+                 << " = std::make_shared<bool>(false);\n";
+            // Live delegates: children minus the ones queued for deferred
+            // removal (their model rows are already gone).
+            body << "        auto _live_" << base << " = [=]() {\n"
+                 << "            std::vector<Firmir::Gui::Item*> live;\n"
+                 << "            for (Firmir::Gui::Item* child : " << repeaterVar
+                 << "->childItems())\n"
+                 << "                if (std::find(_removed_" << base
+                 << "->begin(), _removed_" << base << "->end(), child) == _removed_"
+                 << base << "->end())\n"
+                 << "                    live.push_back(child);\n"
+                 << "            return live;\n"
+                 << "        };\n";
+            body << "        auto _build_" << base << " = [=](int " << indexVar
+                 << ") {\n";
+        } else {
+            const std::string countExpr = std::to_string(obj.modelCount);
+            body << "        for (int " << indexVar << " = 0; " << indexVar << " < "
+                 << countExpr << "; ++" << indexVar << ") {\n";
         }
-        const std::string countExpr =
-            obj.modelObject ? modelVar + "->count()" : std::to_string(obj.modelCount);
-        body << "        for (int " << indexVar << " = 0; " << indexVar << " < "
-             << countExpr << "; ++" << indexVar << ") {\n";
 
         m_expr.delegateModelVar = modelVar;
         m_expr.delegateIndexVar = indexVar;
         m_expr.delegateRoles = obj.modelObject ? &obj.modelObject->roles : nullptr;
+        m_delegateUpdates.clear();
+        m_collectingUpdates = obj.modelObject != nullptr;
         for (const ObjectInfo* sub : m_sema.objects)
             if (sub->delegateScope == &obj)
                 emitObject(*sub, body);
+        m_collectingUpdates = false;
         emitBindings(body, &obj);
+        if (delegateRoot && obj.modelObject)
+            body << "        " << delegateRoot->internalName
+                 << "->setProperty(\"_row\", (double)" << indexVar << ");\n";
+        // Handlers of a dynamic-model delegate read their row live: the
+        // captured creation-time index would go stale after removals.
+        m_expr.inDelegateHandler = obj.modelObject && delegateRoot;
+        m_expr.delegateRowHolder =
+            delegateRoot ? delegateRoot->internalName : std::string();
         emitHandlers(body, &obj);
+        m_expr.inDelegateHandler = false;
+        m_expr.delegateRowHolder.clear();
         m_expr.delegateModelVar.clear();
         m_expr.delegateIndexVar.clear();
         m_expr.delegateRoles = nullptr;
 
-        body << "        }\n";
-        if (obj.modelObject) {
-            const std::string rebuildVar = "_rebuild_" + base;
-            const std::string pendingVar = "_rebuild_pending_" + base;
-            body << "        };\n";
-            body << "        (*" << rebuildVar << ")();\n";
-            body << "        " << modelVar << "->connect<std::string, std::any>(\n";
-            body << "            " << repeaterVar
-                 << ", Firmir::Object::signalPropertyChanged,\n";
-            body << "            [" << rebuildVar << ", " << pendingVar << ", "
-                 << repeaterVar
-                 << "](const std::string& name, const std::any&) {\n";
-            // Timer requires a positive interval; 1ms is effectively
-            // immediate but still deferred to the next loop iteration. A
-            // burst of count changes (e.g. filling the model row by row)
-            // schedules only the first rebuild — the rest are redundant.
-            body << "                if (name == \"count\" && !*"
-                 << pendingVar << ") {\n";
-            body << "                    *" << pendingVar << " = true;\n";
-            body << "                    Firmir::Timer::singleShot(\n";
-            body << "                        std::chrono::milliseconds(1), "
-                 << repeaterVar << ",\n";
-            body << "                        [" << rebuildVar << ", "
-                 << pendingVar << "] {\n";
-            body << "                            *" << pendingVar
-                 << " = false;\n";
-            body << "                            (*" << rebuildVar
-                 << ")();\n                        });\n";
-            body << "                }\n";
-            body << "            },\n";
-            body << "            Firmir::ConnectionMode::Direct);\n";
+        if (!obj.modelObject) {
+            body << "        }\n";
+            body << "    }\n";
+            return;
         }
+
+        body << "        };\n";
+        // In-place refresh of the model-driven properties of one delegate.
+        body << "        auto _update_" << base
+             << " = [=](Firmir::Gui::Item* _del_" << base << ", int " << indexVar
+             << ") {\n";
+        for (const std::string& stmt : m_delegateUpdates)
+            body << stmt;
+        body << "        };\n";
+        // Full rebuild (clears the deferred-removal queue first: its items
+        // die together with the rest of the delegates).
+        body << "        auto _rebuild_" << base << " = [=]() {\n"
+             << "            _removed_" << base << "->clear();\n"
+             << "            const auto _children_" << base << " = " << repeaterVar
+             << "->childItems();\n"
+             << "            for (Firmir::Gui::Item* child : _children_" << base
+             << ")\n"
+             << "                delete child;\n"
+             << "            for (int _row_" << base << " = 0; _row_" << base << " < "
+             << modelVar << "->count(); ++_row_" << base << ")\n"
+             << "                _build_" << base << "(_row_" << base << ");\n"
+             << "        };\n";
+        // Deferred removal flush + reindex of the surviving delegates.
+        body << "        auto _flushRemovals_" << base << " = [=]() {\n"
+             << "            for (Firmir::Gui::Item* item : *_removed_" << base
+             << ")\n"
+             << "                delete item;\n"
+             << "            _removed_" << base << "->clear();\n"
+             << "            const auto _liveNow_" << base << " = _live_" << base
+             << "();\n"
+             << "            for (int _row_" << base << " = 0; _row_" << base
+             << " < static_cast<int>(_liveNow_" << base << ".size()); ++_row_"
+             << base << ")\n"
+             << "                _liveNow_" << base << "[_row_" << base
+             << "]->setProperty(\"_row\", (double)_row_" << base << ");\n"
+             << "        };\n";
+        body << "        _rebuild_" << base << "();\n";
+
+        const std::string scheduleRebuild =
+            "            if (!*_rebuildPending_" + base + ") {\n"
+            "                *_rebuildPending_" + base + " = true;\n"
+            "                Firmir::Timer::singleShot(\n"
+            "                    std::chrono::milliseconds(1), " + repeaterVar + ",\n"
+            "                    [=] { *_rebuildPending_" + base + " = false; _rebuild_" +
+            base + "(); });\n"
+            "            }\n";
+        const std::string modelType =
+            "Firmir::Gui::AbstractDataList<std::map<std::string, std::any>>";
+
+        body << "        " << modelVar << "->connect<int, int>(" << repeaterVar
+             << ", " << modelType << "::signalItemsInserted,\n"
+             << "            [=](int first, int last) {\n"
+             << "                const auto _liveNow_" << base << " = _live_" << base
+             << "();\n"
+             << "                if (first == static_cast<int>(_liveNow_" << base
+             << ".size())) {\n"
+             << "                    for (int _row_" << base << " = first; _row_" << base
+             << " <= last; ++_row_" << base << ")\n"
+             << "                        _build_" << base << "(_row_" << base << ");\n"
+             << "                    return;\n"
+             << "                }\n"
+             << "                // Mid-list insert: rare — full rebuild.\n";
+        body << scheduleRebuild;
+        body << "            },\n"
+             << "            Firmir::ConnectionMode::Direct);\n";
+
+        body << "        " << modelVar << "->connect<int, int>(" << repeaterVar
+             << ", " << modelType << "::signalItemsRemoved,\n"
+             << "            [=](int first, int last) {\n"
+             << "                const auto _liveNow_" << base << " = _live_" << base
+             << "();\n"
+             << "                for (int _row_" << base << " = first; _row_" << base
+             << " <= last && _row_" << base
+             << " < static_cast<int>(_liveNow_" << base << ".size()); ++_row_" << base
+             << ")\n"
+             << "                    _removed_" << base << "->push_back(_liveNow_" << base
+             << "[_row_" << base << "]);\n"
+             << "                if (!*_flushPending_" << base << ") {\n"
+             << "                    *_flushPending_" << base << " = true;\n"
+             << "                    Firmir::Timer::singleShot(\n"
+             << "                        std::chrono::milliseconds(1), " << repeaterVar
+             << ",\n"
+             << "                        [=] { *_flushPending_" << base
+             << " = false; _flushRemovals_" << base << "(); });\n"
+             << "                }\n"
+             << "            },\n"
+             << "            Firmir::ConnectionMode::Direct);\n";
+
+        if (!m_delegateUpdates.empty())
+            body << "        " << modelVar << "->connect<int, int>(" << repeaterVar
+                 << ", " << modelType << "::signalItemsDataChanged,\n"
+                 << "            [=](int first, int last) {\n"
+                 << "                const auto _liveNow_" << base << " = _live_" << base
+                 << "();\n"
+                 << "                for (int _row_" << base << " = first; _row_" << base
+                 << " <= last && _row_" << base
+                 << " < static_cast<int>(_liveNow_" << base << ".size()); ++_row_"
+                 << base << ")\n"
+                 << "                    _update_" << base << "(_liveNow_" << base
+                 << "[_row_" << base << "], _row_" << base << ");\n"
+                 << "            },\n"
+                 << "            Firmir::ConnectionMode::Direct);\n";
+
+        body << "        " << modelVar << "->connect<>(" << repeaterVar
+             << ", " << modelType << "::signalModelReset,\n"
+             << "            [=] {\n";
+        body << scheduleRebuild;
+        body << "            },\n"
+             << "            Firmir::ConnectionMode::Direct);\n";
         body << "    }\n";
     }
 
@@ -1499,6 +1773,11 @@ private:
     std::string m_outputStem;
     ExprEmitter m_expr;
     std::vector<const ObjectInfo*> m_repeaters; // delegate loops pending emission
+    /// While a dynamic-model Repeater's delegate subtree is emitted:
+    /// statements for the in-place update lambda (one per model/index-driven
+    /// delegate property), plus the collected delegate sub-object names.
+    bool m_collectingUpdates = false;
+    std::vector<std::string> m_delegateUpdates;
     /// True when some Repeater is bound to a ListModel and its delegates
     /// must be rebuilt when the model count changes (needs <functional>,
     /// <memory>, <vector>, <chrono> and <firmir/timer.hpp>).

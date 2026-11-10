@@ -23,6 +23,9 @@ public:
     void terminate();
     void flushClients();
     int dispatch(int timeoutMs = 0);
+    /// Disconnects all clients and destroys their resources (their destroy
+    /// callbacks run while the caller's objects are still alive).
+    void destroyClients();
     std::uint32_t nextSerial();
     wl_global* createGlobal(const wl_interface* interface, int version,
                             wl_global_bind_func_t bind, void* data);

@@ -51,6 +51,9 @@ public:
     static constexpr const char* signalItemsRemoved = "itemsRemoved";
     static constexpr const char* signalModelAboutToBeReset = "modelAboutToBeReset";
     static constexpr const char* signalModelReset = "modelReset";
+    /// Emitted when the DATA of existing rows [first, last] changed (no
+    /// structural change). Views update the affected delegates in place.
+    static constexpr const char* signalItemsDataChanged = "itemsDataChanged";
 
     /// Number of items.
     int count() const { return static_cast<int>(d->items.size()); }
@@ -85,9 +88,18 @@ protected:
         emitSignal(signalItemsAboutToBeInserted, first, last);
     }
     void endInsertItems() {
+        endInsertItemsPopulated([](int) { return ItemT{}; });
+    }
+    /// Same as endInsertItems(), but @p populate(i) provides the value of
+    /// each inserted row BEFORE itemsInserted is emitted, so signal handlers
+    /// (views) already observe the final data.
+    template <typename F>
+    void endInsertItemsPopulated(F&& populate) {
         const Pending pending = end(StructureChange::Insert);
         const int count = pending.last - pending.first + 1;
         d->items.insert(d->items.begin() + pending.first, count, ItemT{});
+        for (int i = 0; i < count; ++i)
+            d->items[pending.first + i] = populate(i);
         notifyPropertyChanged("count");
         emitSignal(signalItemsInserted, pending.first, pending.last);
     }
@@ -151,6 +163,14 @@ protected:
     /// Drops all items; intended to be called between beginResetModel() and
     /// endResetModel().
     void clearItems() { d->items.clear(); }
+
+    /// Announces that the data of existing rows [first, last] changed.
+    void emitDataChanged(int first, int last) {
+        if (first < 0 || last < first || last >= count())
+            throw std::out_of_range(
+                "Firmir::AbstractDataList: invalid range for data changed");
+        emitSignal(signalItemsDataChanged, first, last);
+    }
 
 private:
     enum class StructureChange { None, Insert, Move, Remove, Reset };

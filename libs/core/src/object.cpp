@@ -194,6 +194,12 @@ Object::~Object() {
             << "destroyed from a foreign thread; use deleteLater() instead";
         std::abort();
     }
+    // Hold the GUI scene lock (when part of a scene) for the whole teardown:
+    // the render thread walks the tree under that mutex, and it can snapshot
+    // a child pointer before childrenMutex serializes the list erase.
+    std::unique_lock<std::recursive_mutex> sceneGuard;
+    if (detail::sceneGuardFor)
+        sceneGuard = detail::sceneGuardFor(this);
     emitSignal(signalDestroyed);
     d->alive->store(false);
 
@@ -236,6 +242,14 @@ void Object::setParent(Object* parentObj) {
     if (parentObj && parentObj->thread() != thread())
         throw std::logic_error(
             "Firmir::Object::setParent: parent and child must share the same thread");
+    // Same scene-lock discipline as ~Object: tree mutations must be
+    // serialized against the GUI render thread.
+    std::unique_lock<std::recursive_mutex> sceneGuard, newSceneGuard;
+    if (detail::sceneGuardFor) {
+        sceneGuard = detail::sceneGuardFor(this);
+        if (parentObj)
+            newSceneGuard = detail::sceneGuardFor(parentObj);
+    }
     Object* oldParent = d->parent.load();
     if (oldParent) {
         std::lock_guard<std::mutex> lk(oldParent->d->childrenMutex);
@@ -473,25 +487,38 @@ void Object::emitImpl(const std::string& signal, const void* args,
             break;
         }
 
-        if (direct) {
+        // Slots taking fewer arguments than the signal provides are fine
+        // (Qt-style): a zero-argument slot is invoked with the payload
+        // dropped. Any other mismatch is a programming error.
+        auto invokeSlot = [](const std::any& fn, const void* packed,
+                             const ErasedInvoke& invokeFn) -> bool {
             try {
-                invoke(slot.fn, args);
+                invokeFn(fn, packed);
+                return true;
             } catch (const std::bad_any_cast&) {
+                if (const auto* nullary =
+                        std::any_cast<std::function<void()>>(&fn)) {
+                    (*nullary)();
+                    return true;
+                }
+                return false;
+            }
+        };
+
+        if (direct) {
+            if (!invokeSlot(slot.fn, args, invoke))
                 throw std::runtime_error(
                     "Firmir::Object::emitSignal: slot signature mismatch on signal '" +
                     signal + "'");
-            }
         } else {
             std::shared_ptr<void> argsCopy = clone(args);
             Thread* target = context->thread();
             ThreadBridgeAccess::postTask(
-                target, [alive = std::move(alive), fn = slot.fn, invoke,
-                         argsCopy = std::move(argsCopy)]() mutable {
+                target, [alive = std::move(alive), fn = slot.fn, invokeSlot,
+                         argsCopy = std::move(argsCopy), invoke]() mutable {
                     if (!alive->load())
                         return;
-                    try {
-                        invoke(fn, argsCopy.get());
-                    } catch (const std::bad_any_cast&) {
+                    if (!invokeSlot(fn, argsCopy.get(), invoke)) {
                         cLogError(lcObject())
                             << "queued slot signature mismatch";
                         std::abort();

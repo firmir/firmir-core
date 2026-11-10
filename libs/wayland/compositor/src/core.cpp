@@ -199,6 +199,19 @@ struct CompositorGlobal {
         regionDestroy, regionOp, regionOp
     };
 
+    static void surfaceDestroyed(wl_resource* resource) {
+        auto* surface = static_cast<WaylandSurface*>(wl_resource_get_user_data(resource));
+        auto* compositor = static_cast<WaylandCompositor*>(surface->parent());
+        // Let observers (e.g. views being painted on a render thread) detach
+        // while the object is still fully valid.
+        surface->emitSignal(WaylandSurface::signalAboutToBeDestroyed);
+        if (compositor) {
+            auto& surfaces = compositor->d->surfaces;
+            surfaces.erase(std::remove(surfaces.begin(), surfaces.end(), surface),
+                           surfaces.end());
+        }
+        delete surface;
+    }
     static void createSurface(wl_client* client, wl_resource* resource, std::uint32_t id) {
         auto* compositor = static_cast<WaylandCompositor*>(wl_resource_get_user_data(resource));
         wl_resource* surfaceResource = wl_resource_create(client, &wl_surface_interface, 4, id);
@@ -206,7 +219,8 @@ struct CompositorGlobal {
         auto* surface = new WaylandSurface(compositor);
         surface->setResource(surfaceResource);
         compositor->d->surfaces.push_back(surface);
-        wl_resource_set_implementation(surfaceResource, &surfaceImplementation, surface, nullptr);
+        wl_resource_set_implementation(surfaceResource, &surfaceImplementation, surface,
+                                       surfaceDestroyed);
     }
     static void createRegion(wl_client* client, wl_resource*, std::uint32_t id) {
         wl_resource* region = wl_resource_create(client, &wl_region_interface, 1, id);
@@ -244,6 +258,9 @@ const std::vector<WaylandClient*>& WaylandCompositor::clients() const { return d
 const std::vector<WaylandSurface*>& WaylandCompositor::surfaces() const { return d->surfaces; }
 WaylandCompositor::~WaylandCompositor() {
     if (d->compositorGlobal) wl_global_destroy(d->compositorGlobal);
+    // Tear down client connections first: resource destroy callbacks touch
+    // the shell/surface objects, so those must still be alive here.
+    if (d->display) d->display->destroyClients();
     const auto childrenCopy = children();
     for (Object* child : childrenCopy) delete child;
     d->outputs.clear(); d->clients.clear(); d->surfaces.clear();

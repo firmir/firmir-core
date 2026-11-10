@@ -27,6 +27,7 @@ F71RepeaterObjects createF71Repeater(Firmir::Gui::Item* parent);
 
 #include <any>
 #include <firmir/string.hpp>
+#include <algorithm>
 #include <firmir/gui/painter.hpp>
 #include <chrono>
 #include <functional>
@@ -59,41 +60,102 @@ F71RepeaterObjects createF71Repeater(Firmir::Gui::Item* parent) {
     rep->setName("rep");
     {
         auto* _model_5 = tags;
-        auto _rebuild_5 = std::make_shared<std::function<void()>>();
-        auto _rebuild_pending_5 = std::make_shared<bool>(false);
-        *_rebuild_5 = [=]() {
-            const std::vector<Firmir::Gui::Item*> _old_5 = rep->childItems();
-            for (Firmir::Gui::Item* _child_5 : _old_5)
-                delete _child_5;
-        for (int _index_5 = 0; _index_5 < _model_5->count(); ++_index_5) {
+        auto _removed_5 = std::make_shared<std::vector<Firmir::Gui::Item*>>();
+        auto _flushPending_5 = std::make_shared<bool>(false);
+        auto _rebuildPending_5 = std::make_shared<bool>(false);
+        auto _live_5 = [=]() {
+            std::vector<Firmir::Gui::Item*> live;
+            for (Firmir::Gui::Item* child : rep->childItems())
+                if (std::find(_removed_5->begin(), _removed_5->end(), child) == _removed_5->end())
+                    live.push_back(child);
+            return live;
+        };
+        auto _build_5 = [=](int _index_5) {
 
     auto* _obj_6 = new Firmir::Gui::Button(rep);
+    _obj_6->setName("_d5_6");
     _obj_6->setProperty("text", Firmir::detail::anyConvert<Firmir::String>(_model_5->data(_index_5, "label")));
     _obj_6->setProperty("fontSize", Firmir::detail::anyConvert<double>(_model_5->data(_index_5, "size")));
     _obj_6->setProperty("color", Firmir::detail::anyConvert<Firmir::Gui::Color>(_model_5->data(_index_5, "badge")));
     _obj_6->setProperty("width", 100.0);
     _obj_6->setProperty("height", Firmir::detail::anyConvert<double>(_model_5->data(_index_5, "size")));
     _obj_6->setProperty("x", ((double)_index_5 * 5.0));
+        _obj_6->setProperty("_row", (double)_index_5);
 
     // onClicked
     _obj_6->connect(_obj_6, "clicked", [=]() {
-        root->setProperty("selected", (double)_index_5);
+        root->setProperty("selected", (double)Firmir::detail::anyConvert<double>(_obj_6->getProperty("_row")));
     });
-        }
         };
-        (*_rebuild_5)();
-        _model_5->connect<std::string, std::any>(
-            rep, Firmir::Object::signalPropertyChanged,
-            [_rebuild_5, _rebuild_pending_5, rep](const std::string& name, const std::any&) {
-                if (name == "count" && !*_rebuild_pending_5) {
-                    *_rebuild_pending_5 = true;
+        auto _update_5 = [=](Firmir::Gui::Item* _del_5, int _index_5) {
+            _del_5->setProperty("text", Firmir::detail::anyConvert<Firmir::String>(_model_5->data(_index_5, "label")));
+            _del_5->setProperty("fontSize", Firmir::detail::anyConvert<double>(_model_5->data(_index_5, "size")));
+            _del_5->setProperty("color", Firmir::detail::anyConvert<Firmir::Gui::Color>(_model_5->data(_index_5, "badge")));
+            _del_5->setProperty("height", Firmir::detail::anyConvert<double>(_model_5->data(_index_5, "size")));
+            _del_5->setProperty("x", ((double)_index_5 * 5.0));
+        };
+        auto _rebuild_5 = [=]() {
+            _removed_5->clear();
+            const auto _children_5 = rep->childItems();
+            for (Firmir::Gui::Item* child : _children_5)
+                delete child;
+            for (int _row_5 = 0; _row_5 < _model_5->count(); ++_row_5)
+                _build_5(_row_5);
+        };
+        auto _flushRemovals_5 = [=]() {
+            for (Firmir::Gui::Item* item : *_removed_5)
+                delete item;
+            _removed_5->clear();
+            const auto _liveNow_5 = _live_5();
+            for (int _row_5 = 0; _row_5 < static_cast<int>(_liveNow_5.size()); ++_row_5)
+                _liveNow_5[_row_5]->setProperty("_row", (double)_row_5);
+        };
+        _rebuild_5();
+        _model_5->connect<int, int>(rep, Firmir::Gui::AbstractDataList<std::map<std::string, std::any>>::signalItemsInserted,
+            [=](int first, int last) {
+                const auto _liveNow_5 = _live_5();
+                if (first == static_cast<int>(_liveNow_5.size())) {
+                    for (int _row_5 = first; _row_5 <= last; ++_row_5)
+                        _build_5(_row_5);
+                    return;
+                }
+                // Mid-list insert: rare — full rebuild.
+            if (!*_rebuildPending_5) {
+                *_rebuildPending_5 = true;
+                Firmir::Timer::singleShot(
+                    std::chrono::milliseconds(1), rep,
+                    [=] { *_rebuildPending_5 = false; _rebuild_5(); });
+            }
+            },
+            Firmir::ConnectionMode::Direct);
+        _model_5->connect<int, int>(rep, Firmir::Gui::AbstractDataList<std::map<std::string, std::any>>::signalItemsRemoved,
+            [=](int first, int last) {
+                const auto _liveNow_5 = _live_5();
+                for (int _row_5 = first; _row_5 <= last && _row_5 < static_cast<int>(_liveNow_5.size()); ++_row_5)
+                    _removed_5->push_back(_liveNow_5[_row_5]);
+                if (!*_flushPending_5) {
+                    *_flushPending_5 = true;
                     Firmir::Timer::singleShot(
                         std::chrono::milliseconds(1), rep,
-                        [_rebuild_5, _rebuild_pending_5] {
-                            *_rebuild_pending_5 = false;
-                            (*_rebuild_5)();
-                        });
+                        [=] { *_flushPending_5 = false; _flushRemovals_5(); });
                 }
+            },
+            Firmir::ConnectionMode::Direct);
+        _model_5->connect<int, int>(rep, Firmir::Gui::AbstractDataList<std::map<std::string, std::any>>::signalItemsDataChanged,
+            [=](int first, int last) {
+                const auto _liveNow_5 = _live_5();
+                for (int _row_5 = first; _row_5 <= last && _row_5 < static_cast<int>(_liveNow_5.size()); ++_row_5)
+                    _update_5(_liveNow_5[_row_5], _row_5);
+            },
+            Firmir::ConnectionMode::Direct);
+        _model_5->connect<>(rep, Firmir::Gui::AbstractDataList<std::map<std::string, std::any>>::signalModelReset,
+            [=] {
+            if (!*_rebuildPending_5) {
+                *_rebuildPending_5 = true;
+                Firmir::Timer::singleShot(
+                    std::chrono::milliseconds(1), rep,
+                    [=] { *_rebuildPending_5 = false; _rebuild_5(); });
+            }
             },
             Firmir::ConnectionMode::Direct);
     }

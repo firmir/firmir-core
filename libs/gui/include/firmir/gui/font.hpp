@@ -77,5 +77,16 @@ struct RasterizedText {
 /// when the font stack is unavailable.
 RasterizedText rasterizeText(const std::string& utf8, const Font& font);
 
+/// X positions of the text caret at every UTF-8 code point boundary of the
+/// first line of @p utf8 shaped with @p font: result[0] == 0, result[i] is
+/// the pen x of the caret before the i-th code point, and result.back() is
+/// the total advance. result.size() == (code points on the first line) + 1.
+/// Assumes left-to-right layout; ligatured clusters are skipped over (the
+/// caret lands on cluster boundaries). When the font stack is unavailable
+/// the bitmap fallback metrics (8 * scale per code point, matching
+/// Painter::textSize) are returned so carets stay consistent with the
+/// fallback rendering.
+std::vector<float> caretPositions(const std::string& utf8, const Font& font);
+
 } // namespace Gui
 } // namespace Firmir

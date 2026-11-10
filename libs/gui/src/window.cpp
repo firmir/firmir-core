@@ -25,6 +25,21 @@ const Firmir::LoggingCategory& lcGuiWindow() {
     return category;
 }
 
+/// detail::sceneGuardFor implementation: locks the scene mutex of the window
+/// the object belongs to (found by walking the parent chain up to an Item —
+/// the object itself may be mid-destruction, when its own Item identity is
+/// already gone, but its parents are still fully alive). Empty lock for
+/// objects outside any GUI scene.
+std::unique_lock<std::recursive_mutex> sceneGuardForObject(
+    Firmir::Object* object) noexcept {
+    for (Firmir::Object* p = object; p; p = p->parent())
+        if (auto* item = dynamic_cast<Item*>(p))
+            if (Window* w = item->window())
+                return std::unique_lock<std::recursive_mutex>(
+                    detail::sceneMutex(w));
+    return {};
+}
+
 /// Render worker: owns a dedicated OS thread; frames are rendered off the
 /// GUI thread on request (Window::update()), coalescing duplicate requests.
 class RenderThread : public Thread {
@@ -187,6 +202,9 @@ void Window::Impl::renderFrame() {
 
 Window::Window(Screen* screen, Object* parent)
     : Object(parent), d(std::make_unique<Impl>(this, screen)) {
+    // Route the core object-tree teardown/reparenting through the scene
+    // mutex so the render thread never observes a mutating tree.
+    Firmir::detail::sceneGuardFor = &sceneGuardForObject;
     d->content = new Item(this);
     // Firml-facing properties (bindings/handlers go through setProperty).
     registerProperty<double>("width", &Window::widthProperty,

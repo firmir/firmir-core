@@ -26,8 +26,16 @@ public:
     explicit ListModel(Object* parent = nullptr);
     ~ListModel() override;
 
-    /// Appends one row of role values (emits itemsAboutToBeInserted/itemsInserted).
+    /// Appends one row of role values (emits itemsAboutToBeInserted/itemsInserted;
+    /// the row data is in place before itemsInserted fires).
     void append(Row row);
+    /// Inserts one row at @p index (same signals as append()).
+    void insertRow(int index, Row row);
+    /// Removes the row at @p index (emits itemsAboutToBeRemoved/itemsRemoved).
+    void removeAt(int index);
+    /// Replaces the value of @p role in row @p index and emits
+    /// itemsDataChanged(index, index) so views update the single delegate.
+    void setData(int index, const std::string& role, std::any value);
     /// Removes all rows (emits itemsAboutToBeRemoved/itemsRemoved when
     /// non-empty). The learned role defaults survive: they describe the
     /// role schema, so sparse-role lookups keep returning typed defaults

@@ -1240,8 +1240,14 @@ TEST_CASE(gui_editabletext_text_input) {
         firmir_gui_headless_inject_key(false, 14, "");
         CHECK_EQ(edit->text().toStdString(), std::string("ab "));
 
-        // Delete (forward) does the same at the end-of-text cursor.
+        // Delete removes the code point after the caret (forward delete);
+        // at the end of the text it is a no-op.
         firmir_gui_headless_inject_key(true, 111, "");  // KEY_DELETE
+        firmir_gui_headless_inject_key(false, 111, "");
+        CHECK_EQ(edit->text().toStdString(), std::string("ab "));
+        firmir_gui_headless_inject_key(true, 105, "");  // KEY_LEFT
+        firmir_gui_headless_inject_key(false, 105, "");
+        firmir_gui_headless_inject_key(true, 111, "");
         firmir_gui_headless_inject_key(false, 111, "");
         CHECK_EQ(edit->text().toStdString(), std::string("ab"));
 
@@ -1250,6 +1256,8 @@ TEST_CASE(gui_editabletext_text_input) {
         firmir_gui_headless_inject_key(true, 0, "\x05"); // a stray C0 control
         firmir_gui_headless_inject_key(false, 0, "");
         CHECK_EQ(edit->text().toStdString(), std::string("ab"));
+        firmir_gui_headless_inject_key(true, 105, "");  // caret between a|b
+        firmir_gui_headless_inject_key(false, 105, "");
         firmir_gui_headless_inject_key(true, 0, "\x7F"); // DEL as text
         firmir_gui_headless_inject_key(false, 0, "");
         CHECK_EQ(edit->text().toStdString(), std::string("a"));
@@ -1293,9 +1301,20 @@ TEST_CASE(gui_editabletext_click_on_text_focuses_edit) {
         CHECK(window.focusItem() == edit);
         CHECK(edit->hasFocus());
 
+        // A click near the left text edge places the caret there; typing
+        // inserts at the caret.
         firmir_gui_headless_inject_key(true, 30, "a");
         firmir_gui_headless_inject_key(false, 30, "");
-        CHECK_EQ(edit->text().toStdString(), std::string("existing texta"));
+        CHECK_EQ(edit->text().toStdString(), std::string("aexisting text"));
+
+        // A click past the text end moves the caret to the end.
+        firmir_gui_headless_inject_mouse(
+            static_cast<int>(MouseEvent::Action::Press), 175, 15, 1);
+        firmir_gui_headless_inject_mouse(
+            static_cast<int>(MouseEvent::Action::Release), 175, 15, 1);
+        firmir_gui_headless_inject_key(true, 48, "b");
+        firmir_gui_headless_inject_key(false, 48, "");
+        CHECK_EQ(edit->text().toStdString(), std::string("aexisting textb"));
 
         window.hide();
     }
@@ -1328,8 +1347,10 @@ TEST_CASE(gui_editabletext_cursor_tracks_rendered_text) {
         CHECK(textItem != nullptr);
         CHECK(cursor != nullptr);
         if (textItem && cursor) {
-            const float textRight = 10.0f + textItem->implicitWidth();
-            CHECK(std::fabs(cursor->x() - (textRight + 2)) < 0.5f);
+            // Caret x = text padding (10) + the bitmap's 1px left pad + the
+            // shaped advance (implicitWidth = ceil(advance) + 2).
+            const float textRight = 11.0f + textItem->implicitWidth() - 2.0f;
+            CHECK(std::fabs(cursor->x() - textRight) < 1.5f);
         }
 
         window.hide();

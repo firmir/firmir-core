@@ -33,6 +33,7 @@ class WaylandXdgToplevel::Impl {
 public:
     bool maximized = false;
     bool fullscreen = false;
+    WaylandXdgSurface* xdgSurface = nullptr;
 };
 
 class WaylandXdgSurface::Impl {
@@ -89,6 +90,10 @@ WaylandShell::WaylandShell(Object* parent)
 WaylandShell::~WaylandShell() = default;
 std::vector<WaylandShellSurface*> WaylandShell::shellSurfaces() const { return d->surfaces; }
 void WaylandShell::registerSurface(WaylandShellSurface* surface) { d->surfaces.push_back(surface); }
+void WaylandShell::unregisterSurface(WaylandShellSurface* surface) {
+    auto& surfaces = d->surfaces;
+    surfaces.erase(std::remove(surfaces.begin(), surfaces.end(), surface), surfaces.end());
+}
 
 WaylandWlShell::WaylandWlShell(Object* parent)
     : WaylandShell(parent), d(std::make_unique<Impl>()) {}
@@ -174,6 +179,8 @@ void WaylandXdgToplevel::setFullscreen(bool fullscreen) {
     sendConfigure(size().width, size().height);
 }
 void WaylandXdgToplevel::setMinimized() {}
+WaylandXdgSurface* WaylandXdgToplevel::xdgSurface() const { return d->xdgSurface; }
+void WaylandXdgToplevel::setXdgSurface(WaylandXdgSurface* surface) { d->xdgSurface = surface; }
 void WaylandXdgSurface::sendConfigure(int width, int height) {
     setSize({width, height});
     if (d->toplevel) d->toplevel->sendConfigure(width, height);
@@ -198,7 +205,15 @@ struct LegacyContext {
     WaylandWlShellSurface* surface = nullptr;
 };
 void destroyLegacy(wl_resource* resource) {
-    delete static_cast<LegacyContext*>(wl_resource_get_user_data(resource));
+    auto* context = static_cast<LegacyContext*>(wl_resource_get_user_data(resource));
+    // A bound wl_shell_surface resource died: drop the shell surface object
+    // (its Object::signalDestroyed notifies interested parties first).
+    if (context->surface) {
+        context->shell->unregisterSurface(context->surface);
+        delete context->surface;
+        context->surface = nullptr;
+    }
+    delete context;
 }
 int legacyDispatch(const void*, void* target, std::uint32_t, const wl_message* message,
                    wl_argument* args) {
@@ -244,7 +259,22 @@ struct XdgShellGlobal {
         WaylandShellSurface* object = nullptr;
     };
     static void destroyContext(wl_resource* resource) {
-        delete static_cast<Context*>(wl_resource_get_user_data(resource));
+        auto* context = static_cast<Context*>(wl_resource_get_user_data(resource));
+        if (auto* xdg = dynamic_cast<WaylandXdgSurface*>(context->object)) {
+            // Role resources cannot outlive their xdg_surface: destroying
+            // them here runs their own contexts (unregister + delete).
+            if (xdg->toplevel() && xdg->toplevel()->resource().handle())
+                wl_resource_destroy(xdg->toplevel()->resource().handle());
+            if (xdg->popup() && xdg->popup()->resource().handle())
+                wl_resource_destroy(xdg->popup()->resource().handle());
+        }
+        if (auto* shellSurface = dynamic_cast<WaylandShellSurface*>(context->object)) {
+            // Object::signalDestroyed fires from the destructor so observers
+            // can detach before the object is gone.
+            if (context->shell) context->shell->unregisterSurface(shellSurface);
+            delete shellSurface;
+        }
+        delete context;
     }
     static void install(wl_resource* resource, WaylandXdgShell* shell,
                         WaylandShellSurface* object, wl_dispatcher_func_t dispatch) {
@@ -278,7 +308,19 @@ struct XdgShellGlobal {
                 &xdg_toplevel_interface, wl_resource_get_version(resource), args[0].n);
             toplevel->setResource(created);
             toplevel->setSurface(xdg ? xdg->surface() : nullptr);
-            if (xdg) xdg->setToplevel(toplevel);
+            if (xdg) {
+                xdg->setToplevel(toplevel);
+                toplevel->setXdgSurface(xdg);
+                // signalDestroyed fires from ~Object(): the EMITTER's derived
+                // state is already gone, so each direction's slot may only
+                // touch the OTHER (alive, receiver) object.
+                toplevel->connect(xdg, Object::signalDestroyed, [xdg, toplevel] {
+                    if (xdg->toplevel() == toplevel) xdg->setToplevel(nullptr);
+                });
+                xdg->connect(toplevel, Object::signalDestroyed, [xdg, toplevel] {
+                    if (toplevel->xdgSurface() == xdg) toplevel->setXdgSurface(nullptr);
+                });
+            }
             install(created, shell, toplevel, dispatch);
             shell->registerSurface(toplevel);
             if (xdg) xdg->sendConfigure(0, 0);
@@ -290,6 +332,10 @@ struct XdgShellGlobal {
             popup->setResource(created);
             popup->setSurface(xdg ? xdg->surface() : nullptr);
             if (xdg) xdg->setPopup(popup);
+            if (xdg)
+                popup->connect(xdg, Object::signalDestroyed, [xdg, popup] {
+                    if (xdg->popup() == popup) xdg->setPopup(nullptr);
+                });
             install(created, shell, popup, dispatch);
             shell->registerSurface(popup);
         } else if (auto* toplevel = dynamic_cast<WaylandXdgToplevel*>(context->object)) {

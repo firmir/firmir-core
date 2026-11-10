@@ -3,6 +3,8 @@
 #include <firmir/gui/painter.hpp>
 #include <firmir/string.hpp>
 
+#include <stdexcept>
+
 namespace Firmir {
 namespace Gui {
 
@@ -40,12 +42,48 @@ ListModel::ListModel(Object* parent)
 ListModel::~ListModel() = default;
 
 void ListModel::append(Row row) {
+    insertRow(count(), std::move(row));
+}
+
+void ListModel::insertRow(int index, Row row) {
     for (const auto& [role, value] : row)
         d->roleDefaults.emplace(role, defaultValueFor(value)); // the first row wins
-    const int index = count();
     beginInsertItems(index, index);
-    endInsertItems(); // notifies "count" itself
-    itemAt(index) = std::move(row);
+    // The row is populated before itemsInserted fires: views build the new
+    // delegate synchronously from the final data.
+    endInsertItemsPopulated([&row](int) { return std::move(row); });
+}
+
+void ListModel::removeAt(int index) {
+    beginRemoveItems(index, index);
+    endRemoveItems(); // notifies "count" itself
+}
+
+void ListModel::setData(int index, const std::string& role, std::any value) {
+    if (index < 0 || index >= count())
+        throw std::out_of_range("Firmir::ListModel::setData: index out of range");
+    d->roleDefaults.emplace(role, defaultValueFor(value));
+    Row& row = itemAt(index);
+    if (const auto it = row.find(role); it != row.end() && it->second.type() == value.type()) {
+        // Skip no-op writes (and the resulting repaint) for the comparable
+        // scalar types a delegate renders.
+        const std::any& old = it->second;
+        const bool same =
+            (value.type() == typeid(bool) &&
+             std::any_cast<bool>(old) == std::any_cast<bool>(value)) ||
+            (value.type() == typeid(double) &&
+             std::any_cast<double>(old) == std::any_cast<double>(value)) ||
+            (value.type() == typeid(int) &&
+             std::any_cast<int>(old) == std::any_cast<int>(value)) ||
+            (value.type() == typeid(std::string) &&
+             std::any_cast<std::string>(old) == std::any_cast<std::string>(value)) ||
+            (value.type() == typeid(String) &&
+             std::any_cast<String>(old) == std::any_cast<String>(value));
+        if (same)
+            return;
+    }
+    row[role] = std::move(value);
+    emitDataChanged(index, index);
 }
 
 void ListModel::clear() {

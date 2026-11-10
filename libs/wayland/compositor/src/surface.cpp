@@ -1,6 +1,7 @@
 #include <firmir/wayland/compositor/surface.hpp>
 #include <wayland-server.h>
 #include <cstring>
+#include <mutex>
 
 namespace Firmir {
 namespace Wayland {
@@ -11,9 +12,17 @@ public:
     WaylandResource resource;
     WaylandBufferRef buffer;
     WaylandBufferRef pendingBuffer;
+    /// True between wl_surface.attach and the next commit; an attach(null)
+    /// therefore clears the buffer while a bare commit keeps the old one.
+    bool hasPendingAttach = false;
     std::unique_ptr<WaylandSurfaceRole> role;
     std::vector<Gui::Rect> damage;
     int attachX = 0, attachY = 0;
+    /// Serializes the buffer swap in commit() (wayland dispatch thread)
+    /// against the pixel copy in WaylandSurfaceGrabber::grab() (render
+    /// thread): wl_buffer.release for a replaced buffer is only sent when no
+    /// grab of it can be in flight.
+    std::mutex bufferMutex;
 };
 
 class WaylandView::Impl {
@@ -39,13 +48,21 @@ WaylandSurface::WaylandSurface(Object* parent)
 WaylandSurface::~WaylandSurface() = default;
 WaylandResource WaylandSurface::resource() const { return d->resource; }
 void WaylandSurface::setResource(wl_resource* resource) { d->resource = WaylandResource(resource); }
-WaylandBufferRef WaylandSurface::buffer() const { return d->buffer; }
-WaylandBufferRef WaylandSurface::pendingBuffer() const { return d->pendingBuffer; }
+WaylandBufferRef WaylandSurface::buffer() const {
+    std::lock_guard<std::mutex> lock(d->bufferMutex);
+    return d->buffer;
+}
+WaylandBufferRef WaylandSurface::pendingBuffer() const {
+    std::lock_guard<std::mutex> lock(d->bufferMutex);
+    return d->pendingBuffer;
+}
 WaylandSurfaceRole* WaylandSurface::role() const { return d->role.get(); }
 void WaylandSurface::setRole(std::unique_ptr<WaylandSurfaceRole> role) { d->role = std::move(role); }
 const std::vector<Gui::Rect>& WaylandSurface::damage() const { return d->damage; }
 void WaylandSurface::attach(wl_resource* buffer, int x, int y) {
+    std::lock_guard<std::mutex> lock(d->bufferMutex);
     d->pendingBuffer = WaylandBufferRef(buffer);
+    d->hasPendingAttach = true;
     d->attachX = x;
     d->attachY = y;
 }
@@ -54,16 +71,37 @@ void WaylandSurface::addDamage(const Gui::Rect& rect) {
     emitSignal(signalDamaged, rect);
 }
 void WaylandSurface::commit() {
-    d->buffer = d->pendingBuffer;
-    d->pendingBuffer = WaylandBufferRef();
+    wl_resource* release = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(d->bufferMutex);
+        if (d->hasPendingAttach) {
+            const WaylandBufferRef old = d->buffer;
+            d->buffer = d->pendingBuffer;
+            d->pendingBuffer = WaylandBufferRef();
+            d->hasPendingAttach = false;
+            // Hand the replaced buffer back to the client. The mutex
+            // guarantees the render thread is not copying it right now.
+            // Re-committing the same buffer keeps it (still the current
+            // frame) and must NOT release it.
+            if (old.valid() && old.handle() != d->buffer.handle())
+                release = old.handle();
+        }
+    }
     d->damage.clear();
+    if (release)
+        wl_buffer_send_release(release);
     emitSignal(signalCommitted);
 }
 
 WaylandSurfaceGrabber::Frame WaylandSurfaceGrabber::grab(WaylandSurface* surface) const {
     Frame frame;
-    if (!surface || !surface->buffer().isShm()) return frame;
-    const WaylandBufferRef buffer = surface->buffer();
+    if (!surface) return frame;
+    // Hold the buffer across the whole copy: commit() swaps the current
+    // buffer and releases the old one to the client under the same mutex, so
+    // the client cannot rewrite the shm while we read it.
+    std::lock_guard<std::mutex> bufferLock(surface->d->bufferMutex);
+    if (!surface->d->buffer.isShm()) return frame;
+    const WaylandBufferRef buffer = surface->d->buffer;
     const Size size = buffer.size();
     const int stride = buffer.stride();
     const auto* data = static_cast<const std::uint8_t*>(buffer.data());

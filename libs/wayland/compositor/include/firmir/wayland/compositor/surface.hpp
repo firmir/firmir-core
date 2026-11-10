@@ -38,9 +38,16 @@ public:
     void commit();
     static constexpr auto signalCommitted = "committed";
     static constexpr auto signalDamaged = "damaged";
+    /// Emitted (no arguments) from the wl_surface resource destroy callback,
+    /// BEFORE the object is deleted — observers must detach here (unlike
+    /// Object::signalDestroyed, which fires from the destructor when the
+    /// buffer is already gone).
+    static constexpr auto signalAboutToBeDestroyed = "aboutToBeDestroyed";
 private:
     class Impl;
     std::unique_ptr<Impl> d;
+    // The grabber locks the surface's buffer mutex for the whole pixel copy.
+    friend class WaylandSurfaceGrabber;
 };
 
 class WaylandView : public WaylandObject {

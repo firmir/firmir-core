@@ -95,3 +95,89 @@ TEST_CASE(listmodel_insert_remove_signals) {
     model.clear();
     CHECK_EQ(removed, 1);
 }
+
+TEST_CASE(listmodel_set_data_emits_items_data_changed) {
+    ListModel model;
+    model.append({{"label", String("one")}, {"done", false}});
+    model.append({{"label", String("two")}, {"done", false}});
+
+    std::vector<std::pair<int, int>> changes;
+    model.connect<int, int>(
+        &model, AbstractDataList<std::map<std::string, std::any>>::signalItemsDataChanged,
+        [&changes](int first, int last) { changes.emplace_back(first, last); },
+        ConnectionMode::Direct);
+
+    model.setData(1, "done", true);
+    CHECK_EQ(changes.size(), size_t(1));
+    CHECK_EQ(changes[0].first, 1);
+    CHECK_EQ(changes[0].second, 1);
+    CHECK(std::any_cast<bool>(model.data(1, "done")));
+
+    // A no-op write does not signal.
+    model.setData(1, "done", true);
+    CHECK_EQ(changes.size(), size_t(1));
+
+    // Unknown roles are learned (sparse default for other rows).
+    model.setData(0, "prio", 3.0);
+    CHECK_EQ(changes.size(), size_t(2));
+    CHECK_EQ(std::any_cast<double>(model.data(0, "prio")), 3.0);
+    CHECK_EQ(std::any_cast<double>(model.data(1, "prio")), 0.0);
+
+    bool threw = false;
+    try {
+        model.setData(5, "done", true);
+    } catch (const std::out_of_range&) {
+        threw = true;
+    }
+    CHECK(threw);
+}
+
+TEST_CASE(listmodel_remove_at_signals_and_shifts) {
+    ListModel model;
+    model.append({{"label", String("a")}});
+    model.append({{"label", String("b")}});
+    model.append({{"label", String("c")}});
+
+    std::vector<std::pair<int, int>> removed;
+    model.connect<int, int>(
+        &model, AbstractDataList<std::map<std::string, std::any>>::signalItemsRemoved,
+        [&removed](int first, int last) { removed.emplace_back(first, last); },
+        ConnectionMode::Direct);
+
+    model.removeAt(1);
+    CHECK_EQ(removed.size(), size_t(1));
+    CHECK_EQ(removed[0].first, 1);
+    CHECK_EQ(removed[0].second, 1);
+    CHECK_EQ(model.count(), 2);
+    CHECK(std::any_cast<String>(model.data(0, "label")) == String("a"));
+    CHECK(std::any_cast<String>(model.data(1, "label")) == String("c"));
+}
+
+TEST_CASE(listmodel_insert_row_data_ready_in_signal) {
+    ListModel model;
+    model.append({{"label", String("first")}});
+
+    // The inserted row must be readable from inside itemsInserted handlers
+    // (views build the delegate synchronously from the final data).
+    std::string seen;
+    int seenIndex = -1;
+    model.connect<int, int>(
+        &model, AbstractDataList<std::map<std::string, std::any>>::signalItemsInserted,
+        [&](int first, int last) {
+            seen = std::any_cast<String>(model.data(first, "label")).toStdString();
+            seenIndex = first;
+            CHECK_EQ(first, last);
+        },
+        ConnectionMode::Direct);
+
+    model.insertRow(0, {{"label", String("prepended")}});
+    CHECK_EQ(seenIndex, 0);
+    CHECK(seen == "prepended");
+    CHECK_EQ(model.count(), 2);
+    CHECK(std::any_cast<String>(model.data(1, "label")) == String("first"));
+
+    // append() keeps working and also has the row ready in the signal.
+    model.append({{"label", String("last")}});
+    CHECK_EQ(seenIndex, 2);
+    CHECK(seen == "last");
+}

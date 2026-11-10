@@ -423,5 +423,71 @@ RasterizedText rasterizeText(const std::string& utf8, const Font& font) {
     return output;
 }
 
+std::vector<float> caretPositions(const std::string& utf8, const Font& font) {
+    // Code point boundary byte offsets of the first line.
+    std::vector<std::size_t> boundaries;
+    for (std::size_t i = 0; i < utf8.size() && utf8[i] != '\n';) {
+        boundaries.push_back(i);
+        do {
+            ++i;
+        } while (i < utf8.size() &&
+                 (static_cast<unsigned char>(utf8[i]) & 0xC0) == 0x80);
+    }
+    std::vector<float> positions(boundaries.size() + 1, 0.0f);
+
+    const int scale = std::max(1, (font.effectivePixelSize() + 7) / 8);
+    auto bitmapFallback = [&] {
+        const float cell = 8.0f * static_cast<float>(scale);
+        for (std::size_t i = 0; i < positions.size(); ++i)
+            positions[i] = cell * static_cast<float>(i);
+        return positions;
+    };
+
+    auto& db = database();
+    std::lock_guard<std::mutex> lock(db.mutex);
+    if (!db.library) return bitmapFallback();
+    const ResolvedFont resolved = resolveFont(db, font);
+    FT_Face face = nullptr;
+    const FT_Error error = resolved.bytes
+        ? FT_New_Memory_Face(db.library, resolved.bytes->data(),
+                             static_cast<FT_Long>(resolved.bytes->size()), resolved.index, &face)
+        : resolved.path.empty() ? FT_Err_Cannot_Open_Resource
+                                : FT_New_Face(db.library, resolved.path.c_str(), resolved.index, &face);
+    if (error != 0 || !face) return bitmapFallback();
+    if (FT_Set_Pixel_Sizes(face, 0, font.effectivePixelSize()) != 0) {
+        FT_Done_Face(face);
+        return bitmapFallback();
+    }
+    hb_font_t* hbFont = hb_ft_font_create_referenced(face);
+    if (!hbFont) {
+        FT_Done_Face(face);
+        return bitmapFallback();
+    }
+    hb_ft_font_set_load_flags(hbFont, FT_LOAD_DEFAULT | FT_LOAD_TARGET_NORMAL);
+    const std::string firstLine = utf8.substr(0, utf8.find('\n'));
+    const ShapedLine line = shapeLine(hbFont, firstLine, font.letterSpacing());
+    hb_font_destroy(hbFont);
+    FT_Done_Face(face);
+
+    // Walk the glyphs in visual order (LTR assumed): every code point
+    // boundary at or before the glyph's cluster gets the pen position the
+    // glyph starts at. Boundaries inside a ligatured cluster land on the
+    // cluster's far edge (the caret cannot enter a ligature).
+    float pen = 0.0f;
+    std::size_t next = 0; // next boundary index to fill
+    for (std::size_t i = 0; i < line.glyphs.size(); ++i) {
+        const std::size_t cluster = line.glyphs[i].cluster;
+        while (next < boundaries.size() && boundaries[next] <= cluster)
+            positions[next++] = pen;
+        pen += line.positions[i].x_advance / 64.0f;
+        if (i + 1 < line.glyphs.size())
+            pen += font.letterSpacing();
+    }
+    while (next < boundaries.size())
+        positions[next++] = pen;
+    positions.back() = pen;
+    return positions;
+}
+
 } // namespace Gui
 } // namespace Firmir

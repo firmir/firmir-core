@@ -41,6 +41,9 @@ public:
     ~WaylandShell() override;
     virtual std::vector<WaylandShellSurface*> shellSurfaces() const;
     void registerSurface(WaylandShellSurface* surface);
+    /// Removes @p surface from shellSurfaces() (called when its resource is
+    /// destroyed). Does not delete the object.
+    void unregisterSurface(WaylandShellSurface* surface);
 private:
     class Impl;
     std::unique_ptr<Impl> d;
@@ -63,6 +66,8 @@ private:
     std::unique_ptr<Impl> d;
 };
 
+class WaylandXdgSurface;
+
 class WaylandXdgPopup : public WaylandShellSurface {
 public:
     explicit WaylandXdgPopup(Object* parent = nullptr) : WaylandShellSurface(parent) {}
@@ -81,6 +86,12 @@ public:
     void setMinimized();
     bool maximized() const;
     bool fullscreen() const;
+    /// The xdg_surface this toplevel role belongs to (nullptr for orphaned
+    /// objects). Prefer WaylandXdgSurface::sendConfigure() for resize
+    /// requests: the xdg protocol requires xdg_surface.configure (with a
+    /// serial the client must ack) in addition to xdg_toplevel.configure.
+    WaylandXdgSurface* xdgSurface() const;
+    void setXdgSurface(WaylandXdgSurface* surface);
 private:
     class Impl;
     std::unique_ptr<Impl> d;

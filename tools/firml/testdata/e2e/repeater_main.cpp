@@ -81,15 +81,10 @@ int main() {
             float(std::any_cast<double>(o.root->getProperty("selected"))), 2.0f);
 
     // --- Dynamic model changes -------------------------------------------
-    // Appending a row must grow the delegate set; the rebuild is deferred to
-    // the event loop, so right after append() the old delegates are intact.
+    // Appending a row builds exactly one new delegate, synchronously, with
+    // the row data already in place; existing delegates are untouched.
     o.keys->append({{"label", Firmir::String("e")}, {"size", 20.0},
                     {"badge", Firmir::Gui::Color::rgb(0x00, 0x80, 0xFF)}});
-    if (o.rep->childItems().size() != 4) {
-        std::printf("FAIL delegates after append (pre-event-loop): %zu != 4\n",
-                    o.rep->childItems().size());
-        ++failures;
-    }
 
     auto pumpLoop = [&o] {
         Firmir::Timer::singleShot(std::chrono::milliseconds(100), o.rep, [] {
@@ -97,7 +92,6 @@ int main() {
         });
         Firmir::Thread::mainThread()->exec();
     };
-    pumpLoop();
 
     const auto grown = o.rep->childItems();
     if (grown.size() != 5) {
@@ -109,14 +103,58 @@ int main() {
             std::printf("FAIL delegate 4 text after append\n");
             ++failures;
         }
-        // Delegates were re-created: the first four pointers differ now.
-        if (grown[0] == delegates[0]) {
-            std::printf("FAIL delegates not rebuilt (stale pointer)\n");
-            ++failures;
-        }
+        // Incremental: the first four delegates are the SAME objects.
+        for (int i = 0; i < 4; ++i)
+            if (grown[size_t(i)] != delegates[size_t(i)]) {
+                std::printf("FAIL delegate %d was needlessly recreated on append\n",
+                            i);
+                ++failures;
+            }
     }
 
-    // Shrinking the model removes delegates too.
+    // --- In-place row updates --------------------------------------------
+    // Changing one row's data refreshes only that delegate, in place.
+    o.keys->setData(0, "badge", Firmir::Gui::Color::rgb(0x00, 0xFF, 0x00));
+    const auto updated = o.rep->childItems();
+    if (updated.size() != 5 || updated[0] != delegates[0]) {
+        std::printf("FAIL delegate 0 was recreated on data change\n");
+        ++failures;
+    } else if (std::any_cast<Firmir::Gui::Color>(updated[0]->getProperty("color")) !=
+               Firmir::Gui::Color::rgb(0x00, 0xFF, 0x00)) {
+        std::printf("FAIL delegate 0 color after setData\n");
+        ++failures;
+    }
+
+    // --- Row removal shifts without recreating ---------------------------
+    // Removing row 1 ("b") destroys one delegate; the surviving delegates
+    // keep their identity and their handlers see the shifted row.
+    o.keys->removeAt(1);
+    pumpLoop(); // removals flush through the event loop
+    const auto shifted = o.rep->childItems();
+    if (shifted.size() != 4) {
+        std::printf("FAIL delegates after removeAt: %zu != 4\n", shifted.size());
+        ++failures;
+    } else {
+        if (shifted[0] != delegates[0] || shifted[1] != delegates[2] ||
+            shifted[2] != delegates[3]) {
+            std::printf("FAIL surviving delegates were recreated on removeAt\n");
+            ++failures;
+        }
+        if (std::any_cast<Firmir::String>(shifted[1]->getProperty("text")) !=
+            Firmir::String("c")) {
+            std::printf("FAIL delegate 1 text after shift\n");
+            ++failures;
+        }
+        // The handler of the shifted delegate reports the live row index.
+        shifted[1]->emitSignal("clicked");
+        checkEq("root.selected after shifted click",
+                float(std::any_cast<double>(o.root->getProperty("selected"))),
+                2.0f);
+    }
+
+    // Shrinking the model removes delegates too (clear() queues the old
+    // delegates for deferred removal; append() builds the new row right away).
+
     o.keys->clear();
     o.keys->append({{"label", Firmir::String("x")}, {"size", 10.0}});
     pumpLoop();
@@ -139,11 +177,9 @@ int main() {
                 1.0f);
     }
 
-    // --- Coalesced rebuilds ------------------------------------------------
-    // A burst of model changes within one event-loop turn must rebuild the
-    // delegates exactly once (filling a model row by row must not flicker
-    // per row). Count delegate destructions: one rebuild destroys exactly
-    // the current delegate set.
+    // --- Appends never recreate ------------------------------------------
+    // A burst of appends builds one new delegate per row and destroys
+    // nothing (no rebuild flicker at all).
     int destroyed = 0;
     const auto beforeBurst = o.rep->childItems();
     for (Firmir::Gui::Item* d : beforeBurst)
@@ -153,10 +189,9 @@ int main() {
     o.keys->append({{"label", Firmir::String("z")}, {"size", 10.0}});
     o.keys->append({{"label", Firmir::String("w")}, {"size", 10.0}});
     pumpLoop();
-    if (destroyed != static_cast<int>(beforeBurst.size())) {
-        std::printf("FAIL coalescing: %d delegate destructions != %zu "
-                    "(more than one rebuild for a burst)\n", destroyed,
-                    beforeBurst.size());
+    if (destroyed != 0) {
+        std::printf("FAIL no-rebuild on append burst: %d delegate destructions "
+                    "!= 0\n", destroyed);
         ++failures;
     }
     if (o.rep->childItems().size() != 4) {

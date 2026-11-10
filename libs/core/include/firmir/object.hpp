@@ -6,6 +6,7 @@
 #include <chrono>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -73,6 +74,17 @@ T anyConvert(const std::any& value) {
     }
     throw std::invalid_argument("Firmir::Object: property value type mismatch");
 }
+
+/// Optional hook installed by the GUI library. Called by ~Object() and
+/// setParent() with the object being destroyed/reparented; must return a
+/// lock guarding the scene tree the object belongs to (an empty lock when
+/// the object is not part of a GUI scene). The GUI render thread walks the
+/// item tree under the window's scene mutex, so every tree mutation —
+/// including plain-Object children such as animations parented to items —
+/// must hold that mutex; otherwise the render thread can snapshot a child
+/// pointer whose object is being freed concurrently.
+inline std::unique_lock<std::recursive_mutex> (*sceneGuardFor)(Object*) noexcept =
+    nullptr;
 
 } // namespace detail
 
