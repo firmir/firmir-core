@@ -10,50 +10,52 @@ namespace Compositor {
 
 class WaylandSurfaceRole {
 public:
-    WaylandSurfaceRole() = default;
-    explicit WaylandSurfaceRole(std::string name) : m_name(std::move(name)) {}
-    const std::string& name() const { return m_name; }
+    WaylandSurfaceRole() : d(std::make_shared<Impl>()) {}
+    explicit WaylandSurfaceRole(std::string name) : d(std::make_shared<Impl>()) {
+        d->name = std::move(name);
+    }
+    const std::string& name() const { return d->name; }
 private:
-    std::string m_name;
+    struct Impl {
+        std::string name;
+    };
+    std::shared_ptr<Impl> d;
 };
 
 class WaylandSurface : public WaylandObject {
 public:
     explicit WaylandSurface(Object* parent = nullptr);
-    WaylandResource resource() const { return m_resource; }
-    void setResource(wl_resource* resource) { m_resource = WaylandResource(resource); }
-    WaylandBufferRef buffer() const { return m_buffer; }
-    WaylandBufferRef pendingBuffer() const { return m_pendingBuffer; }
-    WaylandSurfaceRole* role() const { return m_role.get(); }
-    void setRole(std::unique_ptr<WaylandSurfaceRole> role) { m_role = std::move(role); }
-    const std::vector<Gui::Rect>& damage() const { return m_damage; }
+    ~WaylandSurface() override;
+    WaylandResource resource() const;
+    void setResource(wl_resource* resource);
+    WaylandBufferRef buffer() const;
+    WaylandBufferRef pendingBuffer() const;
+    WaylandSurfaceRole* role() const;
+    void setRole(std::unique_ptr<WaylandSurfaceRole> role);
+    const std::vector<Gui::Rect>& damage() const;
     void attach(wl_resource* buffer, int x = 0, int y = 0);
     void addDamage(const Gui::Rect& rect);
     void commit();
     static constexpr auto signalCommitted = "committed";
     static constexpr auto signalDamaged = "damaged";
 private:
-    WaylandResource m_resource;
-    WaylandBufferRef m_buffer;
-    WaylandBufferRef m_pendingBuffer;
-    std::unique_ptr<WaylandSurfaceRole> m_role;
-    std::vector<Gui::Rect> m_damage;
-    int m_attachX = 0, m_attachY = 0;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandView : public WaylandObject {
 public:
-    explicit WaylandView(Object* parent = nullptr) : WaylandObject(parent) {}
-    WaylandSurface* surface() const { return m_surface; }
-    void setSurface(WaylandSurface* surface) { m_surface = surface; }
-    WaylandOutput* output() const { return m_output; }
-    void setOutput(WaylandOutput* output) { m_output = output; }
-    Gui::Point position() const { return m_position; }
-    void setPosition(Gui::Point position) { m_position = position; }
+    explicit WaylandView(Object* parent = nullptr);
+    ~WaylandView() override;
+    WaylandSurface* surface() const;
+    void setSurface(WaylandSurface* surface);
+    WaylandOutput* output() const;
+    void setOutput(WaylandOutput* output);
+    Gui::Point position() const;
+    void setPosition(Gui::Point position);
 private:
-    WaylandSurface* m_surface = nullptr;
-    WaylandOutput* m_output = nullptr;
-    Gui::Point m_position;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandSurfaceGrabber {
@@ -68,13 +70,14 @@ public:
 class WaylandGuiItem : public Gui::Item {
 public:
     explicit WaylandGuiItem(Object* parent = nullptr);
-    WaylandView* view() const { return m_view; }
-    void setView(WaylandView* view) { m_view = view; update(); }
+    ~WaylandGuiItem() override;
+    WaylandView* view() const;
+    void setView(WaylandView* view);
 protected:
     void paint(Gui::Painter& painter) override;
 private:
-    WaylandView* m_view = nullptr;
-    std::uint64_t m_generation = 0;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandShellSurface;
@@ -88,11 +91,13 @@ public:
 
 class WaylandGuiShellSurfaceItem : public WaylandGuiItem {
 public:
-    explicit WaylandGuiShellSurfaceItem(Object* parent = nullptr) : WaylandGuiItem(parent) {}
-    WaylandShellSurface* shellSurface() const { return m_shellSurface; }
-    void setShellSurface(WaylandShellSurface* surface) { m_shellSurface = surface; }
+    explicit WaylandGuiShellSurfaceItem(Object* parent = nullptr);
+    ~WaylandGuiShellSurfaceItem() override;
+    WaylandShellSurface* shellSurface() const;
+    void setShellSurface(WaylandShellSurface* surface);
 private:
-    WaylandShellSurface* m_shellSurface = nullptr;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Compositor

@@ -20,6 +20,8 @@
 #include <firmir/object.hpp>
 #include <firmir/string.hpp>
 
+#include <memory>
+
 // Property list shared by the header (declarations) and theme.cpp
 // (defaults + registration). X(name, type, default).
 #define FIRMIR_THEME_PROPS(X) \
@@ -83,13 +85,13 @@ public:
     /// Returns the process-wide theme instance (created on first use).
     static Theme* instance();
 
-    ColorScheme colorScheme() const { return m_colorScheme; }
+    ColorScheme colorScheme() const;
     void setColorScheme(ColorScheme scheme);
     String colorSchemeName() const;
     void setColorSchemeName(String name);
 
 #define FIRMIR_THEME_PROP_DECL(name, type, def) \
-    type name() const { return m_##name; } \
+    type name() const; \
     void set_##name(type value);
     FIRMIR_THEME_PROPS(FIRMIR_THEME_PROP_DECL)
 #undef FIRMIR_THEME_PROP_DECL
@@ -110,11 +112,10 @@ public:
 
 private:
     explicit Theme(Object* parent = nullptr);
+    ~Theme() override;
 
-    ColorScheme m_colorScheme = ColorScheme::LightOnDark;
-#define FIRMIR_THEME_PROP_MEMBER(name, type, def) type m_##name = def;
-    FIRMIR_THEME_PROPS(FIRMIR_THEME_PROP_MEMBER)
-#undef FIRMIR_THEME_PROP_MEMBER
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Gui

@@ -8,7 +8,34 @@ namespace Firmir {
 namespace Gui {
 namespace Controls {
 
-AbstractButton::AbstractButton(Object* parent) : Item(parent) {
+class AbstractButton::Impl {
+public:
+    String text;
+    Font font{kDefaultFontFamily, 16};
+    RasterizedText label;
+    std::uint64_t labelGeneration = 0;
+    bool pressed = false;
+    bool checked = false;
+    bool checkable = false;
+};
+
+class Button::Impl {
+public:
+    bool flat = false;
+};
+
+class CheckBox::Impl {
+public:
+    CheckState checkState = CheckState::Unchecked;
+    bool tristate = false;
+};
+
+class RadioButton::Impl {
+public:
+    bool autoExclusive = true;
+};
+
+AbstractButton::AbstractButton(Object* parent) : Item(parent), d(std::make_unique<Impl>()) {
     setActiveFocusOnTab(true);
     registerProperty<String>("text", &AbstractButton::text, &AbstractButton::setText);
     registerProperty<Font>("font", &AbstractButton::font, &AbstractButton::setFont);
@@ -21,10 +48,11 @@ AbstractButton::AbstractButton(Object* parent) : Item(parent) {
     setImplicitHeight(36);
 }
 AbstractButton::~AbstractButton() = default;
+String AbstractButton::text() const { return d->text; }
 void AbstractButton::setText(String text) {
     auto sceneLock = lockScene();
-    if (m_text == text) return;
-    m_text = std::move(text);
+    if (d->text == text) return;
+    d->text = std::move(text);
     updateLabel();
     float w = 0, h = 0;
     labelSize(w, h);
@@ -33,9 +61,10 @@ void AbstractButton::setText(String text) {
     update();
     notifyPropertyChanged("text");
 }
+Font AbstractButton::font() const { return d->font; }
 void AbstractButton::setFont(Font font) {
     auto sceneLock = lockScene();
-    m_font = std::move(font);
+    d->font = std::move(font);
     updateLabel();
     float w = 0, h = 0;
     labelSize(w, h);
@@ -44,54 +73,58 @@ void AbstractButton::setFont(Font font) {
     update();
     notifyPropertyChanged("font");
 }
-int AbstractButton::textScale() const { return std::max(1, m_font.effectivePixelSize() / 8); }
+int AbstractButton::textScale() const { return std::max(1, d->font.effectivePixelSize() / 8); }
+bool AbstractButton::isChecked() const { return d->checked; }
 void AbstractButton::setChecked(bool checked) {
     auto sceneLock = lockScene();
-    if (m_checked == checked) return;
-    m_checked = checked;
+    if (d->checked == checked) return;
+    d->checked = checked;
     update();
     notifyPropertyChanged("checked");
     emitSignal(signalToggled, checked);
 }
-void AbstractButton::toggle() { if (m_checkable) setChecked(!m_checked); }
+bool AbstractButton::checkable() const { return d->checkable; }
+void AbstractButton::setCheckable(bool checkable) { auto lock = lockScene(); d->checkable = checkable; }
+void AbstractButton::toggle() { if (d->checkable) setChecked(!d->checked); }
 void AbstractButton::click() {
     auto sceneLock = lockScene(); toggle(); emitSignal(signalClicked); }
+bool AbstractButton::isPressed() const { return d->pressed; }
 void AbstractButton::setPressed(bool pressed) {
     auto sceneLock = lockScene();
-    if (m_pressed == pressed) return;
-    m_pressed = pressed;
+    if (d->pressed == pressed) return;
+    d->pressed = pressed;
     update();
     notifyPropertyChanged("pressed");
 }
 void AbstractButton::updateLabel() {
     // Native rasterization (default family: Inter); the built-in 8x8 bitmap
     // font remains the fallback when the font stack is unavailable.
-    m_label = rasterizeText(m_text.toStdString(), m_font);
-    ++m_labelGeneration;
+    d->label = rasterizeText(d->text.toStdString(), d->font);
+    ++d->labelGeneration;
 }
 void AbstractButton::labelSize(float& w, float& h) const {
-    if (m_label.valid) {
-        w = static_cast<float>(m_label.width);
-        h = static_cast<float>(m_label.height);
+    if (d->label.valid) {
+        w = static_cast<float>(d->label.width);
+        h = static_cast<float>(d->label.height);
         return;
     }
-    Painter::textSize(m_text.toStdString(), textScale(), w, h);
+    Painter::textSize(d->text.toStdString(), textScale(), w, h);
 }
 void AbstractButton::drawLabel(Painter& painter, float x, float y, Color color) {
-    if (m_label.valid) {
-        painter.drawRgba(RectF{x, y, static_cast<float>(m_label.width),
-                               static_cast<float>(m_label.height)},
-                         m_label.rgba.data(), m_label.width, m_label.height,
-                         this, m_labelGeneration, color);
+    if (d->label.valid) {
+        painter.drawRgba(RectF{x, y, static_cast<float>(d->label.width),
+                               static_cast<float>(d->label.height)},
+                         d->label.rgba.data(), d->label.width, d->label.height,
+                         this, d->labelGeneration, color);
         return;
     }
-    painter.drawText(x, y, m_text.toStdString(), color, textScale());
+    painter.drawText(x, y, d->text.toStdString(), color, textScale());
 }
 void AbstractButton::paint(Painter& painter) {
     const Theme* theme = Theme::instance();
     const Color background = !isEnabled() ? Color::rgb(70, 74, 80)
-        : m_pressed ? theme->highlightDimmerColor()
-        : m_checked ? theme->highlightColor()
+        : d->pressed ? theme->highlightDimmerColor()
+        : d->checked ? theme->highlightColor()
                     : theme->darkSecondaryColor().lighter(1.5);
     const float radius = static_cast<float>(theme->controlRadius());
     painter.fillRoundedRect(RectF{0, 0, width(), height()}, radius, background);
@@ -101,7 +134,7 @@ void AbstractButton::paint(Painter& painter) {
 void AbstractButton::mouseEvent(MouseEvent& event) {
     if (event.action == MouseEvent::Action::Press && event.button == 1) {
         setPressed(true); event.accepted = true;
-    } else if (event.action == MouseEvent::Action::Release && m_pressed) {
+    } else if (event.action == MouseEvent::Action::Release && d->pressed) {
         setPressed(false); event.accepted = true;
         if (RectF{0, 0, width(), height()}.contains(event.pos.x, event.pos.y)) click();
     }
@@ -120,30 +153,38 @@ void AbstractButton::keyEvent(KeyEvent& event) {
     }
 }
 
-Button::Button(Object* parent) : AbstractButton(parent) {}
+Button::Button(Object* parent)
+    : AbstractButton(parent), d(std::make_unique<Impl>()) {}
+Button::~Button() = default;
+bool Button::isFlat() const { return d->flat; }
+void Button::setFlat(bool flat) { auto lock = lockScene(); d->flat = flat; update(); }
 void Button::paint(Painter& painter) {
-    if (!m_flat) AbstractButton::paint(painter);
+    if (!d->flat) AbstractButton::paint(painter);
     float w = 0, h = 0;
     labelSize(w, h);
     drawLabel(painter, (width() - w) / 2, (height() - h) / 2, Color::rgb(245, 247, 250));
 }
 
-CheckBox::CheckBox(Object* parent) : AbstractButton(parent) {
+CheckBox::CheckBox(Object* parent)
+    : AbstractButton(parent), d(std::make_unique<Impl>()) {
     setCheckable(true);
     registerProperty<bool>("tristate", &CheckBox::tristate, &CheckBox::setTristate);
 }
+CheckBox::~CheckBox() = default;
+CheckBox::CheckState CheckBox::checkState() const { return d->checkState; }
+bool CheckBox::tristate() const { return d->tristate; }
 void CheckBox::setCheckState(CheckState state) {
     auto sceneLock = lockScene();
-    if (m_checkState == state) return;
-    m_checkState = state;
+    if (d->checkState == state) return;
+    d->checkState = state;
     AbstractButton::setChecked(state == CheckState::Checked);
     update();
     notifyPropertyChanged("checkState");
 }
 void CheckBox::toggle() {
-    if (m_tristate) {
-        const CheckState next = m_checkState == CheckState::Unchecked ? CheckState::PartiallyChecked
-            : m_checkState == CheckState::PartiallyChecked ? CheckState::Checked : CheckState::Unchecked;
+    if (d->tristate) {
+        const CheckState next = d->checkState == CheckState::Unchecked ? CheckState::PartiallyChecked
+            : d->checkState == CheckState::PartiallyChecked ? CheckState::Checked : CheckState::Unchecked;
         setCheckState(next);
     } else {
         setCheckState(isChecked() ? CheckState::Unchecked : CheckState::Checked);
@@ -159,8 +200,8 @@ void CheckBox::paint(Painter& painter) {
     painter.fillRoundedRect(RectF{4, top + 2, side - 4, side - 4},
                             std::max(0.0f, radius - 2.0f),
                             theme->darkSecondaryColor());
-    if (m_checkState != CheckState::Unchecked) {
-        const float inset = m_checkState == CheckState::PartiallyChecked ? side / 3 : 5;
+    if (d->checkState != CheckState::Unchecked) {
+        const float inset = d->checkState == CheckState::PartiallyChecked ? side / 3 : 5;
         painter.fillRoundedRect(RectF{2 + inset, top + inset, side - 2 * inset,
                                       side - 2 * inset},
                                 std::max(0.0f, radius - inset + 2.0f),
@@ -172,14 +213,20 @@ void CheckBox::paint(Painter& painter) {
               theme->primaryColor());
 }
 
-RadioButton::RadioButton(Object* parent) : AbstractButton(parent) { setCheckable(true); }
+RadioButton::RadioButton(Object* parent)
+    : AbstractButton(parent), d(std::make_unique<Impl>()) {
+    setCheckable(true);
+}
+RadioButton::~RadioButton() = default;
+bool RadioButton::autoExclusive() const { return d->autoExclusive; }
+void RadioButton::setAutoExclusive(bool enabled) { auto lock = lockScene(); d->autoExclusive = enabled; }
 void RadioButton::toggle() {
-    if (!m_autoExclusive) { setChecked(!isChecked()); return; }
+    if (!d->autoExclusive) { setChecked(!isChecked()); return; }
     setChecked(true);
     if (parentItem()) {
         for (Item* sibling : parentItem()->childItems()) {
             auto* radio = dynamic_cast<RadioButton*>(sibling);
-            if (radio && radio != this && radio->m_autoExclusive)
+            if (radio && radio != this && radio->d->autoExclusive)
                 radio->setChecked(false);
         }
     }
@@ -234,8 +281,8 @@ void Switch::paint(Painter& painter) {
 
 void Firmir::Gui::Controls::CheckBox::setTristate(bool enabled) {
     auto lock = lockScene();
-    if (m_tristate == enabled) return;
-    m_tristate = enabled;
+    if (d->tristate == enabled) return;
+    d->tristate = enabled;
     update();
     notifyPropertyChanged("tristate");
 }

@@ -4,6 +4,8 @@
 #include <firmir/gui/painter.hpp>
 #include <firmir/string.hpp>
 
+#include <memory>
+
 namespace Firmir {
 namespace Gui {
 
@@ -15,18 +17,17 @@ class ShaderEffect : public Item {
 public:
     explicit ShaderEffect(Object* parent = nullptr);
     ~ShaderEffect() override;
-    String fragmentShader() const { return m_fragmentShader; }
+    String fragmentShader() const;
     void setFragmentShader(String shader);
-    Color color() const { return m_color; }
+    Color color() const;
     void setColor(Color color);
-    Image* sourceImage() const { return m_source; }
-    void setSourceImage(Image* source) { auto lock = lockScene(); m_source = source; update(); }
+    Image* sourceImage() const;
+    void setSourceImage(Image* source);
 protected:
     void paint(Painter& painter) override;
 private:
-    String m_fragmentShader;
-    Color m_color = Color::rgb(255, 255, 255);
-    Image* m_source = nullptr;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Gui

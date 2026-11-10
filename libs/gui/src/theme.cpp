@@ -64,7 +64,15 @@ void registerThemeProperty(Theme* theme, const char* name, T (Theme::*getter)() 
 
 } // namespace
 
-Theme::Theme(Object* parent) : Object(parent) {
+class Theme::Impl {
+public:
+    Theme::ColorScheme colorScheme = Theme::ColorScheme::LightOnDark;
+#define FIRMIR_THEME_PROP_MEMBER(name, type, def) type name = def;
+    FIRMIR_THEME_PROPS(FIRMIR_THEME_PROP_MEMBER)
+#undef FIRMIR_THEME_PROP_MEMBER
+};
+
+Theme::Theme(Object* parent) : Object(parent), d(std::make_unique<Impl>()) {
     // Register every macro-declared property so it is visible to
     // setProperty()/getProperty() and to the Firml property system.
 #define FIRMIR_THEME_PROP_REG(name, type, def) \
@@ -91,16 +99,20 @@ Theme* Theme::instance() {
     return theme;
 }
 
+Theme::~Theme() = default;
+
+Theme::ColorScheme Theme::colorScheme() const { return d->colorScheme; }
+
 void Theme::setColorScheme(ColorScheme scheme) {
-    if (m_colorScheme == scheme)
+    if (d->colorScheme == scheme)
         return;
-    m_colorScheme = scheme;
+    d->colorScheme = scheme;
     notifyPropertyChanged("colorScheme");
 }
 
 String Theme::colorSchemeName() const {
-    return m_colorScheme == ColorScheme::LightOnDark ? String("lightOnDark")
-                                                     : String("darkOnLight");
+    return d->colorScheme == ColorScheme::LightOnDark ? String("lightOnDark")
+                                                      : String("darkOnLight");
 }
 
 void Theme::setColorSchemeName(String name) {
@@ -113,17 +125,18 @@ void Theme::setColorSchemeName(String name) {
 }
 
 #define FIRMIR_THEME_PROP_IMPL(name, type, def) \
+    type Theme::name() const { return d->name; } \
     void Theme::set_##name(type value) { \
-        if (m_##name == value) \
+        if (d->name == value) \
             return; \
-        m_##name = value; \
+        d->name = value; \
         notifyPropertyChanged(#name); \
     }
 FIRMIR_THEME_PROPS(FIRMIR_THEME_PROP_IMPL)
 #undef FIRMIR_THEME_PROP_IMPL
 
 double Theme::controlRadius() const {
-    return std::clamp(m_paddingSmall * 1.5, 2.0, 12.0);
+    return std::clamp(d->paddingSmall * 1.5, 2.0, 12.0);
 }
 
 bool Theme::loadFromFile(String path) {

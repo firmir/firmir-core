@@ -90,7 +90,18 @@ bool decodeJpeg(const std::string& path, std::vector<std::uint8_t>& rgba, Size& 
 
 } // namespace
 
-Image::Image(Object* parent) : Item(parent) {
+class Image::Impl {
+public:
+    String source;
+    Size sourceSize;
+    std::vector<std::uint8_t> rgba;
+    std::uint64_t generation = 0;
+    FillMode fillMode = FillMode::PreserveAspectFit;
+    Status status = Status::Null;
+    bool smooth = true;
+};
+
+Image::Image(Object* parent) : Item(parent), d(std::make_unique<Impl>()) {
     registerProperty<String>("source", &Image::source, &Image::setSource);
     registerPropertyImpl("fillMode", typeid(Firmir::String),
         [](const Object* o) -> std::any { return static_cast<const Image*>(o)->fillModeName(); },
@@ -101,43 +112,55 @@ Image::Image(Object* parent) : Item(parent) {
         [](Object*, const std::any&) { throw std::invalid_argument("status is read-only"); });
 }
 Image::~Image() = default;
+String Image::source() const { return d->source; }
+Image::Status Image::status() const { return d->status; }
+Size Image::sourceSize() const { return d->sourceSize; }
+Image::FillMode Image::fillMode() const { return d->fillMode; }
+bool Image::smooth() const { return d->smooth; }
+const std::vector<std::uint8_t>& Image::rgbaData() const { return d->rgba; }
+std::uint64_t Image::rgbaGeneration() const { return d->generation; }
+void Image::setSmooth(bool smooth) {
+    auto sceneLock = lockScene();
+    d->smooth = smooth;
+    update();
+}
 void Image::setSource(String source) {
     auto sceneLock = lockScene();
-    m_source = std::move(source);
-    m_rgba.clear();
-    m_sourceSize = {};
-    if (m_source.isEmpty()) {
-        m_status = Status::Null;
+    d->source = std::move(source);
+    d->rgba.clear();
+    d->sourceSize = {};
+    if (d->source.isEmpty()) {
+        d->status = Status::Null;
     } else {
-        m_status = Status::Loading;
-        std::string path = m_source.toStdString();
+        d->status = Status::Loading;
+        std::string path = d->source.toStdString();
         std::string extension = path;
         std::transform(extension.begin(), extension.end(), extension.begin(),
                        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         const bool jpeg = extension.size() >= 4 &&
             (extension.compare(extension.size() - 4, 4, ".jpg") == 0 ||
              (extension.size() >= 5 && extension.compare(extension.size() - 5, 5, ".jpeg") == 0));
-        const bool loaded = jpeg ? decodeJpeg(path, m_rgba, m_sourceSize)
-                                 : decodePng(path, m_rgba, m_sourceSize);
-        m_status = loaded ? Status::Ready : Status::Error;
+        const bool loaded = jpeg ? decodeJpeg(path, d->rgba, d->sourceSize)
+                                 : decodePng(path, d->rgba, d->sourceSize);
+        d->status = loaded ? Status::Ready : Status::Error;
     }
-    ++m_generation;
-    setImplicitWidth(m_sourceSize.width);
-    setImplicitHeight(m_sourceSize.height);
+    ++d->generation;
+    setImplicitWidth(d->sourceSize.width);
+    setImplicitHeight(d->sourceSize.height);
     update();
     notifyPropertyChanged("source");
     notifyPropertyChanged("status");
 }
 void Image::setFillMode(FillMode mode) {
     auto sceneLock = lockScene();
-    if (m_fillMode == mode) return;
-    m_fillMode = mode;
+    if (d->fillMode == mode) return;
+    d->fillMode = mode;
     setClip(mode == FillMode::PreserveAspectCrop);
     update();
     notifyPropertyChanged("fillMode");
 }
 String Image::fillModeName() const {
-    switch (m_fillMode) {
+    switch (d->fillMode) {
     case FillMode::Stretch: return String("Stretch");
     case FillMode::PreserveAspectCrop: return String("PreserveAspectCrop");
     case FillMode::Pad: return String("Pad");
@@ -156,40 +179,40 @@ void Image::setRgba(int width, int height, const void* pixels, std::size_t bytes
     const std::size_t expected = width > 0 && height > 0
         ? static_cast<std::size_t>(width) * height * 4 : 0;
     if (!pixels || bytes != expected) {
-        m_status = Status::Error;
+        d->status = Status::Error;
         return;
     }
     const auto* data = static_cast<const std::uint8_t*>(pixels);
-    m_rgba.assign(data, data + bytes);
-    m_sourceSize = {width, height};
-    m_source = {};
-    m_status = Status::Ready;
-    ++m_generation;
+    d->rgba.assign(data, data + bytes);
+    d->sourceSize = {width, height};
+    d->source = {};
+    d->status = Status::Ready;
+    ++d->generation;
     setImplicitWidth(width);
     setImplicitHeight(height);
     update();
     notifyPropertyChanged("status");
 }
 void Image::paint(Painter& painter) {
-    if (m_status != Status::Ready || m_rgba.empty() || width() <= 0 || height() <= 0)
+    if (d->status != Status::Ready || d->rgba.empty() || width() <= 0 || height() <= 0)
         return;
     float w = width(), h = height(), x = 0, y = 0;
-    const float sx = width() / m_sourceSize.width;
-    const float sy = height() / m_sourceSize.height;
-    if (m_fillMode == FillMode::PreserveAspectFit || m_fillMode == FillMode::PreserveAspectCrop) {
-        const float scale = m_fillMode == FillMode::PreserveAspectFit ? std::min(sx, sy) : std::max(sx, sy);
-        w = m_sourceSize.width * scale;
-        h = m_sourceSize.height * scale;
+    const float sx = width() / d->sourceSize.width;
+    const float sy = height() / d->sourceSize.height;
+    if (d->fillMode == FillMode::PreserveAspectFit || d->fillMode == FillMode::PreserveAspectCrop) {
+        const float scale = d->fillMode == FillMode::PreserveAspectFit ? std::min(sx, sy) : std::max(sx, sy);
+        w = d->sourceSize.width * scale;
+        h = d->sourceSize.height * scale;
         x = (width() - w) / 2;
         y = (height() - h) / 2;
-    } else if (m_fillMode == FillMode::Pad) {
-        w = m_sourceSize.width;
-        h = m_sourceSize.height;
+    } else if (d->fillMode == FillMode::Pad) {
+        w = d->sourceSize.width;
+        h = d->sourceSize.height;
         x = (width() - w) / 2;
         y = (height() - h) / 2;
     }
-    painter.drawRgba(RectF{x, y, w, h}, m_rgba.data(), m_sourceSize.width,
-                     m_sourceSize.height, this, m_generation);
+    painter.drawRgba(RectF{x, y, w, h}, d->rgba.data(), d->sourceSize.width,
+                     d->sourceSize.height, this, d->generation);
 }
 } // namespace Gui
 } // namespace Firmir

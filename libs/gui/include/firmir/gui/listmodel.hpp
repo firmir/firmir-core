@@ -4,6 +4,7 @@
 
 #include <any>
 #include <map>
+#include <memory>
 #include <string>
 
 namespace Firmir {
@@ -23,6 +24,7 @@ public:
     using Row = std::map<std::string, std::any>;
 
     explicit ListModel(Object* parent = nullptr);
+    ~ListModel() override;
 
     /// Appends one row of role values (emits itemsAboutToBeInserted/itemsInserted).
     void append(Row row);
@@ -38,9 +40,8 @@ public:
     std::any data(int index, const std::string& role) const;
 
 private:
-    /// Default value of a role (its type learned from the first row carrying
-    /// it), for sparse rows.
-    std::map<std::string, std::any> m_roleDefaults;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Gui

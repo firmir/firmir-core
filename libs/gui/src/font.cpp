@@ -21,34 +21,76 @@
 namespace Firmir {
 namespace Gui {
 
-Font::Font() = default;
+struct Font::Impl {
+    std::string family;
+    std::string styleName;
+    int pixelSize = 16;
+    float pointSize = -1.0f;
+    int weight = Font::Normal;
+    Font::Style style = Font::StyleNormal;
+    float letterSpacing = 0.0f;
+    bool underline = false;
+    bool strikeOut = false;
+};
+
+Font::Font() : d(std::make_unique<Impl>()) {}
 Font::Font(std::string family, int pixelSize, int weight, bool italic)
-    : m_family(std::move(family)), m_weight(weight) {
+    : d(std::make_unique<Impl>()) {
+    d->family = std::move(family);
+    d->weight = weight;
     setPixelSize(pixelSize);
     setItalic(italic);
 }
-
-void Font::setFamily(std::string family) { m_family = std::move(family); }
-void Font::setPixelSize(int pixels) {
-    m_pixelSize = std::max(1, pixels);
-    m_pointSize = -1.0f;
+Font::Font(const Font& other) : d(std::make_unique<Impl>(*other.d)) {}
+Font& Font::operator=(const Font& other) {
+    if (this != &other)
+        *d = *other.d;
+    return *this;
 }
+Font::Font(Font&&) noexcept = default;
+Font& Font::operator=(Font&&) noexcept = default;
+Font::~Font() = default;
+
+const std::string& Font::family() const { return d->family; }
+void Font::setFamily(std::string family) { d->family = std::move(family); }
+std::string Font::styleName() const { return d->styleName; }
+void Font::setStyleName(std::string styleName) { d->styleName = std::move(styleName); }
+int Font::pixelSize() const { return d->pixelSize; }
+void Font::setPixelSize(int pixels) {
+    d->pixelSize = std::max(1, pixels);
+    d->pointSize = -1.0f;
+}
+float Font::pointSize() const { return d->pointSize; }
 void Font::setPointSize(float points) {
     if (points > 0) {
-        m_pointSize = points;
-        m_pixelSize = -1;
+        d->pointSize = points;
+        d->pixelSize = -1;
     }
 }
 int Font::effectivePixelSize() const {
-    if (m_pixelSize > 0)
-        return m_pixelSize;
-    return std::max(1, static_cast<int>(std::lround(m_pointSize * 96.0f / 72.0f)));
+    if (d->pixelSize > 0)
+        return d->pixelSize;
+    return std::max(1, static_cast<int>(std::lround(d->pointSize * 96.0f / 72.0f)));
 }
+int Font::weight() const { return d->weight; }
+void Font::setWeight(int weight) { d->weight = weight; }
+bool Font::bold() const { return d->weight >= DemiBold; }
+void Font::setBold(bool enabled) { d->weight = enabled ? Bold : Normal; }
+Font::Style Font::style() const { return d->style; }
+void Font::setStyle(Style style) { d->style = style; }
+bool Font::italic() const { return d->style != StyleNormal; }
+void Font::setItalic(bool enabled) { d->style = enabled ? StyleItalic : StyleNormal; }
+bool Font::underline() const { return d->underline; }
+void Font::setUnderline(bool enabled) { d->underline = enabled; }
+bool Font::strikeOut() const { return d->strikeOut; }
+void Font::setStrikeOut(bool enabled) { d->strikeOut = enabled; }
+float Font::letterSpacing() const { return d->letterSpacing; }
+void Font::setLetterSpacing(float pixels) { d->letterSpacing = pixels; }
 std::string Font::cacheKey() const {
-    return m_family + '\n' + m_styleName + '\n' + std::to_string(effectivePixelSize()) +
-           '\n' + std::to_string(m_weight) + '\n' + std::to_string(m_style) + '\n' +
-           std::to_string(m_letterSpacing) + '\n' + std::to_string(m_underline) +
-           '\n' + std::to_string(m_strikeOut);
+    return d->family + '\n' + d->styleName + '\n' + std::to_string(effectivePixelSize()) +
+           '\n' + std::to_string(d->weight) + '\n' + std::to_string(d->style) + '\n' +
+           std::to_string(d->letterSpacing) + '\n' + std::to_string(d->underline) +
+           '\n' + std::to_string(d->strikeOut);
 }
 
 namespace {

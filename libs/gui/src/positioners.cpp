@@ -8,7 +8,15 @@
 namespace Firmir {
 namespace Gui {
 
-Positioner::Positioner(Object* parent) : Item(parent) {
+class Positioner::Impl {
+public:
+    std::vector<Connection> childConnections;
+    float spacing = 0;
+    bool layingOut = false;
+};
+
+Positioner::Positioner(Object* parent)
+    : Item(parent), d(std::make_unique<Impl>()) {
     registerProperty<float>("spacing", &Positioner::spacing,
                             &Positioner::setSpacing);
     connect(this, "childrenChanged",
@@ -19,12 +27,14 @@ Positioner::Positioner(Object* parent) : Item(parent) {
             ConnectionMode::Direct);
 }
 
-float Positioner::spacing() const { return m_spacing; }
+Positioner::~Positioner() = default;
+
+float Positioner::spacing() const { return d->spacing; }
 
 void Positioner::setSpacing(float spacing) {
-    if (spacing == m_spacing)
+    if (spacing == d->spacing)
         return;
-    m_spacing = spacing;
+    d->spacing = spacing;
     notifyPropertyChanged("spacing");
     requestLayout();
 }
@@ -43,11 +53,11 @@ std::vector<Item*> Positioner::effectiveChildren() const {
 }
 
 void Positioner::rewatchChildren() {
-    for (Connection& connection : m_childConnections)
+    for (Connection& connection : d->childConnections)
         connection.disconnect();
-    m_childConnections.clear();
+    d->childConnections.clear();
     const auto watchItem = [this](Item* item) {
-        m_childConnections.push_back(item->connect<std::string, std::any>(
+        d->childConnections.push_back(item->connect<std::string, std::any>(
             this, signalPropertyChanged,
             [this](const std::string& name, const std::any&) {
                 if (name == "width" || name == "height" || name == "visible")
@@ -63,25 +73,25 @@ void Positioner::rewatchChildren() {
         }
         for (Item* delegate : repeater->childItems())
             watchItem(delegate);
-        m_childConnections.push_back(child->connect(this, "childrenChanged",
-                                                    [this] {
-                                                        rewatchChildren();
-                                                        requestLayout();
-                                                    },
-                                                    ConnectionMode::Direct));
+        d->childConnections.push_back(child->connect(this, "childrenChanged",
+                                                     [this] {
+                                                         rewatchChildren();
+                                                         requestLayout();
+                                                     },
+                                                     ConnectionMode::Direct));
     }
 }
 
 void Positioner::requestLayout() {
-    if (m_layingOut)
+    if (d->layingOut)
         return;
-    m_layingOut = true;
+    d->layingOut = true;
     std::vector<Item*> visible;
     for (Item* child : effectiveChildren())
         if (child->isVisible())
             visible.push_back(child);
     layoutChildren(visible);
-    m_layingOut = false;
+    d->layingOut = false;
 }
 
 // --------------------------------- Column ---------------------------------
@@ -124,20 +134,28 @@ void Row::layoutChildren(const std::vector<Item*>& children) {
 
 // ---------------------------------- Grid ----------------------------------
 
-Grid::Grid(Object* parent) : Positioner(parent) {
+class Grid::Impl {
+public:
+    int columns = 4;
+    int rows = 0;
+};
+
+Grid::Grid(Object* parent) : Positioner(parent), d(std::make_unique<Impl>()) {
     registerProperty<int>("columns", &Grid::columns, &Grid::setColumns);
     registerProperty<int>("rows", &Grid::rows, &Grid::setRows);
 }
 
-int Grid::columns() const { return m_columns; }
-int Grid::rows() const { return m_rows; }
+Grid::~Grid() = default;
+
+int Grid::columns() const { return d->columns; }
+int Grid::rows() const { return d->rows; }
 
 void Grid::setColumns(int columns) {
     if (columns < 0)
         throw std::invalid_argument("Firmir::Gui::Grid: columns must be >= 0");
-    if (columns == m_columns)
+    if (columns == d->columns)
         return;
-    m_columns = columns;
+    d->columns = columns;
     notifyPropertyChanged("columns");
     requestLayout();
 }
@@ -145,9 +163,9 @@ void Grid::setColumns(int columns) {
 void Grid::setRows(int rows) {
     if (rows < 0)
         throw std::invalid_argument("Firmir::Gui::Grid: rows must be >= 0");
-    if (rows == m_rows)
+    if (rows == d->rows)
         return;
-    m_rows = rows;
+    d->rows = rows;
     notifyPropertyChanged("rows");
     requestLayout();
 }
@@ -159,9 +177,9 @@ void Grid::layoutChildren(const std::vector<Item*>& children) {
         return;
     }
     const int n = static_cast<int>(children.size());
-    int cols = m_columns;
+    int cols = d->columns;
     if (cols <= 0)
-        cols = m_rows > 0 ? (n + m_rows - 1) / m_rows : 4;
+        cols = d->rows > 0 ? (n + d->rows - 1) / d->rows : 4;
     cols = std::max(1, cols);
     const int rows = (n + cols - 1) / cols;
     const float gap = spacing();

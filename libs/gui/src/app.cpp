@@ -11,7 +11,14 @@
 namespace Firmir {
 namespace Gui {
 
-App::App(Window* window, Object* parent) : Object(parent), m_window(window) {
+class App::Impl {
+public:
+    Window* window = nullptr;
+    bool maximized = false;
+};
+
+App::App(Window* window, Object* parent) : Object(parent), d(std::make_unique<Impl>()) {
+    d->window = window;
     registerProperty<double>("screenWidth", &App::screenWidth,
                              &App::rejectScreenSizeWrite);
     registerProperty<double>("screenHeight", &App::screenHeight,
@@ -23,46 +30,48 @@ App::App(Window* window, Object* parent) : Object(parent), m_window(window) {
                                [this](Screen*) { notifyScreenSizeChanged(); });
 }
 
-Window* App::window() const { return m_window; }
+App::~App() = default;
+
+Window* App::window() const { return d->window; }
 void App::show() {
-    if (m_window)
-        m_window->show();
+    if (d->window)
+        d->window->show();
 }
 void App::hide() {
-    if (m_window)
-        m_window->hide();
+    if (d->window)
+        d->window->hide();
 }
 void App::quit() { Thread::mainThread()->quit(); }
 void App::setTitle(String title) {
-    if (m_window)
-        m_window->setTitle(title.toStdString());
+    if (d->window)
+        d->window->setTitle(title.toStdString());
 }
 
 void App::showMinimized() {
-    if (m_window)
-        m_window->showMinimized();
+    if (d->window)
+        d->window->showMinimized();
 }
 void App::showNormal() {
-    if (m_window) {
-        m_window->showNormal();
-        m_maximized = false;
+    if (d->window) {
+        d->window->showNormal();
+        d->maximized = false;
     }
 }
 void App::showMaximized() {
-    if (m_window) {
-        m_window->showMaximized();
-        m_maximized = true;
+    if (d->window) {
+        d->window->showMaximized();
+        d->maximized = true;
     }
 }
 void App::toggleMaximized() {
-    if (m_maximized)
+    if (d->maximized)
         showNormal();
     else
         showMaximized();
 }
 void App::close() {
-    if (m_window)
-        m_window->close();
+    if (d->window)
+        d->window->close();
 }
 
 double App::screenWidth() const {

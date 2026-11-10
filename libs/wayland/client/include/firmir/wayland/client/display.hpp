@@ -16,8 +16,8 @@ public:
     ~Display();
     Display(const Display&) = delete;
     Display& operator=(const Display&) = delete;
-    bool valid() const { return m_display != nullptr; }
-    wl_display* handle() const { return m_display; }
+    bool valid() const;
+    wl_display* handle() const;
     int fd() const;
     int dispatch();
     int roundtrip();
@@ -26,9 +26,13 @@ public:
     void cancelRead();
     int readEvents();
     int dispatchPending();
+    /// Last protocol/connection error reported by the compositor (0 = none);
+    /// once set, the connection is dead and the dispatch loop should stop.
+    int lastError() const;
     std::unique_ptr<Registry> createRegistry();
 private:
-    wl_display* m_display;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Client

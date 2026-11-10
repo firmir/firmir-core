@@ -3,6 +3,7 @@
 #include <firmir/object.hpp>
 
 #include <algorithm>
+#include <memory>
 #include <iterator>
 #include <stdexcept>
 #include <utility>
@@ -52,17 +53,18 @@ public:
     static constexpr const char* signalModelReset = "modelReset";
 
     /// Number of items.
-    int count() const { return static_cast<int>(m_items.size()); }
+    int count() const { return static_cast<int>(d->items.size()); }
 
     /// The item at @p index; bounds-checked.
-    ItemT& itemAt(int index) { return m_items.at(checkedIndex(index)); }
+    ItemT& itemAt(int index) { return d->items.at(checkedIndex(index)); }
     const ItemT& itemAt(int index) const {
-        return m_items.at(checkedIndex(index));
+        return d->items.at(checkedIndex(index));
     }
 
 protected:
     /// The base class is abstract in spirit: only subclasses may be created.
-    explicit AbstractDataList(Object* parent = nullptr) : Object(parent) {
+    explicit AbstractDataList(Object* parent = nullptr)
+        : Object(parent), d(std::make_unique<Impl>()) {
         registerPropertyImpl(
             "count", typeid(int),
             [](const Object* object) -> std::any {
@@ -85,7 +87,7 @@ protected:
     void endInsertItems() {
         const Pending pending = end(StructureChange::Insert);
         const int count = pending.last - pending.first + 1;
-        m_items.insert(m_items.begin() + pending.first, count, ItemT{});
+        d->items.insert(d->items.begin() + pending.first, count, ItemT{});
         notifyPropertyChanged("count");
         emitSignal(signalItemsInserted, pending.first, pending.last);
     }
@@ -106,13 +108,13 @@ protected:
     void endMoveItems() {
         const Pending pending = end(StructureChange::Move);
         const int count = pending.last - pending.first + 1;
-        const auto first = m_items.begin() + pending.first;
+        const auto first = d->items.begin() + pending.first;
         const auto last = first + count;
         std::vector<ItemT> block;
         block.reserve(count);
         std::move(first, last, std::back_inserter(block));
-        m_items.erase(first, last);
-        m_items.insert(m_items.begin() + pending.destination,
+        d->items.erase(first, last);
+        d->items.insert(d->items.begin() + pending.destination,
                        std::make_move_iterator(block.begin()),
                        std::make_move_iterator(block.end()));
         emitSignal(signalItemsMoved, pending.first, pending.last,
@@ -127,8 +129,8 @@ protected:
     }
     void endRemoveItems() {
         const Pending pending = end(StructureChange::Remove);
-        const auto first = m_items.begin() + pending.first;
-        m_items.erase(first, first + (pending.last - pending.first + 1));
+        const auto first = d->items.begin() + pending.first;
+        d->items.erase(first, first + (pending.last - pending.first + 1));
         notifyPropertyChanged("count");
         emitSignal(signalItemsRemoved, pending.first, pending.last);
     }
@@ -148,7 +150,7 @@ protected:
 
     /// Drops all items; intended to be called between beginResetModel() and
     /// endResetModel().
-    void clearItems() { m_items.clear(); }
+    void clearItems() { d->items.clear(); }
 
 private:
     enum class StructureChange { None, Insert, Move, Remove, Reset };
@@ -174,23 +176,28 @@ private:
     }
 
     void begin(StructureChange change, int first, int last, int destination) {
-        if (m_pending.change != StructureChange::None)
+        if (d->pending.change != StructureChange::None)
             throw std::logic_error(
                 "Firmir::AbstractDataList: nested begin* calls are not allowed");
-        m_pending = Pending{change, first, last, destination};
+        d->pending = Pending{change, first, last, destination};
     }
 
     Pending end(StructureChange change) {
-        if (m_pending.change != change)
+        if (d->pending.change != change)
             throw std::logic_error(
                 "Firmir::AbstractDataList: end* without the matching begin*");
-        const Pending pending = m_pending;
-        m_pending = Pending{};
+        const Pending pending = d->pending;
+        d->pending = Pending{};
         return pending;
     }
 
-    std::vector<ItemT> m_items;
-    Pending m_pending;
+    // Template classes cannot hide Impl in a .cpp; the pointer indirection
+    // is kept anyway for uniformity with the rest of the framework.
+    struct Impl {
+        std::vector<ItemT> items;
+        Pending pending;
+    };
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Gui

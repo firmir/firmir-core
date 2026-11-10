@@ -7,35 +7,98 @@ namespace Firmir {
 namespace Wayland {
 namespace Compositor {
 
+class WaylandObject::Impl {
+public:
+    std::vector<WaylandCompositorExtension*> extensions;
+};
+
+class WaylandCompositorExtension::Impl {
+public:
+    WaylandCompositor* compositor = nullptr;
+};
+
+class WaylandClient::Impl {
+public:
+    Server::Client client;
+    std::vector<WaylandResource> resources;
+};
+
+class WaylandOutput::Impl {
+public:
+    std::string manufacturer = "Firmir";
+    std::string model = "Virtual output";
+    Size size{1280, 720};
+    int scale = 1;
+    WaylandOutputMode currentMode{1280, 720, 60000};
+    std::vector<WaylandOutputMode> modes;
+    wl_global* global = nullptr;
+};
+
+class WaylandCompositor::Impl {
+public:
+    std::unique_ptr<Server::Display> display;
+    std::string socketName;
+    std::vector<WaylandOutput*> outputs;
+    std::vector<WaylandClient*> clients;
+    std::vector<WaylandSurface*> surfaces;
+    wl_global* compositorGlobal = nullptr;
+    bool created = false;
+};
+
 wl_client* WaylandResource::client() const {
-    const Server::Client client = m_resource.client();
+    const Server::Client client = d->resource.client();
     return client.handle();
 }
+
+WaylandObject::WaylandObject(Object* parent) : Object(parent), d(std::make_unique<Impl>()) {}
 WaylandObject::~WaylandObject() = default;
+const std::vector<WaylandCompositorExtension*>& WaylandObject::extensions() const {
+    return d->extensions;
+}
 void WaylandObject::addExtension(WaylandCompositorExtension* extension) {
     if (!extension) return;
-    m_extensions.push_back(extension);
+    d->extensions.push_back(extension);
     if (!extension->parent()) extension->setParent(this);
 }
+
+WaylandCompositorExtension::WaylandCompositorExtension(Object* parent)
+    : WaylandObject(parent), d(std::make_unique<Impl>()) {}
 WaylandCompositorExtension::~WaylandCompositorExtension() = default;
+WaylandCompositor* WaylandCompositorExtension::compositor() const { return d->compositor; }
+void WaylandCompositorExtension::setCompositor(WaylandCompositor* compositor) {
+    d->compositor = compositor;
+}
 bool WaylandCompositorExtension::initialize(WaylandCompositor* compositor) {
-    m_compositor = compositor;
+    d->compositor = compositor;
     return true;
 }
-WaylandClient::WaylandClient(wl_client* client, Object* parent)
-    : WaylandObject(parent), m_client(client) {}
 
-bool WaylandBufferRef::isShm() const { return m_buffer && wl_shm_buffer_get(m_buffer); }
+WaylandClient::WaylandClient(wl_client* client, Object* parent)
+    : WaylandObject(parent), d(std::make_unique<Impl>()) {
+    d->client = Server::Client(client);
+}
+WaylandClient::~WaylandClient() = default;
+wl_client* WaylandClient::handle() const { return d->client.handle(); }
+void WaylandClient::credentials(pid_t& pid, uid_t& uid, gid_t& gid) const {
+    d->client.credentials(pid, uid, gid);
+}
+void WaylandClient::flush() const { d->client.flush(); }
+const std::vector<WaylandResource>& WaylandClient::resources() const { return d->resources; }
+void WaylandClient::addResource(wl_resource* resource) {
+    d->resources.emplace_back(resource);
+}
+
+bool WaylandBufferRef::isShm() const { return d->buffer && wl_shm_buffer_get(d->buffer); }
 Size WaylandBufferRef::size() const {
-    wl_shm_buffer* shm = m_buffer ? wl_shm_buffer_get(m_buffer) : nullptr;
+    wl_shm_buffer* shm = d->buffer ? wl_shm_buffer_get(d->buffer) : nullptr;
     return shm ? Size{wl_shm_buffer_get_width(shm), wl_shm_buffer_get_height(shm)} : Size{};
 }
 int WaylandBufferRef::stride() const {
-    wl_shm_buffer* shm = m_buffer ? wl_shm_buffer_get(m_buffer) : nullptr;
+    wl_shm_buffer* shm = d->buffer ? wl_shm_buffer_get(d->buffer) : nullptr;
     return shm ? wl_shm_buffer_get_stride(shm) : 0;
 }
 const void* WaylandBufferRef::data() const {
-    wl_shm_buffer* shm = m_buffer ? wl_shm_buffer_get(m_buffer) : nullptr;
+    wl_shm_buffer* shm = d->buffer ? wl_shm_buffer_get(d->buffer) : nullptr;
     return shm ? wl_shm_buffer_get_data(shm) : nullptr;
 }
 
@@ -73,21 +136,32 @@ void bindOutput(wl_client* client, void* data, std::uint32_t version, std::uint3
 
 } // namespace
 
-WaylandOutput::WaylandOutput(Object* parent) : WaylandObject(parent) {}
-WaylandOutput::~WaylandOutput() { if (m_global) wl_global_destroy(m_global); }
+WaylandOutput::WaylandOutput(Object* parent)
+    : WaylandObject(parent), d(std::make_unique<Impl>()) {}
+std::string WaylandOutput::manufacturer() const { return d->manufacturer; }
+void WaylandOutput::setManufacturer(std::string value) { d->manufacturer = std::move(value); }
+std::string WaylandOutput::model() const { return d->model; }
+void WaylandOutput::setModel(std::string value) { d->model = std::move(value); }
+Size WaylandOutput::size() const { return d->size; }
+int WaylandOutput::scale() const { return d->scale; }
+void WaylandOutput::setScale(int scale) { d->scale = scale; }
+WaylandOutputMode WaylandOutput::currentMode() const { return d->currentMode; }
+const std::vector<WaylandOutputMode>& WaylandOutput::modes() const { return d->modes; }
+void WaylandOutput::addMode(WaylandOutputMode mode) { d->modes.push_back(mode); }
+WaylandOutput::~WaylandOutput() { if (d->global) wl_global_destroy(d->global); }
 bool WaylandOutput::initialize(WaylandCompositor* compositor) {
     if (!compositor || !compositor->display()) return false;
-    m_global = compositor->display()->createGlobal(&wl_output_interface, 4, bindOutput, this);
-    return m_global != nullptr;
+    d->global = compositor->display()->createGlobal(&wl_output_interface, 4, bindOutput, this);
+    return d->global != nullptr;
 }
 void WaylandOutput::setSize(Size size) {
-    m_size = size;
-    m_currentMode.width = size.width;
-    m_currentMode.height = size.height;
+    d->size = size;
+    d->currentMode.width = size.width;
+    d->currentMode.height = size.height;
 }
 void WaylandOutput::setCurrentMode(WaylandOutputMode mode) {
-    m_currentMode = mode;
-    m_size = {mode.width, mode.height};
+    d->currentMode = mode;
+    d->size = {mode.width, mode.height};
 }
 
 struct CompositorGlobal {
@@ -131,7 +205,7 @@ struct CompositorGlobal {
         if (!surfaceResource) { wl_client_post_no_memory(client); return; }
         auto* surface = new WaylandSurface(compositor);
         surface->setResource(surfaceResource);
-        compositor->m_surfaces.push_back(surface);
+        compositor->d->surfaces.push_back(surface);
         wl_resource_set_implementation(surfaceResource, &surfaceImplementation, surface, nullptr);
     }
     static void createRegion(wl_client* client, wl_resource*, std::uint32_t id) {
@@ -148,44 +222,51 @@ struct CompositorGlobal {
                                                    std::min(4u, version), id);
         if (!resource) { wl_client_post_no_memory(client); return; }
         wl_resource_set_implementation(resource, &compositorImplementation, compositor, nullptr);
-        auto found = std::find_if(compositor->m_clients.begin(), compositor->m_clients.end(),
+        auto found = std::find_if(compositor->d->clients.begin(), compositor->d->clients.end(),
             [client](WaylandClient* value) { return value->handle() == client; });
-        WaylandClient* object = found == compositor->m_clients.end() ? nullptr : *found;
+        WaylandClient* object = found == compositor->d->clients.end() ? nullptr : *found;
         if (!object) {
             object = new WaylandClient(client, compositor);
-            compositor->m_clients.push_back(object);
+            compositor->d->clients.push_back(object);
         }
         object->addResource(resource);
     }
 };
 
 WaylandCompositor::WaylandCompositor(Object* parent)
-    : WaylandObject(parent), m_display(std::make_unique<Server::Display>()) {}
+    : WaylandObject(parent), d(std::make_unique<Impl>()) {
+    d->display = std::make_unique<Server::Display>();
+}
+Server::Display* WaylandCompositor::display() const { return d->display.get(); }
+std::string WaylandCompositor::socketName() const { return d->socketName; }
+const std::vector<WaylandOutput*>& WaylandCompositor::outputs() const { return d->outputs; }
+const std::vector<WaylandClient*>& WaylandCompositor::clients() const { return d->clients; }
+const std::vector<WaylandSurface*>& WaylandCompositor::surfaces() const { return d->surfaces; }
 WaylandCompositor::~WaylandCompositor() {
-    if (m_compositorGlobal) wl_global_destroy(m_compositorGlobal);
+    if (d->compositorGlobal) wl_global_destroy(d->compositorGlobal);
     const auto childrenCopy = children();
     for (Object* child : childrenCopy) delete child;
-    m_outputs.clear(); m_clients.clear(); m_surfaces.clear();
-    m_display.reset();
+    d->outputs.clear(); d->clients.clear(); d->surfaces.clear();
+    d->display.reset();
 }
 bool WaylandCompositor::create() {
-    if (!m_display->valid()) return false;
-    if (m_created) return true;
-    m_compositorGlobal = m_display->createGlobal(&wl_compositor_interface, 4,
+    if (!d->display->valid()) return false;
+    if (d->created) return true;
+    d->compositorGlobal = d->display->createGlobal(&wl_compositor_interface, 4,
                                                  CompositorGlobal::bind, this);
-    m_created = m_compositorGlobal != nullptr && wl_display_init_shm(m_display->handle()) == 0;
-    return m_created;
+    d->created = d->compositorGlobal != nullptr && wl_display_init_shm(d->display->handle()) == 0;
+    return d->created;
 }
-bool WaylandCompositor::valid() const { return m_created && m_display && m_display->valid(); }
+bool WaylandCompositor::valid() const { return d->created && d->display && d->display->valid(); }
 std::string WaylandCompositor::addSocketAuto() {
-    m_socketName = m_display ? m_display->addSocketAuto() : "";
-    return m_socketName;
+    d->socketName = d->display ? d->display->addSocketAuto() : "";
+    return d->socketName;
 }
-int WaylandCompositor::exec() { return m_display ? m_display->run() : -1; }
-void WaylandCompositor::terminate() { if (m_display) m_display->terminate(); }
+int WaylandCompositor::exec() { return d->display ? d->display->run() : -1; }
+void WaylandCompositor::terminate() { if (d->display) d->display->terminate(); }
 int WaylandCompositor::dispatch(int timeoutMs) {
-    const int result = m_display ? m_display->dispatch(timeoutMs) : -1;
-    if (m_display) m_display->flushClients();
+    const int result = d->display ? d->display->dispatch(timeoutMs) : -1;
+    if (d->display) d->display->flushClients();
     return result;
 }
 WaylandOutput* WaylandCompositor::addOutput(Size size) {
@@ -194,7 +275,7 @@ WaylandOutput* WaylandCompositor::addOutput(Size size) {
     output->setCurrentMode({size.width, size.height, 60000});
     output->addMode(output->currentMode());
     if (!output->initialize(this)) { delete output; return nullptr; }
-    m_outputs.push_back(output);
+    d->outputs.push_back(output);
     return output;
 }
 } // namespace Compositor

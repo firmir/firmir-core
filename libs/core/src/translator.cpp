@@ -6,6 +6,7 @@
 
 #include <cstdlib>
 #include <fstream>
+#include <map>
 #include <sstream>
 
 namespace Firmir {
@@ -58,25 +59,52 @@ std::string substitute(std::string text, std::initializer_list<String> args,
 
 } // namespace
 
+class Translator::Impl {
+public:
+    explicit Impl(Translator* q) : q(q) {}
+
+    void notifyLanguageChanged();
+
+    /// Looks up the forms of @p key for the active language; nullptr when
+    /// unknown (later-added files win).
+    const std::vector<std::string>* findForms(const std::string& key) const;
+
+    Translator* q;
+    std::string language;
+    struct File {
+        std::string language; // tag from the file
+        // id -> one or more forms (plural variants; a plain string is a
+        // single-form entry).
+        std::map<std::string, std::vector<std::string>> strings;
+    };
+    // path -> file contents (insertion order: later files win for trId)
+    std::map<std::string, File> files;
+    // Follows Locale::language() until setLanguage() is called explicitly.
+    Connection localeConnection;
+};
+
 Translator::Translator(Object* parent)
-    : Object(parent), m_language(Locale::instance()->language().toStdString()) {
+    : Object(parent), d(std::make_unique<Impl>(this)) {
+    d->language = Locale::instance()->language().toStdString();
     // Follow the Locale (system language, or the application override set on
     // it) until the application sets the Translator language directly.
-    m_localeConnection = Locale::instance()->connect<std::string, std::any>(
+    d->localeConnection = Locale::instance()->connect<std::string, std::any>(
         this, Object::signalPropertyChanged,
         [this](const std::string& name, const std::any& value) {
             if (name != "language")
                 return;
             const auto* lang = std::any_cast<String>(&value);
             const std::string next = lang ? lang->toStdString() : std::string();
-            if (next.empty() || next == m_language)
+            if (next.empty() || next == d->language)
                 return;
-            m_language = next;
-            notifyLanguageChanged();
+            d->language = next;
+            d->notifyLanguageChanged();
         });
     registerProperty<String>("language", &Translator::language,
                              &Translator::setLanguage);
 }
+
+Translator::~Translator() = default;
 
 Translator* Translator::instance() {
     static Translator* translator = [] {
@@ -90,10 +118,10 @@ Translator* Translator::instance() {
 }
 
 const std::vector<std::string>*
-Translator::findForms(const std::string& key) const {
+Translator::Impl::findForms(const std::string& key) const {
     // Later-added files win over earlier ones for the same id.
-    for (auto it = m_files.rbegin(); it != m_files.rend(); ++it) {
-        if (it->second.language != m_language)
+    for (auto it = files.rbegin(); it != files.rend(); ++it) {
+        if (it->second.language != language)
             continue;
         const auto strIt = it->second.strings.find(key);
         if (strIt != it->second.strings.end() && !strIt->second.empty() &&
@@ -103,22 +131,24 @@ Translator::findForms(const std::string& key) const {
     return nullptr;
 }
 
+String Translator::language() const { return String(d->language); }
+
 String Translator::trId(const String& id) const {
-    if (const auto* forms = findForms(id.toStdString()))
+    if (const auto* forms = d->findForms(id.toStdString()))
         return String((*forms)[0]);
     return id; // untranslated ids stay readable
 }
 
 String Translator::trId(const String& id,
                         std::initializer_list<String> args) const {
-    if (const auto* forms = findForms(id.toStdString()))
+    if (const auto* forms = d->findForms(id.toStdString()))
         return String(substitute((*forms)[0], args, nullptr));
     return String(substitute(id.toStdString(), args, nullptr));
 }
 
 String Translator::trIdPlural(const String& id, long long n) const {
-    if (const auto* forms = findForms(id.toStdString())) {
-        int form = pluralFormIndex(m_language, n);
+    if (const auto* forms = d->findForms(id.toStdString())) {
+        int form = pluralFormIndex(d->language, n);
         if (form >= static_cast<int>(forms->size()))
             form = static_cast<int>(forms->size()) - 1; // clamp: fewer forms
         return String(substitute((*forms)[form], {}, &n));
@@ -128,13 +158,13 @@ String Translator::trIdPlural(const String& id, long long n) const {
 
 void Translator::setLanguage(String language) {
     const std::string lang = language.toStdString();
-    if (lang.empty() || lang == m_language)
+    if (lang.empty() || lang == d->language)
         return;
     // Explicit application choice: stop following the Locale (mirrors how
     // Locale::setLanguage stops following the system backend).
-    m_localeConnection.disconnect();
-    m_language = lang;
-    notifyLanguageChanged();
+    d->localeConnection.disconnect();
+    d->language = lang;
+    d->notifyLanguageChanged();
 }
 
 bool Translator::addTranslationFile(String path) {
@@ -162,7 +192,7 @@ bool Translator::addTranslationFile(String path) {
         return false;
     }
     const JsonObject strings = root.value(String("strings")).toObject();
-    auto& file = m_files[path.toStdString()];
+    auto& file = d->files[path.toStdString()];
     file.language = language;
     file.strings.clear();
     for (const auto& key : strings.keys()) {
@@ -183,27 +213,27 @@ bool Translator::addTranslationFile(String path) {
     logInfo() << "Translator: loaded" << path << "(language:" << language.c_str()
               << ")";
     // New strings may change trId() results: refresh all bindings.
-    notifyLanguageChanged();
+    d->notifyLanguageChanged();
     return true;
 }
 
 bool Translator::removeTranslationFile(String path) {
-    if (!m_files.erase(path.toStdString()))
+    if (!d->files.erase(path.toStdString()))
         return false;
-    notifyLanguageChanged();
+    d->notifyLanguageChanged();
     return true;
 }
 
 std::vector<String> Translator::translationFiles() const {
     std::vector<String> out;
-    out.reserve(m_files.size());
-    for (const auto& entry : m_files)
+    out.reserve(d->files.size());
+    for (const auto& entry : d->files)
         out.push_back(String(entry.first));
     return out;
 }
 
-void Translator::notifyLanguageChanged() {
-    notifyPropertyChanged("language");
+void Translator::Impl::notifyLanguageChanged() {
+    q->notifyPropertyChanged("language");
 }
 
 } // namespace Firmir

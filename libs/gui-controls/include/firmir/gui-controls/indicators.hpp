@@ -3,6 +3,8 @@
 #include <firmir/gui/item.hpp>
 #include <firmir/gui/painter.hpp>
 
+#include <memory>
+
 namespace Firmir {
 namespace Gui {
 namespace Controls {
@@ -11,38 +13,35 @@ class BusyIndicator : public Item {
 public:
     explicit BusyIndicator(Object* parent = nullptr);
     ~BusyIndicator() override;
-    bool running() const { return m_running; }
+    bool running() const;
     void setRunning(bool running);
 protected:
     void paint(Painter& painter) override;
     void timerEvent(int timerId) override;
 private:
-    bool m_running = true;
-    int m_timer = 0;
-    int m_phase = 0;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class ProgressBar : public Item {
 public:
     explicit ProgressBar(Object* parent = nullptr);
     ~ProgressBar() override;
-    float value() const { return m_value; }
+    float value() const;
     void setValue(float value);
-    float from() const { return m_from; }
+    float from() const;
     void setFrom(float value);
-    float to() const { return m_to; }
+    float to() const;
     void setTo(float value);
     float visualPosition() const;
-    bool indeterminate() const { return m_indeterminate; }
+    bool indeterminate() const;
     void setIndeterminate(bool indeterminate);
 protected:
     void paint(Painter& painter) override;
     void timerEvent(int timerId) override;
 private:
-    float m_value = 0, m_from = 0, m_to = 1;
-    bool m_indeterminate = false;
-    int m_timer = 0;
-    float m_phase = 0;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Controls

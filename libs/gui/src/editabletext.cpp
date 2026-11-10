@@ -1,6 +1,8 @@
 #include <firmir/gui/editabletext.hpp>
 
 #include <firmir/gui/painter.hpp>
+#include <firmir/gui/rectangle.hpp>
+#include <firmir/gui/text.hpp>
 #include <firmir/gui/theme.hpp>
 
 namespace Firmir {
@@ -26,22 +28,32 @@ bool isBackspaceText(const std::string& text) {
 
 } // namespace
 
+class EditableText::Impl {
+public:
+    explicit Impl(EditableText* q) : text(q), cursor(q) {}
+
+    Text text;
+    Rectangle cursor;
+    String value;
+    bool multiline = false;
+};
+
 EditableText::EditableText(Object* parent)
-    : Item(parent), m_text(this), m_cursor(this) {
+    : Item(parent), d(std::make_unique<Impl>(this)) {
     setClip(true);
     setFocusPolicy(FocusPolicy::ClickFocus);
     // Decoration children must not take clicks/keys of their own: the window
     // focuses the nearest click-focusable ancestor (this edit).
-    m_text.setFocusPolicy(FocusPolicy::NoFocus);
-    m_cursor.setFocusPolicy(FocusPolicy::NoFocus);
-    m_text.setX(10);
-    m_text.setY(7);
-    m_text.setColor(Theme::instance()->primaryColor());
-    m_cursor.setWidth(2);
-    m_cursor.setHeight(22);
-    m_cursor.setY(6);
-    m_cursor.setColor(Theme::instance()->highlightColor());
-    m_cursor.setVisible(false);
+    d->text.setFocusPolicy(FocusPolicy::NoFocus);
+    d->cursor.setFocusPolicy(FocusPolicy::NoFocus);
+    d->text.setX(10);
+    d->text.setY(7);
+    d->text.setColor(Theme::instance()->primaryColor());
+    d->cursor.setWidth(2);
+    d->cursor.setHeight(22);
+    d->cursor.setY(6);
+    d->cursor.setColor(Theme::instance()->highlightColor());
+    d->cursor.setVisible(false);
     registerProperty<String>("text", &EditableText::text,
                              &EditableText::setText);
     registerProperty<bool>("multiline", &EditableText::multiline,
@@ -50,20 +62,23 @@ EditableText::EditableText(Object* parent)
 
 EditableText::~EditableText() = default;
 
+String EditableText::text() const { return d->value; }
+bool EditableText::multiline() const { return d->multiline; }
+
 void EditableText::setText(String text) {
-    if (m_value == text)
+    if (d->value == text)
         return;
-    m_value = std::move(text);
-    m_text.setText(m_value);
+    d->value = std::move(text);
+    d->text.setText(d->value);
     updateCursor();
     update();
     notifyPropertyChanged("text");
 }
 
 void EditableText::setMultiline(bool multiline) {
-    if (m_multiline == multiline)
+    if (d->multiline == multiline)
         return;
-    m_multiline = multiline;
+    d->multiline = multiline;
     updateCursor();
     notifyPropertyChanged("multiline");
 }
@@ -74,18 +89,18 @@ void EditableText::keyEvent(KeyEvent& event) {
     if (event.key == 14 || event.key == 111 || // KEY_BACKSPACE / KEY_DELETE
         isBackspaceText(event.text)) {
         deleteLastCodePoint();
-    } else if (event.key == 28 && !m_multiline) { // KEY_ENTER
+    } else if (event.key == 28 && !d->multiline) { // KEY_ENTER
         emitSignal(signalAccepted);
-    } else if (event.key == 28 && m_multiline) {
-        setText(m_value + String("\n"));
+    } else if (event.key == 28 && d->multiline) {
+        setText(d->value + String("\n"));
     } else if (isPrintableText(event.text)) {
-        setText(m_value + String(event.text.c_str()));
+        setText(d->value + String(event.text.c_str()));
     }
     event.accepted = true;
 }
 
 void EditableText::deleteLastCodePoint() {
-    std::string bytes = m_value.toStdString();
+    std::string bytes = d->value.toStdString();
     while (!bytes.empty() &&
            (static_cast<unsigned char>(bytes.back()) & 0xC0) == 0x80)
         bytes.pop_back();
@@ -100,7 +115,7 @@ void EditableText::focusInEvent() {
 }
 
 void EditableText::focusOutEvent() {
-    m_cursor.setVisible(false);
+    d->cursor.setVisible(false);
     update();
 }
 
@@ -119,8 +134,8 @@ void EditableText::updateCursor() {
     // The real rendered width of the text (the bitmap-font approximation
     // Painter::textSize would put the cursor ~2x past the visible text,
     // looking like trailing spaces).
-    m_cursor.setX(10 + m_text.implicitWidth() + 2);
-    m_cursor.setVisible(hasFocus() && !m_multiline);
+    d->cursor.setX(10 + d->text.implicitWidth() + 2);
+    d->cursor.setVisible(hasFocus() && !d->multiline);
 }
 
 } // namespace Gui

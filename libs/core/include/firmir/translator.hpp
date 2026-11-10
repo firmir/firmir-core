@@ -33,8 +33,7 @@
 #include <firmir/string.hpp>
 
 #include <initializer_list>
-#include <map>
-#include <string>
+#include <memory>
 #include <vector>
 
 namespace Firmir {
@@ -61,7 +60,7 @@ public:
     /// The active language tag ("en", "ru", ...). The default follows
     /// Locale::language() (system language, or the application override set
     /// on Locale); calling setLanguage() detaches from the Locale.
-    String language() const { return m_language; }
+    String language() const;
     void setLanguage(String language);
 
     /// Loads a translation file (see the format above). Returns false and
@@ -76,24 +75,10 @@ public:
 
 private:
     explicit Translator(Object* parent = nullptr);
+    ~Translator() override;
 
-    void notifyLanguageChanged();
-
-    /// Looks up the forms of @p key for the active language; nullptr when
-    /// unknown (later-added files win).
-    const std::vector<std::string>* findForms(const std::string& key) const;
-
-    std::string m_language;
-    struct File {
-        std::string language; // tag from the file
-        // id -> one or more forms (plural variants; a plain string is a
-        // single-form entry).
-        std::map<std::string, std::vector<std::string>> strings;
-    };
-    // path -> file contents (insertion order: later files win for trId)
-    std::map<std::string, File> m_files;
-    // Follows Locale::language() until setLanguage() is called explicitly.
-    Connection m_localeConnection;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 /// Convenience free function: Translator::instance()->trId(id).

@@ -19,37 +19,48 @@ class WaylandCompositor;
 class WaylandSurface;
 class WaylandOutput;
 
+/// Copyable value wrapper around a server resource; copies share the Impl
+/// (same pattern as Server::Resource).
 class WaylandResource {
 public:
-    WaylandResource() = default;
-    explicit WaylandResource(wl_resource* resource) : m_resource(resource) {}
-    wl_resource* handle() const { return m_resource.handle(); }
-    Server::Resource serverResource() const { return m_resource; }
+    WaylandResource() : d(std::make_shared<Impl>()) {}
+    explicit WaylandResource(wl_resource* resource) : d(std::make_shared<Impl>()) {
+        d->resource = Server::Resource(resource);
+    }
+    wl_resource* handle() const { return d->resource.handle(); }
+    Server::Resource serverResource() const { return d->resource; }
     wl_client* client() const;
-    std::uint32_t id() const { return m_resource.id(); }
-    int version() const { return m_resource.version(); }
+    std::uint32_t id() const { return d->resource.id(); }
+    int version() const { return d->resource.version(); }
 private:
-    Server::Resource m_resource;
+    struct Impl {
+        Server::Resource resource;
+    };
+    std::shared_ptr<Impl> d;
 };
 
 class WaylandObject : public Object {
 public:
-    explicit WaylandObject(Object* parent = nullptr) : Object(parent) {}
+    explicit WaylandObject(Object* parent = nullptr);
     ~WaylandObject() override;
-    const std::vector<WaylandCompositorExtension*>& extensions() const { return m_extensions; }
+    const std::vector<WaylandCompositorExtension*>& extensions() const;
     void addExtension(WaylandCompositorExtension* extension);
 private:
-    std::vector<WaylandCompositorExtension*> m_extensions;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandCompositorExtension : public WaylandObject {
 public:
-    explicit WaylandCompositorExtension(Object* parent = nullptr) : WaylandObject(parent) {}
+    explicit WaylandCompositorExtension(Object* parent = nullptr);
     ~WaylandCompositorExtension() override;
-    WaylandCompositor* compositor() const { return m_compositor; }
+    WaylandCompositor* compositor() const;
     virtual bool initialize(WaylandCompositor* compositor);
 protected:
-    WaylandCompositor* m_compositor = nullptr;
+    void setCompositor(WaylandCompositor* compositor);
+private:
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 template <typename T = WaylandCompositorExtension>
@@ -57,7 +68,7 @@ class WaylandCompositorExtensionTemplate : public T {
 public:
     using T::T;
     bool initialize(WaylandCompositor* compositor) override {
-        this->m_compositor = compositor;
+        this->setCompositor(compositor);
         return this->onInitialize();
     }
     bool onInitialize() { return true; }
@@ -66,28 +77,35 @@ public:
 class WaylandClient : public WaylandObject {
 public:
     explicit WaylandClient(wl_client* client = nullptr, Object* parent = nullptr);
-    wl_client* handle() const { return m_client.handle(); }
-    void credentials(pid_t& pid, uid_t& uid, gid_t& gid) const { m_client.credentials(pid, uid, gid); }
-    void flush() const { m_client.flush(); }
-    const std::vector<WaylandResource>& resources() const { return m_resources; }
-    void addResource(wl_resource* resource) { m_resources.emplace_back(resource); }
+    ~WaylandClient() override;
+    wl_client* handle() const;
+    void credentials(pid_t& pid, uid_t& uid, gid_t& gid) const;
+    void flush() const;
+    const std::vector<WaylandResource>& resources() const;
+    void addResource(wl_resource* resource);
 private:
-    Server::Client m_client;
-    std::vector<WaylandResource> m_resources;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
+/// Copyable value wrapper around a wl_buffer resource (see WaylandResource).
 class WaylandBufferRef {
 public:
-    WaylandBufferRef() = default;
-    explicit WaylandBufferRef(wl_resource* buffer) : m_buffer(buffer) {}
-    wl_resource* handle() const { return m_buffer; }
-    bool valid() const { return m_buffer != nullptr; }
+    WaylandBufferRef() : d(std::make_shared<Impl>()) {}
+    explicit WaylandBufferRef(wl_resource* buffer) : d(std::make_shared<Impl>()) {
+        d->buffer = buffer;
+    }
+    wl_resource* handle() const { return d->buffer; }
+    bool valid() const { return d->buffer != nullptr; }
     bool isShm() const;
     Size size() const;
     int stride() const;
     const void* data() const;
 private:
-    wl_resource* m_buffer = nullptr;
+    struct Impl {
+        wl_resource* buffer = nullptr;
+    };
+    std::shared_ptr<Impl> d;
 };
 
 struct WaylandOutputMode {
@@ -101,26 +119,21 @@ public:
     explicit WaylandOutput(Object* parent = nullptr);
     ~WaylandOutput() override;
     bool initialize(WaylandCompositor* compositor);
-    std::string manufacturer() const { return m_manufacturer; }
-    void setManufacturer(std::string value) { m_manufacturer = std::move(value); }
-    std::string model() const { return m_model; }
-    void setModel(std::string value) { m_model = std::move(value); }
-    Size size() const { return m_size; }
+    std::string manufacturer() const;
+    void setManufacturer(std::string value);
+    std::string model() const;
+    void setModel(std::string value);
+    Size size() const;
     void setSize(Size size);
-    int scale() const { return m_scale; }
-    void setScale(int scale) { m_scale = scale; }
-    WaylandOutputMode currentMode() const { return m_currentMode; }
+    int scale() const;
+    void setScale(int scale);
+    WaylandOutputMode currentMode() const;
     void setCurrentMode(WaylandOutputMode mode);
-    const std::vector<WaylandOutputMode>& modes() const { return m_modes; }
-    void addMode(WaylandOutputMode mode) { m_modes.push_back(mode); }
+    const std::vector<WaylandOutputMode>& modes() const;
+    void addMode(WaylandOutputMode mode);
 private:
-    std::string m_manufacturer = "Firmir";
-    std::string m_model = "Virtual output";
-    Size m_size{1280, 720};
-    int m_scale = 1;
-    WaylandOutputMode m_currentMode{1280, 720, 60000};
-    std::vector<WaylandOutputMode> m_modes;
-    wl_global* m_global = nullptr;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandCompositor : public WaylandObject {
@@ -129,25 +142,21 @@ public:
     ~WaylandCompositor() override;
     bool create();
     bool valid() const;
-    Server::Display* display() const { return m_display.get(); }
-    std::string socketName() const { return m_socketName; }
+    Server::Display* display() const;
+    std::string socketName() const;
     std::string addSocketAuto();
     int exec();
     void terminate();
     int dispatch(int timeoutMs = 0);
     WaylandOutput* addOutput(Size size = {1280, 720});
-    const std::vector<WaylandOutput*>& outputs() const { return m_outputs; }
-    const std::vector<WaylandClient*>& clients() const { return m_clients; }
-    const std::vector<WaylandSurface*>& surfaces() const { return m_surfaces; }
+    const std::vector<WaylandOutput*>& outputs() const;
+    const std::vector<WaylandClient*>& clients() const;
+    const std::vector<WaylandSurface*>& surfaces() const;
 private:
     friend struct CompositorGlobal;
-    std::unique_ptr<Server::Display> m_display;
-    std::string m_socketName;
-    std::vector<WaylandOutput*> m_outputs;
-    std::vector<WaylandClient*> m_clients;
-    std::vector<WaylandSurface*> m_surfaces;
-    wl_global* m_compositorGlobal = nullptr;
-    bool m_created = false;
+
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Compositor

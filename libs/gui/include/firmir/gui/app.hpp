@@ -3,6 +3,8 @@
 #include <firmir/object.hpp>
 #include <firmir/string.hpp>
 
+#include <memory>
+
 namespace Firmir {
 namespace Gui {
 
@@ -17,6 +19,7 @@ class Window;
 class App : public Object {
 public:
     explicit App(Window* window, Object* parent = nullptr);
+    ~App() override;
 
     Window* window() const;
     void show();
@@ -42,8 +45,8 @@ private:
     void rejectScreenSizeWrite(double); // the properties are read-only
     void notifyScreenSizeChanged();
 
-    Window* m_window;
-    bool m_maximized = false;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Gui

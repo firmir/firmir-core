@@ -54,83 +54,132 @@ void bindSeat(wl_client* client, void* data, std::uint32_t version, std::uint32_
 
 } // namespace
 
+class WaylandKeyboard::Impl {
+public:
+    WaylandResource resource;
+};
+
+class WaylandPointer::Impl {
+public:
+    WaylandResource resource;
+};
+
+class WaylandTouch::Impl {
+public:
+    WaylandResource resource;
+};
+
+class WaylandSeat::Impl {
+public:
+    std::uint32_t capabilities = 0;
+    wl_global* global = nullptr;
+    std::unique_ptr<WaylandKeyboard> keyboard;
+    std::unique_ptr<WaylandPointer> pointer;
+    std::unique_ptr<WaylandTouch> touch;
+};
+
 WaylandSeat::WaylandSeat(Object* parent)
-    : WaylandObject(parent), m_keyboard(std::make_unique<WaylandKeyboard>(this)),
-      m_pointer(std::make_unique<WaylandPointer>(this)), m_touch(std::make_unique<WaylandTouch>(this)) {}
-WaylandSeat::~WaylandSeat() { if (m_global) wl_global_destroy(m_global); }
+    : WaylandObject(parent), d(std::make_unique<Impl>()) {
+    d->keyboard = std::make_unique<WaylandKeyboard>(this);
+    d->pointer = std::make_unique<WaylandPointer>(this);
+    d->touch = std::make_unique<WaylandTouch>(this);
+}
+WaylandSeat::~WaylandSeat() { if (d->global) wl_global_destroy(d->global); }
+std::uint32_t WaylandSeat::capabilities() const { return d->capabilities; }
+WaylandKeyboard* WaylandSeat::keyboard() const { return d->keyboard.get(); }
+WaylandPointer* WaylandSeat::pointer() const { return d->pointer.get(); }
+WaylandTouch* WaylandSeat::touch() const { return d->touch.get(); }
 bool WaylandSeat::initialize(WaylandCompositor* compositor) {
     if (!compositor || !compositor->display()) return false;
-    m_global = compositor->display()->createGlobal(&wl_seat_interface, 7, bindSeat, this);
-    return m_global != nullptr;
+    d->global = compositor->display()->createGlobal(&wl_seat_interface, 7, bindSeat, this);
+    return d->global != nullptr;
 }
-void WaylandSeat::setCapabilities(std::uint32_t capabilities) { m_capabilities = capabilities; }
+void WaylandSeat::setCapabilities(std::uint32_t capabilities) { d->capabilities = capabilities; }
+
+WaylandKeyboard::WaylandKeyboard(Object* parent)
+    : WaylandObject(parent), d(std::make_unique<Impl>()) {}
+WaylandKeyboard::~WaylandKeyboard() = default;
+WaylandResource WaylandKeyboard::resource() const { return d->resource; }
+void WaylandKeyboard::setResource(wl_resource* resource) { d->resource = WaylandResource(resource); }
+
+WaylandPointer::WaylandPointer(Object* parent)
+    : WaylandObject(parent), d(std::make_unique<Impl>()) {}
+WaylandPointer::~WaylandPointer() = default;
+WaylandResource WaylandPointer::resource() const { return d->resource; }
+void WaylandPointer::setResource(wl_resource* resource) { d->resource = WaylandResource(resource); }
+
+WaylandTouch::WaylandTouch(Object* parent)
+    : WaylandObject(parent), d(std::make_unique<Impl>()) {}
+WaylandTouch::~WaylandTouch() = default;
+WaylandResource WaylandTouch::resource() const { return d->resource; }
+void WaylandTouch::setResource(wl_resource* resource) { d->resource = WaylandResource(resource); }
 
 void WaylandKeyboard::setKeymap(int fd, std::uint32_t size) {
-    if (m_resource.handle())
-        wl_keyboard_send_keymap(m_resource.handle(), WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, fd, size);
+    if (d->resource.handle())
+        wl_keyboard_send_keymap(d->resource.handle(), WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1, fd, size);
 }
 void WaylandKeyboard::enter(WaylandSurface* surface, const std::vector<std::uint32_t>& keys) {
-    if (!m_resource.handle() || !surface || !surface->resource().handle()) return;
+    if (!d->resource.handle() || !surface || !surface->resource().handle()) return;
     wl_array array{};
     array.data = const_cast<std::uint32_t*>(keys.data());
     array.size = array.alloc = keys.size() * sizeof(std::uint32_t);
-    wl_keyboard_send_enter(m_resource.handle(), serial(m_resource.handle()),
+    wl_keyboard_send_enter(d->resource.handle(), serial(d->resource.handle()),
                            surface->resource().handle(), &array);
 }
 void WaylandKeyboard::leave(WaylandSurface* surface) {
-    if (m_resource.handle() && surface)
-        wl_keyboard_send_leave(m_resource.handle(), serial(m_resource.handle()),
+    if (d->resource.handle() && surface)
+        wl_keyboard_send_leave(d->resource.handle(), serial(d->resource.handle()),
                                surface->resource().handle());
 }
 void WaylandKeyboard::key(std::uint32_t time, std::uint32_t keyCode, bool pressed) {
-    if (m_resource.handle())
-        wl_keyboard_send_key(m_resource.handle(), serial(m_resource.handle()), time, keyCode,
+    if (d->resource.handle())
+        wl_keyboard_send_key(d->resource.handle(), serial(d->resource.handle()), time, keyCode,
                              pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
 }
 void WaylandKeyboard::modifiers(std::uint32_t depressed, std::uint32_t latched,
                                 std::uint32_t locked, std::uint32_t group) {
-    if (m_resource.handle())
-        wl_keyboard_send_modifiers(m_resource.handle(), serial(m_resource.handle()),
+    if (d->resource.handle())
+        wl_keyboard_send_modifiers(d->resource.handle(), serial(d->resource.handle()),
                                    depressed, latched, locked, group);
 }
 
 void WaylandPointer::enter(WaylandSurface* surface, float x, float y) {
-    if (m_resource.handle() && surface)
-        wl_pointer_send_enter(m_resource.handle(), serial(m_resource.handle()),
+    if (d->resource.handle() && surface)
+        wl_pointer_send_enter(d->resource.handle(), serial(d->resource.handle()),
             surface->resource().handle(),
             wl_fixed_from_double(x), wl_fixed_from_double(y));
 }
 void WaylandPointer::leave(WaylandSurface* surface) {
-    if (m_resource.handle() && surface)
-        wl_pointer_send_leave(m_resource.handle(), serial(m_resource.handle()),
+    if (d->resource.handle() && surface)
+        wl_pointer_send_leave(d->resource.handle(), serial(d->resource.handle()),
                               surface->resource().handle());
 }
 void WaylandPointer::motion(std::uint32_t time, float x, float y) {
-    if (m_resource.handle())
-        wl_pointer_send_motion(m_resource.handle(), time, wl_fixed_from_double(x), wl_fixed_from_double(y));
+    if (d->resource.handle())
+        wl_pointer_send_motion(d->resource.handle(), time, wl_fixed_from_double(x), wl_fixed_from_double(y));
 }
 void WaylandPointer::button(std::uint32_t time, std::uint32_t buttonCode, bool pressed) {
-    if (m_resource.handle())
-        wl_pointer_send_button(m_resource.handle(), serial(m_resource.handle()), time, buttonCode,
+    if (d->resource.handle())
+        wl_pointer_send_button(d->resource.handle(), serial(d->resource.handle()), time, buttonCode,
             pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
 }
 void WaylandPointer::axis(std::uint32_t time, std::uint32_t axisValue, float value) {
-    if (m_resource.handle())
-        wl_pointer_send_axis(m_resource.handle(), time, axisValue, wl_fixed_from_double(value));
+    if (d->resource.handle())
+        wl_pointer_send_axis(d->resource.handle(), time, axisValue, wl_fixed_from_double(value));
 }
 
 void WaylandTouch::down(WaylandSurface* surface, std::uint32_t time, int id, float x, float y) {
-    if (m_resource.handle() && surface)
-        wl_touch_send_down(m_resource.handle(), serial(m_resource.handle()), time,
+    if (d->resource.handle() && surface)
+        wl_touch_send_down(d->resource.handle(), serial(d->resource.handle()), time,
             surface->resource().handle(), id,
             wl_fixed_from_double(x), wl_fixed_from_double(y));
 }
 void WaylandTouch::up(std::uint32_t time, int id) {
-    if (m_resource.handle()) wl_touch_send_up(m_resource.handle(), serial(m_resource.handle()), time, id);
+    if (d->resource.handle()) wl_touch_send_up(d->resource.handle(), serial(d->resource.handle()), time, id);
 }
 void WaylandTouch::motion(std::uint32_t time, int id, float x, float y) {
-    if (m_resource.handle())
-        wl_touch_send_motion(m_resource.handle(), time, id, wl_fixed_from_double(x), wl_fixed_from_double(y));
+    if (d->resource.handle())
+        wl_touch_send_motion(d->resource.handle(), time, id, wl_fixed_from_double(x), wl_fixed_from_double(y));
 }
 void WaylandTextInputManager::commitString(WaylandSurface* surface, const std::string& text) {
     if (surface) surface->emitSignal("textInput", text);

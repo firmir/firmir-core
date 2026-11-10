@@ -3,6 +3,8 @@
 #include <firmir/gui/item.hpp>
 #include <firmir/gui/painter.hpp>
 
+#include <memory>
+
 namespace Firmir {
 namespace Gui {
 
@@ -12,14 +14,14 @@ public:
     explicit MouseArea(Object* parent = nullptr);
     ~MouseArea() override;
 
-    bool isPressed() const { return m_pressed; }
-    bool containsMouse() const { return m_containsMouse; }
-    bool hoverEnabled() const { return m_hoverEnabled; }
+    bool isPressed() const;
+    bool containsMouse() const;
+    bool hoverEnabled() const;
     void setHoverEnabled(bool enabled);
-    int acceptedButtons() const { return m_acceptedButtons; }
-    void setAcceptedButtons(int buttons) { auto lock = lockScene(); m_acceptedButtons = buttons; }
-    float mouseX() const { return m_mouse.x; }
-    float mouseY() const { return m_mouse.y; }
+    int acceptedButtons() const;
+    void setAcceptedButtons(int buttons);
+    float mouseX() const;
+    float mouseY() const;
 
     static constexpr auto signalClicked = "clicked";
     static constexpr auto signalPressed = "pressed";
@@ -33,11 +35,9 @@ protected:
 private:
     void setPressed(bool pressed);
     void setContainsMouse(bool contains);
-    Point m_mouse;
-    bool m_pressed = false;
-    bool m_containsMouse = false;
-    bool m_hoverEnabled = false;
-    int m_acceptedButtons = 1;
+
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Gui

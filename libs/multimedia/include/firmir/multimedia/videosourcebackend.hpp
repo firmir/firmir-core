@@ -20,7 +20,10 @@ public:
     /// @p host may be null when the backend is created before its
     /// VideoSource (the source then adopts it, see the unique_ptr
     /// constructor); plugins always receive a valid host.
-    explicit VideoSourceBackend(VideoSource* host = nullptr) : m_host(host) {}
+    explicit VideoSourceBackend(VideoSource* host = nullptr)
+        : d(std::make_unique<Impl>()) {
+        d->host = host;
+    }
     virtual ~VideoSourceBackend() = default;
 
     virtual bool open(const String& uri) = 0;
@@ -46,20 +49,25 @@ public:
     virtual VideoMetrics metrics() const { return {}; }
 
 protected:
-    VideoSource* host() const { return m_host; }
+    VideoSource* host() const { return d->host; }
 
     /// Report a decoded frame (may be called from a worker thread).
-    void emitFrame(VideoFrame frame) { m_host->emitFrameReady(std::move(frame)); }
+    void emitFrame(VideoFrame frame) { d->host->emitFrameReady(std::move(frame)); }
     /// Report a state transition.
-    void emitState(VideoSource::State state) { m_host->emitStateChanged(state); }
+    void emitState(VideoSource::State state) { d->host->emitStateChanged(state); }
     /// Report a human-readable error.
-    void emitError(const String& message) { m_host->emitErrorMessage(message); }
+    void emitError(const String& message) { d->host->emitErrorMessage(message); }
 
 private:
     friend class VideoSource; // adopts a host-less backend (setHost)
-    void setHost(VideoSource* host) { m_host = host; }
+    void setHost(VideoSource* host) { d->host = host; }
 
-    VideoSource* m_host;
+    // Single-pointer state; the definition stays in the header because this
+    // interface is implemented by out-of-tree plugins (no own .cpp).
+    struct Impl {
+        VideoSource* host = nullptr;
+    };
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Multimedia

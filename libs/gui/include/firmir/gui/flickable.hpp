@@ -2,6 +2,8 @@
 
 #include <firmir/gui/item.hpp>
 
+#include <memory>
+
 namespace Firmir {
 namespace Gui {
 
@@ -10,17 +12,17 @@ class Flickable : public Item {
 public:
     explicit Flickable(Object* parent = nullptr);
     ~Flickable() override;
-    Item* contentItem() const { return m_content; }
-    float contentX() const { return m_contentX; }
+    Item* contentItem() const;
+    float contentX() const;
     void setContentX(float value);
-    float contentY() const { return m_contentY; }
+    float contentY() const;
     void setContentY(float value);
-    float contentWidth() const { return m_contentWidth; }
+    float contentWidth() const;
     void setContentWidth(float value);
-    float contentHeight() const { return m_contentHeight; }
+    float contentHeight() const;
     void setContentHeight(float value);
-    bool isMoving() const { return m_moving; }
-    bool isDragging() const { return m_dragging; }
+    bool isMoving() const;
+    bool isDragging() const;
     void flick(float velocityX, float velocityY);
     void stop();
     static constexpr auto signalMovementStarted = "movementStarted";
@@ -32,13 +34,9 @@ protected:
 private:
     void updateContentPosition();
     void setMoving(bool moving);
-    Item* m_content;
-    float m_contentX = 0, m_contentY = 0;
-    float m_contentWidth = 0, m_contentHeight = 0;
-    float m_velocityX = 0, m_velocityY = 0;
-    Point m_lastPosition;
-    bool m_moving = false, m_dragging = false;
-    int m_timer = 0;
+
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Gui

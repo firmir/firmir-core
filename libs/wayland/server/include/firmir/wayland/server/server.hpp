@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <wayland-server-core.h>
 
@@ -14,8 +15,8 @@ public:
     ~Display();
     Display(const Display&) = delete;
     Display& operator=(const Display&) = delete;
-    bool valid() const { return m_display != nullptr; }
-    wl_display* handle() const { return m_display; }
+    bool valid() const;
+    wl_display* handle() const;
     wl_event_loop* eventLoop() const;
     std::string addSocketAuto();
     int run();
@@ -26,32 +27,48 @@ public:
     wl_global* createGlobal(const wl_interface* interface, int version,
                             wl_global_bind_func_t bind, void* data);
 private:
-    wl_display* m_display;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
+/// Copyable value wrapper around wl_client; the Impl pointer is shared
+/// between copies (same pattern as Core::Json / Core::Log).
 class Client {
 public:
-    explicit Client(wl_client* client = nullptr) : m_client(client) {}
-    wl_client* handle() const { return m_client; }
+    explicit Client(wl_client* client = nullptr)
+        : d(std::make_shared<Impl>()) {
+        d->client = client;
+    }
+    wl_client* handle() const { return d->client; }
     wl_display* display() const;
     void credentials(pid_t& pid, uid_t& uid, gid_t& gid) const;
     void flush() const;
 private:
-    wl_client* m_client;
+    struct Impl {
+        wl_client* client = nullptr;
+    };
+    std::shared_ptr<Impl> d;
 };
 
+/// Copyable value wrapper around wl_resource (see Client).
 class Resource {
 public:
-    explicit Resource(wl_resource* resource = nullptr) : m_resource(resource) {}
-    wl_resource* handle() const { return m_resource; }
-    Client client() const { return Client(m_resource ? wl_resource_get_client(m_resource) : nullptr); }
-    std::uint32_t id() const { return m_resource ? wl_resource_get_id(m_resource) : 0; }
-    int version() const { return m_resource ? wl_resource_get_version(m_resource) : 0; }
-    void* userData() const { return m_resource ? wl_resource_get_user_data(m_resource) : nullptr; }
-    void setUserData(void* data) { if (m_resource) wl_resource_set_user_data(m_resource, data); }
-    void postNoMemory() const { if (m_resource) wl_resource_post_no_memory(m_resource); }
+    explicit Resource(wl_resource* resource = nullptr)
+        : d(std::make_shared<Impl>()) {
+        d->resource = resource;
+    }
+    wl_resource* handle() const { return d->resource; }
+    Client client() const { return Client(d->resource ? wl_resource_get_client(d->resource) : nullptr); }
+    std::uint32_t id() const { return d->resource ? wl_resource_get_id(d->resource) : 0; }
+    int version() const { return d->resource ? wl_resource_get_version(d->resource) : 0; }
+    void* userData() const { return d->resource ? wl_resource_get_user_data(d->resource) : nullptr; }
+    void setUserData(void* data) { if (d->resource) wl_resource_set_user_data(d->resource, data); }
+    void postNoMemory() const { if (d->resource) wl_resource_post_no_memory(d->resource); }
 private:
-    wl_resource* m_resource;
+    struct Impl {
+        wl_resource* resource = nullptr;
+    };
+    std::shared_ptr<Impl> d;
 };
 
 } // namespace Server

@@ -8,9 +8,9 @@
 // (Renamed from LineEdit: the item edits arbitrary text, not just lines.)
 
 #include <firmir/gui/item.hpp>
-#include <firmir/gui/rectangle.hpp>
-#include <firmir/gui/text.hpp>
 #include <firmir/string.hpp>
+
+#include <memory>
 
 namespace Firmir {
 namespace Gui {
@@ -20,9 +20,9 @@ public:
     explicit EditableText(Object* parent = nullptr);
     ~EditableText() override;
 
-    String text() const { return m_value; }
+    String text() const;
     void setText(String text);
-    bool multiline() const { return m_multiline; }
+    bool multiline() const;
     void setMultiline(bool multiline);
 
     /// Emitted on Enter in single-line mode (no arguments).
@@ -38,10 +38,8 @@ private:
     void updateCursor();
     void deleteLastCodePoint();
 
-    Text m_text;
-    Rectangle m_cursor;
-    String m_value;
-    bool m_multiline = false;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Gui

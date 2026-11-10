@@ -8,22 +8,20 @@ namespace Compositor {
 
 class WaylandShellSurface : public WaylandObject {
 public:
-    explicit WaylandShellSurface(Object* parent = nullptr) : WaylandObject(parent) {}
+    explicit WaylandShellSurface(Object* parent = nullptr);
     ~WaylandShellSurface() override;
-    WaylandResource resource() const { return m_resource; }
-    void setResource(wl_resource* resource) { m_resource = WaylandResource(resource); }
-    WaylandSurface* surface() const { return m_surface; }
-    void setSurface(WaylandSurface* surface) { m_surface = surface; }
-    std::string title() const { return m_title; }
-    void setTitle(std::string title) { m_title = std::move(title); }
-    Size size() const { return m_size; }
-    void setSize(Size size) { m_size = size; }
+    WaylandResource resource() const;
+    void setResource(wl_resource* resource);
+    WaylandSurface* surface() const;
+    void setSurface(WaylandSurface* surface);
+    std::string title() const;
+    void setTitle(std::string title);
+    Size size() const;
+    void setSize(Size size);
     virtual void sendConfigure(int width, int height);
-protected:
-    WaylandResource m_resource;
-    WaylandSurface* m_surface = nullptr;
-    std::string m_title;
-    Size m_size;
+private:
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 template <typename T = WaylandShellSurface>
@@ -39,11 +37,13 @@ public:
 
 class WaylandShell : public WaylandCompositorExtension {
 public:
-    explicit WaylandShell(Object* parent = nullptr) : WaylandCompositorExtension(parent) {}
-    virtual std::vector<WaylandShellSurface*> shellSurfaces() const { return m_surfaces; }
-    void registerSurface(WaylandShellSurface* surface) { m_surfaces.push_back(surface); }
-protected:
-    std::vector<WaylandShellSurface*> m_surfaces;
+    explicit WaylandShell(Object* parent = nullptr);
+    ~WaylandShell() override;
+    virtual std::vector<WaylandShellSurface*> shellSurfaces() const;
+    void registerSurface(WaylandShellSurface* surface);
+private:
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandWlShellSurface : public WaylandShellSurfaceTemplate<> {
@@ -55,11 +55,12 @@ public:
 
 class WaylandWlShell : public WaylandShell {
 public:
-    explicit WaylandWlShell(Object* parent = nullptr) : WaylandShell(parent) {}
+    explicit WaylandWlShell(Object* parent = nullptr);
     ~WaylandWlShell() override;
     bool initialize(WaylandCompositor* compositor) override;
 private:
-    wl_global* m_global = nullptr;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandXdgPopup : public WaylandShellSurface {
@@ -71,93 +72,94 @@ public:
 
 class WaylandXdgToplevel : public WaylandShellSurface {
 public:
-    explicit WaylandXdgToplevel(Object* parent = nullptr) : WaylandShellSurface(parent) {}
+    explicit WaylandXdgToplevel(Object* parent = nullptr);
+    ~WaylandXdgToplevel() override;
     void sendConfigure(int width, int height) override;
     void sendClose();
     void setMaximized(bool maximized);
     void setFullscreen(bool fullscreen);
     void setMinimized();
-    bool maximized() const { return m_maximized; }
-    bool fullscreen() const { return m_fullscreen; }
+    bool maximized() const;
+    bool fullscreen() const;
 private:
-    bool m_maximized = false;
-    bool m_fullscreen = false;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandXdgSurface : public WaylandShellSurfaceTemplate<> {
 public:
-    explicit WaylandXdgSurface(Object* parent = nullptr)
-        : WaylandShellSurfaceTemplate<>(parent) {}
-    WaylandXdgToplevel* toplevel() const { return m_toplevel; }
-    void setToplevel(WaylandXdgToplevel* toplevel) { m_toplevel = toplevel; }
-    WaylandXdgPopup* popup() const { return m_popup; }
-    void setPopup(WaylandXdgPopup* popup) { m_popup = popup; }
+    explicit WaylandXdgSurface(Object* parent = nullptr);
+    ~WaylandXdgSurface() override;
+    WaylandXdgToplevel* toplevel() const;
+    void setToplevel(WaylandXdgToplevel* toplevel);
+    WaylandXdgPopup* popup() const;
+    void setPopup(WaylandXdgPopup* popup);
     void sendConfigure(int width, int height) override;
 private:
-    WaylandXdgToplevel* m_toplevel = nullptr;
-    WaylandXdgPopup* m_popup = nullptr;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandXdgShell : public WaylandShell {
 public:
-    explicit WaylandXdgShell(Object* parent = nullptr) : WaylandShell(parent) {}
+    explicit WaylandXdgShell(Object* parent = nullptr);
     ~WaylandXdgShell() override;
     bool initialize(WaylandCompositor* compositor) override;
     void ping(std::uint32_t serial);
 private:
     friend struct XdgShellGlobal;
-    std::vector<wl_resource*> m_resources;
-    wl_global* m_global = nullptr;
+
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandXdgDecorationManagerV1 : public WaylandCompositorExtension {
 public:
     enum class Mode { ClientSide = 1, ServerSide = 2 };
-    explicit WaylandXdgDecorationManagerV1(Object* parent = nullptr)
-        : WaylandCompositorExtension(parent) {}
+    explicit WaylandXdgDecorationManagerV1(Object* parent = nullptr);
     ~WaylandXdgDecorationManagerV1() override;
     bool initialize(WaylandCompositor* compositor) override;
-    void setDefaultMode(Mode mode) { m_defaultMode = mode; }
-    Mode defaultMode() const { return m_defaultMode; }
+    void setDefaultMode(Mode mode);
+    Mode defaultMode() const;
 private:
-    Mode m_defaultMode = Mode::ClientSide;
-    wl_global* m_global = nullptr;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandXdgOutputV1 : public WaylandObject {
 public:
-    explicit WaylandXdgOutputV1(Object* parent = nullptr) : WaylandObject(parent) {}
-    WaylandOutput* output() const { return m_output; }
-    void setOutput(WaylandOutput* output) { m_output = output; }
-    WaylandResource resource() const { return m_resource; }
-    void setResource(wl_resource* resource) { m_resource = WaylandResource(resource); }
+    explicit WaylandXdgOutputV1(Object* parent = nullptr);
+    ~WaylandXdgOutputV1() override;
+    WaylandOutput* output() const;
+    void setOutput(WaylandOutput* output);
+    WaylandResource resource() const;
+    void setResource(wl_resource* resource);
     void sendDescription();
 private:
-    WaylandOutput* m_output = nullptr;
-    WaylandResource m_resource;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandXdgOutputManagerV1 : public WaylandCompositorExtension {
 public:
-    explicit WaylandXdgOutputManagerV1(Object* parent = nullptr)
-        : WaylandCompositorExtension(parent) {}
+    explicit WaylandXdgOutputManagerV1(Object* parent = nullptr);
     ~WaylandXdgOutputManagerV1() override;
     bool initialize(WaylandCompositor* compositor) override;
     WaylandXdgOutputV1* addOutput(WaylandOutput* output);
-    const std::vector<WaylandXdgOutputV1*>& outputs() const { return m_outputs; }
+    const std::vector<WaylandXdgOutputV1*>& outputs() const;
 private:
-    std::vector<WaylandXdgOutputV1*> m_outputs;
-    wl_global* m_global = nullptr;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandViewporter : public WaylandCompositorExtension {
 public:
-    explicit WaylandViewporter(Object* parent = nullptr)
-        : WaylandCompositorExtension(parent) {}
+    explicit WaylandViewporter(Object* parent = nullptr);
     ~WaylandViewporter() override;
     bool initialize(WaylandCompositor* compositor) override;
 private:
-    wl_global* m_global = nullptr;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 } // namespace Compositor
 } // namespace Wayland

@@ -5,6 +5,7 @@
 #include <firmir/string.hpp>
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace Firmir {
@@ -18,33 +19,28 @@ public:
     explicit Image(Object* parent = nullptr);
     ~Image() override;
 
-    String source() const { return m_source; }
+    String source() const;
     void setSource(String source);
-    Status status() const { return m_status; }
-    Size sourceSize() const { return m_sourceSize; }
-    FillMode fillMode() const { return m_fillMode; }
+    Status status() const;
+    Size sourceSize() const;
+    FillMode fillMode() const;
     void setFillMode(FillMode mode);
     /// String form for the property system / Firml ("Stretch",
     /// "PreserveAspectFit", "PreserveAspectCrop", "Pad").
     String fillModeName() const;
     void setFillModeName(const String& name);
-    bool smooth() const { return m_smooth; }
-    void setSmooth(bool smooth) { auto lock = lockScene(); m_smooth = smooth; update(); }
+    bool smooth() const;
+    void setSmooth(bool smooth);
     /// Replaces the image with caller-owned content copied as RGBA8.
     void setRgba(int width, int height, const void* pixels, std::size_t bytes);
     /// CPU pixels in RGBA8 order, valid when status()==Ready.
-    const std::vector<std::uint8_t>& rgbaData() const { return m_rgba; }
-    std::uint64_t rgbaGeneration() const { return m_generation; }
+    const std::vector<std::uint8_t>& rgbaData() const;
+    std::uint64_t rgbaGeneration() const;
 protected:
     void paint(Painter& painter) override;
 private:
-    String m_source;
-    Size m_sourceSize;
-    std::vector<std::uint8_t> m_rgba;
-    std::uint64_t m_generation = 0;
-    FillMode m_fillMode = FillMode::PreserveAspectFit;
-    Status m_status = Status::Null;
-    bool m_smooth = true;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Gui

@@ -16,6 +16,7 @@
 #include <firmir/object.hpp>
 
 #include <functional>
+#include <memory>
 
 namespace Firmir {
 namespace Gui {
@@ -28,16 +29,19 @@ public:
     using Factory = std::function<Item*(Item* parent)>;
 
     explicit Component(Factory factory, Object* parent = nullptr)
-        : Object(parent), m_factory(std::move(factory)) {}
+        : Object(parent), d(std::make_unique<Impl>(Impl{std::move(factory)})) {}
 
     /// Instantiates the component under @p parent (may be nullptr for a
     /// detached tree). The created tree is owned through the parent.
     Item* createObject(Item* parent) {
-        return m_factory ? m_factory(parent) : nullptr;
+        return d->factory ? d->factory(parent) : nullptr;
     }
 
 private:
-    Factory m_factory;
+    struct Impl {
+        Factory factory;
+    };
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Gui

@@ -11,52 +11,176 @@ namespace Firmir {
 namespace Wayland {
 namespace Compositor {
 
+class WaylandShellSurface::Impl {
+public:
+    WaylandResource resource;
+    WaylandSurface* surface = nullptr;
+    std::string title;
+    Size size;
+};
+
+class WaylandShell::Impl {
+public:
+    std::vector<WaylandShellSurface*> surfaces;
+};
+
+class WaylandWlShell::Impl {
+public:
+    wl_global* global = nullptr;
+};
+
+class WaylandXdgToplevel::Impl {
+public:
+    bool maximized = false;
+    bool fullscreen = false;
+};
+
+class WaylandXdgSurface::Impl {
+public:
+    WaylandXdgToplevel* toplevel = nullptr;
+    WaylandXdgPopup* popup = nullptr;
+};
+
+class WaylandXdgShell::Impl {
+public:
+    std::vector<wl_resource*> resources;
+    wl_global* global = nullptr;
+};
+
+class WaylandXdgDecorationManagerV1::Impl {
+public:
+    Mode defaultMode = Mode::ClientSide;
+    wl_global* global = nullptr;
+};
+
+class WaylandXdgOutputV1::Impl {
+public:
+    WaylandOutput* output = nullptr;
+    WaylandResource resource;
+};
+
+class WaylandXdgOutputManagerV1::Impl {
+public:
+    std::vector<WaylandXdgOutputV1*> outputs;
+    wl_global* global = nullptr;
+};
+
+class WaylandViewporter::Impl {
+public:
+    wl_global* global = nullptr;
+};
+
+WaylandShellSurface::WaylandShellSurface(Object* parent)
+    : WaylandObject(parent), d(std::make_unique<Impl>()) {}
 WaylandShellSurface::~WaylandShellSurface() = default;
-void WaylandShellSurface::sendConfigure(int width, int height) { m_size = {width, height}; }
+WaylandResource WaylandShellSurface::resource() const { return d->resource; }
+void WaylandShellSurface::setResource(wl_resource* resource) {
+    d->resource = WaylandResource(resource);
+}
+WaylandSurface* WaylandShellSurface::surface() const { return d->surface; }
+void WaylandShellSurface::setSurface(WaylandSurface* surface) { d->surface = surface; }
+std::string WaylandShellSurface::title() const { return d->title; }
+void WaylandShellSurface::setTitle(std::string title) { d->title = std::move(title); }
+Size WaylandShellSurface::size() const { return d->size; }
+void WaylandShellSurface::setSize(Size size) { d->size = size; }
+
+WaylandShell::WaylandShell(Object* parent)
+    : WaylandCompositorExtension(parent), d(std::make_unique<Impl>()) {}
+WaylandShell::~WaylandShell() = default;
+std::vector<WaylandShellSurface*> WaylandShell::shellSurfaces() const { return d->surfaces; }
+void WaylandShell::registerSurface(WaylandShellSurface* surface) { d->surfaces.push_back(surface); }
+
+WaylandWlShell::WaylandWlShell(Object* parent)
+    : WaylandShell(parent), d(std::make_unique<Impl>()) {}
+
+WaylandXdgToplevel::WaylandXdgToplevel(Object* parent)
+    : WaylandShellSurface(parent), d(std::make_unique<Impl>()) {}
+WaylandXdgToplevel::~WaylandXdgToplevel() = default;
+bool WaylandXdgToplevel::maximized() const { return d->maximized; }
+bool WaylandXdgToplevel::fullscreen() const { return d->fullscreen; }
+
+WaylandXdgSurface::WaylandXdgSurface(Object* parent)
+    : WaylandShellSurfaceTemplate<>(parent), d(std::make_unique<Impl>()) {}
+WaylandXdgSurface::~WaylandXdgSurface() = default;
+WaylandXdgToplevel* WaylandXdgSurface::toplevel() const { return d->toplevel; }
+void WaylandXdgSurface::setToplevel(WaylandXdgToplevel* toplevel) { d->toplevel = toplevel; }
+WaylandXdgPopup* WaylandXdgSurface::popup() const { return d->popup; }
+void WaylandXdgSurface::setPopup(WaylandXdgPopup* popup) { d->popup = popup; }
+
+WaylandXdgShell::WaylandXdgShell(Object* parent)
+    : WaylandShell(parent), d(std::make_unique<Impl>()) {}
+
+WaylandXdgDecorationManagerV1::WaylandXdgDecorationManagerV1(Object* parent)
+    : WaylandCompositorExtension(parent), d(std::make_unique<Impl>()) {}
+void WaylandXdgDecorationManagerV1::setDefaultMode(Mode mode) { d->defaultMode = mode; }
+WaylandXdgDecorationManagerV1::Mode WaylandXdgDecorationManagerV1::defaultMode() const {
+    return d->defaultMode;
+}
+
+WaylandXdgOutputV1::WaylandXdgOutputV1(Object* parent)
+    : WaylandObject(parent), d(std::make_unique<Impl>()) {}
+WaylandXdgOutputV1::~WaylandXdgOutputV1() = default;
+WaylandOutput* WaylandXdgOutputV1::output() const { return d->output; }
+void WaylandXdgOutputV1::setOutput(WaylandOutput* output) { d->output = output; }
+WaylandResource WaylandXdgOutputV1::resource() const { return d->resource; }
+void WaylandXdgOutputV1::setResource(wl_resource* resource) {
+    d->resource = WaylandResource(resource);
+}
+
+WaylandXdgOutputManagerV1::WaylandXdgOutputManagerV1(Object* parent)
+    : WaylandCompositorExtension(parent), d(std::make_unique<Impl>()) {}
+const std::vector<WaylandXdgOutputV1*>& WaylandXdgOutputManagerV1::outputs() const {
+    return d->outputs;
+}
+
+WaylandViewporter::WaylandViewporter(Object* parent)
+    : WaylandCompositorExtension(parent), d(std::make_unique<Impl>()) {}
+
+void WaylandShellSurface::sendConfigure(int width, int height) { setSize({width, height}); }
 void WaylandWlShellSurface::sendConfigure(int width, int height) {
     setSize({width, height});
-    if (m_resource.handle())
-        wl_shell_surface_send_configure(m_resource.handle(), WL_SHELL_SURFACE_RESIZE_BOTTOM_RIGHT,
+    if (resource().handle())
+        wl_shell_surface_send_configure(resource().handle(), WL_SHELL_SURFACE_RESIZE_BOTTOM_RIGHT,
                                         width, height);
 }
 void WaylandXdgPopup::sendConfigure(int width, int height) {
     setSize({width, height});
-    if (m_resource.handle())
-        xdg_popup_send_configure(m_resource.handle(), 0, 0, width, height);
+    if (resource().handle())
+        xdg_popup_send_configure(resource().handle(), 0, 0, width, height);
 }
 void WaylandXdgPopup::sendPopupDone() {
-    if (m_resource.handle()) xdg_popup_send_popup_done(m_resource.handle());
+    if (resource().handle()) xdg_popup_send_popup_done(resource().handle());
 }
 void WaylandXdgToplevel::sendConfigure(int width, int height) {
     setSize({width, height});
-    if (!m_resource.handle()) return;
+    if (!resource().handle()) return;
     wl_array states{};
     std::uint32_t maximized = XDG_TOPLEVEL_STATE_MAXIMIZED;
     std::uint32_t fullscreen = XDG_TOPLEVEL_STATE_FULLSCREEN;
-    if (m_fullscreen) { states.data = &fullscreen; states.size = states.alloc = sizeof(fullscreen); }
-    else if (m_maximized) { states.data = &maximized; states.size = states.alloc = sizeof(maximized); }
-    xdg_toplevel_send_configure(m_resource.handle(), width, height, &states);
+    if (d->fullscreen) { states.data = &fullscreen; states.size = states.alloc = sizeof(fullscreen); }
+    else if (d->maximized) { states.data = &maximized; states.size = states.alloc = sizeof(maximized); }
+    xdg_toplevel_send_configure(resource().handle(), width, height, &states);
 }
 void WaylandXdgToplevel::sendClose() {
-    if (m_resource.handle()) xdg_toplevel_send_close(m_resource.handle());
+    if (resource().handle()) xdg_toplevel_send_close(resource().handle());
 }
 void WaylandXdgToplevel::setMaximized(bool maximized) {
-    m_maximized = maximized;
-    if (!maximized) m_fullscreen = false;
-    sendConfigure(m_size.width, m_size.height);
+    d->maximized = maximized;
+    if (!maximized) d->fullscreen = false;
+    sendConfigure(size().width, size().height);
 }
 void WaylandXdgToplevel::setFullscreen(bool fullscreen) {
-    m_fullscreen = fullscreen;
-    sendConfigure(m_size.width, m_size.height);
+    d->fullscreen = fullscreen;
+    sendConfigure(size().width, size().height);
 }
 void WaylandXdgToplevel::setMinimized() {}
 void WaylandXdgSurface::sendConfigure(int width, int height) {
     setSize({width, height});
-    if (m_toplevel) m_toplevel->sendConfigure(width, height);
-    if (m_resource.handle()) {
+    if (d->toplevel) d->toplevel->sendConfigure(width, height);
+    if (resource().handle()) {
         const std::uint32_t serial = wl_display_next_serial(
-            wl_client_get_display(wl_resource_get_client(m_resource.handle())));
-        xdg_surface_send_configure(m_resource.handle(), serial);
+            wl_client_get_display(wl_resource_get_client(resource().handle())));
+        xdg_surface_send_configure(resource().handle(), serial);
     }
 }
 
@@ -107,11 +231,11 @@ void bindWlShell(wl_client* client, void* data, std::uint32_t version, std::uint
 
 } // namespace
 
-WaylandWlShell::~WaylandWlShell() { if (m_global) wl_global_destroy(m_global); }
+WaylandWlShell::~WaylandWlShell() { if (d->global) wl_global_destroy(d->global); }
 bool WaylandWlShell::initialize(WaylandCompositor* compositor) {
     if (!WaylandShell::initialize(compositor)) return false;
-    m_global = compositor->display()->createGlobal(&wl_shell_interface, 1, bindWlShell, this);
-    return m_global != nullptr;
+    d->global = compositor->display()->createGlobal(&wl_shell_interface, 1, bindWlShell, this);
+    return d->global != nullptr;
 }
 
 struct XdgShellGlobal {
@@ -185,19 +309,19 @@ struct XdgShellGlobal {
                                                    std::min(6u, version), id);
         if (!resource) { wl_client_post_no_memory(client); return; }
         install(resource, shell, nullptr, dispatch);
-        shell->m_resources.push_back(resource);
+        shell->d->resources.push_back(resource);
     }
 };
 
-WaylandXdgShell::~WaylandXdgShell() { if (m_global) wl_global_destroy(m_global); }
+WaylandXdgShell::~WaylandXdgShell() { if (d->global) wl_global_destroy(d->global); }
 bool WaylandXdgShell::initialize(WaylandCompositor* compositor) {
     if (!WaylandShell::initialize(compositor)) return false;
-    m_global = compositor->display()->createGlobal(&xdg_wm_base_interface, 6,
+    d->global = compositor->display()->createGlobal(&xdg_wm_base_interface, 6,
                                                    XdgShellGlobal::bind, this);
-    return m_global != nullptr;
+    return d->global != nullptr;
 }
 void WaylandXdgShell::ping(std::uint32_t serialValue) {
-    for (wl_resource* resource : m_resources) xdg_wm_base_send_ping(resource, serialValue);
+    for (wl_resource* resource : d->resources) xdg_wm_base_send_ping(resource, serialValue);
 }
 
 namespace {
@@ -275,47 +399,47 @@ void bindXdgOutputManager(wl_client* client, void* data, std::uint32_t version, 
 
 } // namespace
 
-WaylandViewporter::~WaylandViewporter() { if (m_global) wl_global_destroy(m_global); }
+WaylandViewporter::~WaylandViewporter() { if (d->global) wl_global_destroy(d->global); }
 bool WaylandViewporter::initialize(WaylandCompositor* compositor) {
     if (!WaylandCompositorExtension::initialize(compositor)) return false;
-    m_global = compositor->display()->createGlobal(&wp_viewporter_interface, 1, bindViewporter, this);
-    return m_global != nullptr;
+    d->global = compositor->display()->createGlobal(&wp_viewporter_interface, 1, bindViewporter, this);
+    return d->global != nullptr;
 }
 WaylandXdgDecorationManagerV1::~WaylandXdgDecorationManagerV1() {
-    if (m_global) wl_global_destroy(m_global);
+    if (d->global) wl_global_destroy(d->global);
 }
 bool WaylandXdgDecorationManagerV1::initialize(WaylandCompositor* compositor) {
     if (!WaylandCompositorExtension::initialize(compositor)) return false;
-    m_global = compositor->display()->createGlobal(&zxdg_decoration_manager_v1_interface, 1,
+    d->global = compositor->display()->createGlobal(&zxdg_decoration_manager_v1_interface, 1,
                                                    bindDecoration, this);
-    return m_global != nullptr;
+    return d->global != nullptr;
 }
 WaylandXdgOutputManagerV1::~WaylandXdgOutputManagerV1() {
-    if (m_global) wl_global_destroy(m_global);
+    if (d->global) wl_global_destroy(d->global);
 }
 bool WaylandXdgOutputManagerV1::initialize(WaylandCompositor* compositor) {
     if (!WaylandCompositorExtension::initialize(compositor)) return false;
-    m_global = compositor->display()->createGlobal(&zxdg_output_manager_v1_interface, 3,
+    d->global = compositor->display()->createGlobal(&zxdg_output_manager_v1_interface, 3,
                                                    bindXdgOutputManager, this);
-    return m_global != nullptr;
+    return d->global != nullptr;
 }
 WaylandXdgOutputV1* WaylandXdgOutputManagerV1::addOutput(WaylandOutput* output) {
     auto* wrapper = new WaylandXdgOutputV1(this);
     wrapper->setOutput(output);
-    m_outputs.push_back(wrapper);
+    d->outputs.push_back(wrapper);
     return wrapper;
 }
 void WaylandXdgOutputV1::sendDescription() {
-    if (!m_resource.handle() || !m_output) return;
-    wl_resource* resource = m_resource.handle();
-    const Size size = m_output->size();
-    zxdg_output_v1_send_logical_position(resource, 0, 0);
-    zxdg_output_v1_send_logical_size(resource, size.width, size.height);
-    if (m_resource.version() >= 2) {
-        zxdg_output_v1_send_name(resource, m_output->model().c_str());
-        zxdg_output_v1_send_description(resource, "Firmir virtual output");
+    if (!resource().handle() || !d->output) return;
+    wl_resource* handle = resource().handle();
+    const Size size = d->output->size();
+    zxdg_output_v1_send_logical_position(handle, 0, 0);
+    zxdg_output_v1_send_logical_size(handle, size.width, size.height);
+    if (resource().version() >= 2) {
+        zxdg_output_v1_send_name(handle, d->output->model().c_str());
+        zxdg_output_v1_send_description(handle, "Firmir virtual output");
     }
-    zxdg_output_v1_send_done(resource);
+    zxdg_output_v1_send_done(handle);
 }
 } // namespace Compositor
 } // namespace Wayland

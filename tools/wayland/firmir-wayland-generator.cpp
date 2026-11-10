@@ -133,7 +133,7 @@ void emitClientEvents(std::string& out, const std::string& native,
     }
     out += "    };\n    void setListener(Listener listener) {\n        m_listener = "
            "std::move(listener);\n";
-    out += "        " + native + "_add_listener(m_handle, &s_listener, this);\n    }\n";
+    out += "        " + native + "_add_listener(handle(), &s_listener, this);\n    }\n";
     for (const Message& event : events) {
         std::vector<std::string> nativeArgParts;
         for (const Arg& arg : event.args)
@@ -215,7 +215,7 @@ std::string generateClient(const std::vector<Interface>& interfaces) {
             const std::string methodName = method(req.name);
             if (!newIds.empty()) {
                 out += "    " + result + " " + methodName + "(" + params + ");\n";
-                std::vector<std::string> callArgs{"m_handle"};
+                std::vector<std::string> callArgs{"handle()"};
                 for (const Arg* arg : ordinary)
                     callArgs.push_back(arg->name);
                 const std::string call =
@@ -226,7 +226,7 @@ std::string generateClient(const std::vector<Interface>& interfaces) {
                 continue;
             }
             out += "    " + result + " " + methodName + "(" + params + ") {\n";
-            std::vector<std::string> callArgs{"m_handle"};
+            std::vector<std::string> callArgs{"handle()"};
             for (const Arg* arg : ordinary)
                 callArgs.push_back(arg->name);
             out += "        " + native + "_" + req.name + "(" + join(callArgs, ", ") +

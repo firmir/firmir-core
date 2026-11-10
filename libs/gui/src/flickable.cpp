@@ -5,7 +5,21 @@
 namespace Firmir {
 namespace Gui {
 
-Flickable::Flickable(Object* parent) : Item(parent), m_content(new Item(this)) {
+class Flickable::Impl {
+public:
+    explicit Impl(Flickable* q) : content(new Item(q)) {}
+
+    Item* content;
+    float contentX = 0, contentY = 0;
+    float contentWidth = 0, contentHeight = 0;
+    float velocityX = 0, velocityY = 0;
+    Point lastPosition;
+    bool moving = false, dragging = false;
+    int timer = 0;
+};
+
+Flickable::Flickable(Object* parent)
+    : Item(parent), d(std::make_unique<Impl>(this)) {
     setClip(true);
     registerProperty<float>("contentX", &Flickable::contentX, &Flickable::setContentX);
     registerProperty<float>("contentY", &Flickable::contentY, &Flickable::setContentY);
@@ -13,44 +27,51 @@ Flickable::Flickable(Object* parent) : Item(parent), m_content(new Item(this)) {
     registerProperty<float>("contentHeight", &Flickable::contentHeight, &Flickable::setContentHeight);
 }
 Flickable::~Flickable() = default;
+Item* Flickable::contentItem() const { return d->content; }
+float Flickable::contentX() const { return d->contentX; }
+float Flickable::contentY() const { return d->contentY; }
+float Flickable::contentWidth() const { return d->contentWidth; }
+float Flickable::contentHeight() const { return d->contentHeight; }
+bool Flickable::isMoving() const { return d->moving; }
+bool Flickable::isDragging() const { return d->dragging; }
 void Flickable::updateContentPosition() {
     auto sceneLock = lockScene();
-    const float maximumX = std::max(0.0f, m_contentWidth - width());
-    const float maximumY = std::max(0.0f, m_contentHeight - height());
-    m_contentX = std::clamp(m_contentX, 0.0f, maximumX);
-    m_contentY = std::clamp(m_contentY, 0.0f, maximumY);
-    m_content->setGeometry(-m_contentX, -m_contentY, m_contentWidth, m_contentHeight);
+    const float maximumX = std::max(0.0f, d->contentWidth - width());
+    const float maximumY = std::max(0.0f, d->contentHeight - height());
+    d->contentX = std::clamp(d->contentX, 0.0f, maximumX);
+    d->contentY = std::clamp(d->contentY, 0.0f, maximumY);
+    d->content->setGeometry(-d->contentX, -d->contentY, d->contentWidth, d->contentHeight);
 }
 void Flickable::setContentX(float value) {
     auto sceneLock = lockScene();
-    const float old = m_contentX;
-    m_contentX = value;
+    const float old = d->contentX;
+    d->contentX = value;
     updateContentPosition();
-    if (old != m_contentX) { notifyPropertyChanged("contentX"); update(); }
+    if (old != d->contentX) { notifyPropertyChanged("contentX"); update(); }
 }
 void Flickable::setContentY(float value) {
     auto sceneLock = lockScene();
-    const float old = m_contentY;
-    m_contentY = value;
+    const float old = d->contentY;
+    d->contentY = value;
     updateContentPosition();
-    if (old != m_contentY) { notifyPropertyChanged("contentY"); update(); }
+    if (old != d->contentY) { notifyPropertyChanged("contentY"); update(); }
 }
 void Flickable::setContentWidth(float value) {
     auto sceneLock = lockScene();
-    m_contentWidth = std::max(0.0f, value);
+    d->contentWidth = std::max(0.0f, value);
     updateContentPosition();
     notifyPropertyChanged("contentWidth");
 }
 void Flickable::setContentHeight(float value) {
     auto sceneLock = lockScene();
-    m_contentHeight = std::max(0.0f, value);
+    d->contentHeight = std::max(0.0f, value);
     updateContentPosition();
     notifyPropertyChanged("contentHeight");
 }
 void Flickable::setMoving(bool moving) {
     auto sceneLock = lockScene();
-    if (m_moving == moving) return;
-    m_moving = moving;
+    if (d->moving == moving) return;
+    d->moving = moving;
     emitSignal(moving ? signalMovementStarted : signalMovementEnded);
 }
 void Flickable::mouseEvent(MouseEvent& event) {
@@ -59,13 +80,13 @@ void Flickable::mouseEvent(MouseEvent& event) {
         // unaccepted when the content cannot move, so it bubbles to an outer
         // Flickable (if any).
         constexpr float step = 48.0f;
-        const float maximumX = std::max(0.0f, m_contentWidth - width());
-        const float maximumY = std::max(0.0f, m_contentHeight - height());
+        const float maximumX = std::max(0.0f, d->contentWidth - width());
+        const float maximumY = std::max(0.0f, d->contentHeight - height());
         const float targetX =
-            std::clamp(m_contentX + event.delta.x * step, 0.0f, maximumX);
+            std::clamp(d->contentX + event.delta.x * step, 0.0f, maximumX);
         const float targetY =
-            std::clamp(m_contentY - event.delta.y * step, 0.0f, maximumY);
-        if (targetX != m_contentX || targetY != m_contentY) {
+            std::clamp(d->contentY - event.delta.y * step, 0.0f, maximumY);
+        if (targetX != d->contentX || targetY != d->contentY) {
             stop();
             setContentX(targetX);
             setContentY(targetY);
@@ -75,24 +96,24 @@ void Flickable::mouseEvent(MouseEvent& event) {
     }
     if (event.action == MouseEvent::Action::Press && event.button == 1) {
         stop();
-        m_dragging = true;
-        m_lastPosition = event.pos;
+        d->dragging = true;
+        d->lastPosition = event.pos;
         setMoving(true);
         event.accepted = true;
-    } else if (event.action == MouseEvent::Action::Move && m_dragging) {
-        const float dx = event.pos.x - m_lastPosition.x;
-        const float dy = event.pos.y - m_lastPosition.y;
-        m_lastPosition = event.pos;
-        setContentX(m_contentX - dx);
-        setContentY(m_contentY - dy);
-        m_velocityX = -dx * 60.0f;
-        m_velocityY = -dy * 60.0f;
+    } else if (event.action == MouseEvent::Action::Move && d->dragging) {
+        const float dx = event.pos.x - d->lastPosition.x;
+        const float dy = event.pos.y - d->lastPosition.y;
+        d->lastPosition = event.pos;
+        setContentX(d->contentX - dx);
+        setContentY(d->contentY - dy);
+        d->velocityX = -dx * 60.0f;
+        d->velocityY = -dy * 60.0f;
         event.accepted = true;
-    } else if (event.action == MouseEvent::Action::Release && m_dragging) {
-        m_dragging = false;
+    } else if (event.action == MouseEvent::Action::Release && d->dragging) {
+        d->dragging = false;
         event.accepted = true;
-        if (std::abs(m_velocityX) > 20 || std::abs(m_velocityY) > 20)
-            flick(m_velocityX, m_velocityY);
+        if (std::abs(d->velocityX) > 20 || std::abs(d->velocityY) > 20)
+            flick(d->velocityX, d->velocityY);
         else
             setMoving(false);
     }
@@ -109,30 +130,30 @@ void Flickable::touchEvent(TouchEvent& event) {
 }
 void Flickable::flick(float vx, float vy) {
     auto sceneLock = lockScene();
-    m_velocityX = vx;
-    m_velocityY = vy;
-    if (!m_timer) m_timer = startTimer(std::chrono::milliseconds(16));
+    d->velocityX = vx;
+    d->velocityY = vy;
+    if (!d->timer) d->timer = startTimer(std::chrono::milliseconds(16));
     setMoving(true);
 }
 void Flickable::stop() {
     auto sceneLock = lockScene();
-    if (m_timer) { killTimer(m_timer); m_timer = 0; }
-    m_velocityX = m_velocityY = 0;
-    m_dragging = false;
+    if (d->timer) { killTimer(d->timer); d->timer = 0; }
+    d->velocityX = d->velocityY = 0;
+    d->dragging = false;
     setMoving(false);
 }
 void Flickable::timerEvent(int timerId) {
     auto sceneLock = lockScene();
-    if (timerId != m_timer) return;
-    setContentX(m_contentX + m_velocityX * 0.016f);
-    setContentY(m_contentY + m_velocityY * 0.016f);
-    m_velocityX *= 0.92f;
-    m_velocityY *= 0.92f;
-    const bool atXBounds = m_contentX <= 0 || m_contentX >= std::max(0.0f, m_contentWidth - width());
-    const bool atYBounds = m_contentY <= 0 || m_contentY >= std::max(0.0f, m_contentHeight - height());
-    if (atXBounds) m_velocityX = 0;
-    if (atYBounds) m_velocityY = 0;
-    if (std::abs(m_velocityX) < 2 && std::abs(m_velocityY) < 2) stop();
+    if (timerId != d->timer) return;
+    setContentX(d->contentX + d->velocityX * 0.016f);
+    setContentY(d->contentY + d->velocityY * 0.016f);
+    d->velocityX *= 0.92f;
+    d->velocityY *= 0.92f;
+    const bool atXBounds = d->contentX <= 0 || d->contentX >= std::max(0.0f, d->contentWidth - width());
+    const bool atYBounds = d->contentY <= 0 || d->contentY >= std::max(0.0f, d->contentHeight - height());
+    if (atXBounds) d->velocityX = 0;
+    if (atYBounds) d->velocityY = 0;
+    if (std::abs(d->velocityX) < 2 && std::abs(d->velocityY) < 2) stop();
 }
 
 } // namespace Gui

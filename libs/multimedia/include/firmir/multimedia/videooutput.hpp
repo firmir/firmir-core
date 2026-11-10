@@ -35,9 +35,9 @@ public:
 
     /// The source is not owned; it must outlive the VideoOutput.
     void setSource(VideoSource* source);
-    VideoSource* source() const { return m_source; }
+    VideoSource* source() const;
 
-    FillMode fillMode() const { return m_fillMode; }
+    FillMode fillMode() const;
     void setFillMode(FillMode mode);
     /// String form for the dynamic property system / Firml
     /// ("Stretch", "PreserveAspectFit", "PreserveAspectCrop", "Pad").
@@ -48,8 +48,8 @@ public:
     /// Consumer-side counters: frames drawn straight from GPU memory versus
     /// frames that needed the CPU readback fallback (renderer without dma-buf
     /// import, or FIRMIR_MM_ZERO_COPY=0).
-    std::uint64_t zeroCopyFrames() const { return m_zeroCopyFrames; }
-    std::uint64_t cpuFallbackFrames() const { return m_cpuFallbackFrames; }
+    std::uint64_t zeroCopyFrames() const;
+    std::uint64_t cpuFallbackFrames() const;
 
 protected:
     void paint(Gui::Painter& painter) override;
@@ -59,29 +59,8 @@ private:
     void onFrame(const VideoFrame& frame);        // GUI thread: show the frame
     void onFrameDecoded(const VideoFrame& frame); // decoder thread: coalesce
 
-    VideoSource* m_source = nullptr;
-    Connection m_frameConnection;
-    // Latest decoded frame waiting for the GUI thread; guarded by the mutex.
-    // m_framePosted is set while a "frame pending" event sits in the GUI
-    // queue, so the decoder posts at most one event per consumed frame.
-    std::mutex m_pendingMutex;
-    VideoFrame m_pendingFrame;
-    bool m_pendingValid = false;
-    std::atomic<bool> m_framePosted{false};
-    VideoFrame m_frame;
-    /// Previously shown frame: its GPU surface is released one frame late so
-    /// the renderer never races a surface the decoder has reclaimed
-    /// (renderer -> decoder sync without fences; see doc/multimedia/zero-copy.md).
-    VideoFrame m_previous;
-    /// Per-frame generation for the CPU pixel upload cache.
-    std::uint64_t m_generation = 0;
-    /// Per-source generation for the GPU import cache: a pool surface is
-    /// imported once and reused until the source changes.
-    std::uint64_t m_sourceGeneration = 0;
-    VideoTextureCache m_gpuTextures;
-    FillMode m_fillMode = FillMode::PreserveAspectFit;
-    std::uint64_t m_zeroCopyFrames = 0;
-    std::uint64_t m_cpuFallbackFrames = 0;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Multimedia

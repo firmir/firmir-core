@@ -40,26 +40,39 @@ Render::DmaBufTextureDesc dmaBufDescFrom(const GpuFrameHandle& gpu) {
 
 } // namespace
 
+class VideoTextureCache::Impl {
+public:
+    struct Entry {
+        std::shared_ptr<Render::RenderTexture> texture;
+        std::uint64_t generation = 0;
+    };
+    std::map<const void*, Entry> entries; ///< by GpuFrameHandle::poolKey()
+    bool unsupported = false;
+};
+
+VideoTextureCache::VideoTextureCache() : d(std::make_unique<Impl>()) {}
+VideoTextureCache::~VideoTextureCache() = default;
+
 bool VideoTextureCache::draw(Gui::Painter& painter, const Gui::RectF& target,
                              const VideoFrame& frame,
                              std::uint64_t generation) {
-    if (m_unsupported || !frame.gpu)
+    if (d->unsupported || !frame.gpu)
         return false;
     Render::RenderDevice* device = painter.device();
     if (!device || !device->supportsDmaBufTextures()) {
-        m_unsupported = true; // don't re-probe on every frame
+        d->unsupported = true; // don't re-probe on every frame
         return false;
     }
     const void* key = reinterpret_cast<const void*>(frame.gpu->poolKey());
     if (!key)
         return false;
-    Entry& entry = m_entries[key];
+    Impl::Entry& entry = d->entries[key];
     if (!entry.texture || entry.generation != generation) {
         entry.texture.reset(device->importDmaBufTexture(dmaBufDescFrom(*frame.gpu)));
         entry.generation = generation;
         // Bound the cache: a handful of decoder pool surfaces at a time.
-        if (m_entries.size() > 16)
-            m_entries.clear(); // simple reset; survivors re-import
+        if (d->entries.size() > 16)
+            d->entries.clear(); // simple reset; survivors re-import
         if (!entry.texture)
             return false;
     }
@@ -67,7 +80,7 @@ bool VideoTextureCache::draw(Gui::Painter& painter, const Gui::RectF& target,
 }
 
 void VideoTextureCache::clear() {
-    m_entries.clear();
+    d->entries.clear();
 }
 
 } // namespace Multimedia

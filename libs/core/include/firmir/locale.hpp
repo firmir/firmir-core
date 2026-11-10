@@ -19,7 +19,7 @@
 #include <firmir/object.hpp>
 #include <firmir/string.hpp>
 
-#include <string>
+#include <memory>
 
 namespace Firmir {
 
@@ -36,10 +36,10 @@ public:
 
     /// The system language (backend / process locale), ignoring the
     /// application override.
-    String systemLanguage() const { return String(m_systemLanguage); }
+    String systemLanguage() const;
 
     /// True while language() tracks the system language (no override set).
-    bool followsSystemLanguage() const { return m_appLanguage.empty(); }
+    bool followsSystemLanguage() const;
 
     /// Installs the application language override and stops following the
     /// system language. An empty or unchanged value is ignored.
@@ -48,17 +48,14 @@ public:
     /// The loaded backend plugin instance (nullptr when none was found and
     /// the process-locale fallback is in use). Exposed for diagnostics and
     /// tests (e.g. the test backend is driven through dynamic properties).
-    LocaleBackend* backend() const { return m_backend; }
+    LocaleBackend* backend() const;
 
 private:
     explicit Locale(Object* parent = nullptr);
+    ~Locale() override;
 
-    void onSystemLanguageChanged(const String& language);
-
-    std::string m_systemLanguage;
-    std::string m_appLanguage; // empty while following the system
-    LocaleBackend* m_backend = nullptr; // child
-    Connection m_backendConnection;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Firmir

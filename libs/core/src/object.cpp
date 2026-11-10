@@ -102,7 +102,7 @@ struct SignalTable {
 
 } // namespace
 
-struct Connection::Control {
+struct Connection::Impl {
     std::weak_ptr<SignalTable> table;
     std::uint64_t id = 0;
 };
@@ -113,16 +113,16 @@ Connection& Connection::operator=(const Connection&) = default;
 Connection::Connection(Connection&&) noexcept = default;
 Connection& Connection::operator=(Connection&&) noexcept = default;
 
-bool Connection::valid() const noexcept { return m_control != nullptr; }
+bool Connection::valid() const noexcept { return d != nullptr; }
 
 bool Connection::disconnect() {
-    const std::shared_ptr<Control> control = m_control;
-    if (!control)
+    const std::shared_ptr<Impl> impl = d;
+    if (!impl)
         return false;
-    const std::shared_ptr<SignalTable> table = control->table.lock();
+    const std::shared_ptr<SignalTable> table = impl->table.lock();
     if (!table)
         return false;
-    return table->remove(control->id);
+    return table->remove(impl->id);
 }
 
 class Object::Impl {
@@ -445,10 +445,10 @@ Connection Object::connectImpl(const std::string& signal, Object* receiver,
     slot.mode = mode;
     slot.fn = std::move(slotFn);
     const std::uint64_t id = d->signals->add(signal, std::move(slot));
-    auto control = std::make_shared<Connection::Control>();
-    control->table = d->signals;
-    control->id = id;
-    return Connection(std::move(control));
+    auto impl = std::make_shared<Connection::Impl>();
+    impl->table = d->signals;
+    impl->id = id;
+    return Connection(std::move(impl));
 }
 
 void Object::emitImpl(const std::string& signal, const void* args,

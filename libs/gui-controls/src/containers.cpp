@@ -5,6 +5,44 @@
 namespace Firmir {
 namespace Gui {
 namespace Controls {
+
+class SplitHandle;
+
+class ScrollView::Impl {
+public:
+    Flickable* flickable = nullptr;
+    Item* scrollBar = nullptr;
+};
+
+class SplitView::Impl {
+public:
+    Orientation orientation = Orientation::Horizontal;
+    std::vector<Item*> items;
+    std::vector<SplitHandle*> handles;
+    std::vector<float> sizes;
+    float handleSize = 6;
+};
+
+class StackView::Impl {
+public:
+    std::vector<Item*> stack;
+};
+
+class SwipeView::Impl {
+public:
+    std::vector<Item*> pages;
+    Orientation orientation = Orientation::Horizontal;
+    Point pressPosition;
+    int currentIndex = -1;
+    bool interactive = true;
+    bool pressed = false;
+};
+
+class TabBar::Impl {
+public:
+    std::vector<Button*> tabs;
+    int currentIndex = -1;
+};
 namespace {
 
 class ScrollBarIndicator : public Item {
@@ -54,30 +92,32 @@ void registerScrollViewProperties(ScrollView* self) {
 } // namespace
 
 ScrollView::ScrollView(Object* parent)
-    : Item(parent), m_flickable(new Flickable(this)),
-      m_scrollBar(new ScrollBarIndicator(this, m_flickable)) {
-    m_flickable->fill(this);
-    m_scrollBar->setWidth(7);
-    m_scrollBar->setAnchorRight({this, AnchorLine::Right});
-    m_scrollBar->setAnchorTop({this, AnchorLine::Top});
-    m_scrollBar->setAnchorBottom({this, AnchorLine::Bottom});
+    : Item(parent), d(std::make_unique<Impl>()) {
+    d->flickable = new Flickable(this);
+    d->scrollBar = new ScrollBarIndicator(this, d->flickable);
+    d->flickable->fill(this);
+    d->scrollBar->setWidth(7);
+    d->scrollBar->setAnchorRight({this, AnchorLine::Right});
+    d->scrollBar->setAnchorTop({this, AnchorLine::Top});
+    d->scrollBar->setAnchorBottom({this, AnchorLine::Bottom});
     // Keep the scrollbar in sync while the content moves (drag, wheel, flick).
-    m_flickable->connect<std::string, std::any>(
+    d->flickable->connect<std::string, std::any>(
         this, signalPropertyChanged,
         [this](const std::string& name, const std::any&) {
             if (name == "contentY" || name == "contentX")
-                m_scrollBar->update();
+                d->scrollBar->update();
         },
         ConnectionMode::Direct);
     registerScrollViewProperties(this);
 }
 ScrollView::~ScrollView() = default;
-Item* ScrollView::contentItem() const { return m_flickable->contentItem(); }
+Item* ScrollView::contentItem() const { return d->flickable->contentItem(); }
+Flickable* ScrollView::flickable() const { return d->flickable; }
 void ScrollView::setContentSize(float width, float height) {
     auto sceneLock = lockScene();
-    m_flickable->setContentWidth(width);
-    m_flickable->setContentHeight(height);
-    m_scrollBar->update();
+    d->flickable->setContentWidth(width);
+    d->flickable->setContentHeight(height);
+    d->scrollBar->update();
 }
 
 class SplitHandle : public Item {
@@ -105,7 +145,8 @@ private:
     Point m_last;
 };
 
-SplitView::SplitView(Object* parent) : Item(parent) {
+SplitView::SplitView(Object* parent)
+    : Item(parent), d(std::make_unique<Impl>()) {
     registerPropertyImpl("orientation", typeid(String),
         [](const Object* o) -> std::any {
             return String(static_cast<const SplitView*>(o)->orientation() ==
@@ -116,71 +157,77 @@ SplitView::SplitView(Object* parent) : Item(parent) {
                 s == "Vertical" ? Orientation::Vertical : Orientation::Horizontal); });
 }
 SplitView::~SplitView() = default;
+SplitView::Orientation SplitView::orientation() const { return d->orientation; }
+int SplitView::count() const { return static_cast<int>(d->items.size()); }
+std::vector<float> SplitView::sizes() const { return d->sizes; }
 void SplitView::setOrientation(Orientation orientation) {
     auto sceneLock = lockScene();
-    m_orientation = orientation; layout(); notifyPropertyChanged("orientation");
+    d->orientation = orientation; layout(); notifyPropertyChanged("orientation");
 }
 void SplitView::addItem(Item* item) {
     auto sceneLock = lockScene();
     if (!item) return;
     item->setParent(this);
-    m_items.push_back(item);
-    m_sizes.push_back(160);
-    if (m_items.size() > 1)
-        m_handles.push_back(new SplitHandle(this, static_cast<int>(m_items.size()) - 2));
+    d->items.push_back(item);
+    d->sizes.push_back(160);
+    if (d->items.size() > 1)
+        d->handles.push_back(new SplitHandle(this, static_cast<int>(d->items.size()) - 2));
     layout();
 }
 Item* SplitView::itemAt(int index) const {
-    return index >= 0 && index < count() ? m_items[static_cast<std::size_t>(index)] : nullptr;
+    return index >= 0 && index < count() ? d->items[static_cast<std::size_t>(index)] : nullptr;
 }
 void SplitView::setSizes(const std::vector<float>& sizes) {
     auto sceneLock = lockScene();
-    m_sizes = sizes;
-    m_sizes.resize(m_items.size(), 160);
+    d->sizes = sizes;
+    d->sizes.resize(d->items.size(), 160);
     layout();
 }
 void SplitView::layout() {
     auto sceneLock = lockScene();
-    if (m_items.empty()) return;
+    if (d->items.empty()) return;
     const float available = std::max(1.0f,
-        (m_orientation == Orientation::Horizontal ? width() : height()) -
-        m_handleSize * m_handles.size());
+        (d->orientation == Orientation::Horizontal ? width() : height()) -
+        d->handleSize * d->handles.size());
     float total = 0;
-    for (float size : m_sizes) total += std::max(20.0f, size);
+    for (float size : d->sizes) total += std::max(20.0f, size);
     float position = 0;
-    for (std::size_t i = 0; i < m_items.size(); ++i) {
-        const float size = available * std::max(20.0f, m_sizes[i]) / total;
-        if (m_orientation == Orientation::Horizontal)
-            m_items[i]->setGeometry(position, 0, size, height());
+    for (std::size_t i = 0; i < d->items.size(); ++i) {
+        const float size = available * std::max(20.0f, d->sizes[i]) / total;
+        if (d->orientation == Orientation::Horizontal)
+            d->items[i]->setGeometry(position, 0, size, height());
         else
-            m_items[i]->setGeometry(0, position, width(), size);
+            d->items[i]->setGeometry(0, position, width(), size);
         position += size;
-        if (i < m_handles.size()) {
-            if (m_orientation == Orientation::Horizontal)
-                m_handles[i]->setGeometry(position, 0, m_handleSize, height());
+        if (i < d->handles.size()) {
+            if (d->orientation == Orientation::Horizontal)
+                d->handles[i]->setGeometry(position, 0, d->handleSize, height());
             else
-                m_handles[i]->setGeometry(0, position, width(), m_handleSize);
-            position += m_handleSize;
+                d->handles[i]->setGeometry(0, position, width(), d->handleSize);
+            position += d->handleSize;
         }
     }
 }
 void SplitView::moveHandle(int index, float delta) {
     auto sceneLock = lockScene();
-    if (index < 0 || static_cast<std::size_t>(index + 1) >= m_sizes.size()) return;
+    if (index < 0 || static_cast<std::size_t>(index + 1) >= d->sizes.size()) return;
     const auto i = static_cast<std::size_t>(index);
-    const float old = m_sizes[i];
-    m_sizes[i] = std::max(30.0f, m_sizes[i] + delta);
-    m_sizes[i + 1] = std::max(30.0f, m_sizes[i + 1] - (m_sizes[i] - old));
+    const float old = d->sizes[i];
+    d->sizes[i] = std::max(30.0f, d->sizes[i] + delta);
+    d->sizes[i + 1] = std::max(30.0f, d->sizes[i + 1] - (d->sizes[i] - old));
     layout();
 }
 
-StackView::StackView(Object* parent) : Item(parent) {
+StackView::StackView(Object* parent)
+    : Item(parent), d(std::make_unique<Impl>()) {
     setClip(true);
     registerPropertyImpl("depth", typeid(int),
         [](const Object* o) -> std::any { return static_cast<const StackView*>(o)->depth(); },
         [](Object*, const std::any&) { throw std::invalid_argument("depth is read-only"); });
 }
 StackView::~StackView() = default;
+int StackView::depth() const { return static_cast<int>(d->stack.size()); }
+Item* StackView::currentItem() const { return d->stack.empty() ? nullptr : d->stack.back(); }
 void StackView::push(Item* item) {
     auto sceneLock = lockScene();
     if (!item) return;
@@ -188,15 +235,15 @@ void StackView::push(Item* item) {
     item->setParent(this);
     item->fill(this);
     item->setVisible(true);
-    m_stack.push_back(item);
+    d->stack.push_back(item);
     notifyPropertyChanged("depth");
     notifyPropertyChanged("currentItem");
 }
 Item* StackView::pop() {
     auto sceneLock = lockScene();
-    if (m_stack.empty()) return nullptr;
-    Item* removed = m_stack.back();
-    m_stack.pop_back();
+    if (d->stack.empty()) return nullptr;
+    Item* removed = d->stack.back();
+    d->stack.pop_back();
     removed->setVisible(false);
     if (currentItem()) currentItem()->setVisible(true);
     notifyPropertyChanged("depth");
@@ -207,13 +254,14 @@ void StackView::replace(Item* item) {
     auto sceneLock = lockScene(); clear(); push(item); }
 void StackView::clear() {
     auto sceneLock = lockScene();
-    for (Item* item : m_stack) item->setVisible(false);
-    m_stack.clear();
+    for (Item* item : d->stack) item->setVisible(false);
+    d->stack.clear();
     notifyPropertyChanged("depth");
     notifyPropertyChanged("currentItem");
 }
 
-SwipeView::SwipeView(Object* parent) : Item(parent) {
+SwipeView::SwipeView(Object* parent)
+    : Item(parent), d(std::make_unique<Impl>()) {
     setClip(true);
     registerProperty<int>("currentIndex", &SwipeView::currentIndex, &SwipeView::setCurrentIndex);
     registerProperty<bool>("interactive", &SwipeView::interactive, &SwipeView::setInteractive);
@@ -222,38 +270,42 @@ SwipeView::SwipeView(Object* parent) : Item(parent) {
         [](Object*, const std::any&) { throw std::invalid_argument("count is read-only"); });
 }
 SwipeView::~SwipeView() = default;
+int SwipeView::count() const { return static_cast<int>(d->pages.size()); }
+int SwipeView::currentIndex() const { return d->currentIndex; }
+bool SwipeView::interactive() const { return d->interactive; }
+void SwipeView::setInteractive(bool enabled) { auto lock = lockScene(); d->interactive = enabled; }
 void SwipeView::addItem(Item* item) {
     auto sceneLock = lockScene();
     if (!item) return;
     item->setParent(this);
     item->fill(this);
-    m_pages.push_back(item);
-    if (m_currentIndex < 0) setCurrentIndex(0);
+    d->pages.push_back(item);
+    if (d->currentIndex < 0) setCurrentIndex(0);
     else item->setVisible(false);
     notifyPropertyChanged("count");
 }
 Item* SwipeView::itemAt(int index) const {
-    return index >= 0 && index < count() ? m_pages[static_cast<std::size_t>(index)] : nullptr;
+    return index >= 0 && index < count() ? d->pages[static_cast<std::size_t>(index)] : nullptr;
 }
-Item* SwipeView::currentItem() const { return itemAt(m_currentIndex); }
+Item* SwipeView::currentItem() const { return itemAt(d->currentIndex); }
 void SwipeView::setCurrentIndex(int index) {
     auto sceneLock = lockScene();
-    if (m_pages.empty() || index < 0 || index >= count() || index == m_currentIndex) return;
-    m_currentIndex = index;
-    for (int i = 0; i < count(); ++i) m_pages[static_cast<std::size_t>(i)]->setVisible(i == index);
+    if (d->pages.empty() || index < 0 || index >= count() || index == d->currentIndex) return;
+    d->currentIndex = index;
+    for (int i = 0; i < count(); ++i) d->pages[static_cast<std::size_t>(i)]->setVisible(i == index);
     update();
     notifyPropertyChanged("currentIndex");
 }
 void SwipeView::mouseEvent(MouseEvent& event) {
-    if (!m_interactive) return;
+    if (!d->interactive) return;
     if (event.action == MouseEvent::Action::Press && event.button == 1) {
-        m_pressed = true; m_pressPosition = event.pos; event.accepted = true;
-    } else if (event.action == MouseEvent::Action::Release && m_pressed) {
-        m_pressed = false;
-        const float delta = m_orientation == Orientation::Horizontal
-            ? event.pos.x - m_pressPosition.x : event.pos.y - m_pressPosition.y;
-        if (delta < -30) setCurrentIndex(std::min(count() - 1, m_currentIndex + 1));
-        else if (delta > 30) setCurrentIndex(std::max(0, m_currentIndex - 1));
+        d->pressed = true; d->pressPosition = event.pos; event.accepted = true;
+    } else if (event.action == MouseEvent::Action::Release && d->pressed) {
+        d->pressed = false;
+        const float delta = d->orientation == Orientation::Horizontal
+            ? event.pos.x - d->pressPosition.x : event.pos.y - d->pressPosition.y;
+        if (delta < -30) setCurrentIndex(std::min(count() - 1, d->currentIndex + 1));
+        else if (delta > 30) setCurrentIndex(std::max(0, d->currentIndex - 1));
         event.accepted = true;
     }
 }
@@ -266,7 +318,8 @@ void SwipeView::touchEvent(TouchEvent& event) {
     mouseEvent(mouse); event.accepted = mouse.accepted;
 }
 
-TabBar::TabBar(Object* parent) : Item(parent) {
+TabBar::TabBar(Object* parent)
+    : Item(parent), d(std::make_unique<Impl>()) {
     setImplicitHeight(40);
     registerProperty<int>("currentIndex", &TabBar::currentIndex, &TabBar::setCurrentIndex);
     registerPropertyImpl("count", typeid(int),
@@ -274,17 +327,19 @@ TabBar::TabBar(Object* parent) : Item(parent) {
         [](Object*, const std::any&) { throw std::invalid_argument("count is read-only"); });
 }
 TabBar::~TabBar() = default;
+int TabBar::count() const { return static_cast<int>(d->tabs.size()); }
+int TabBar::currentIndex() const { return d->currentIndex; }
 void TabBar::addTab(String text) {
     auto sceneLock = lockScene();
     auto* button = new Button(this);
     button->setCheckable(true);
     button->setText(std::move(text));
     button->connect<>(button, AbstractButton::signalClicked, [this, button] {
-        const auto found = std::find(m_tabs.begin(), m_tabs.end(), button);
-        if (found != m_tabs.end()) setCurrentIndex(static_cast<int>(found - m_tabs.begin()));
+        const auto found = std::find(d->tabs.begin(), d->tabs.end(), button);
+        if (found != d->tabs.end()) setCurrentIndex(static_cast<int>(found - d->tabs.begin()));
     }, ConnectionMode::Direct);
-    m_tabs.push_back(button);
-    if (m_currentIndex < 0) setCurrentIndex(0);
+    d->tabs.push_back(button);
+    if (d->currentIndex < 0) setCurrentIndex(0);
     layout();
     notifyPropertyChanged("count");
 }
@@ -293,22 +348,22 @@ String TabBar::textAt(int index) const {
     return button ? button->text() : String();
 }
 Button* TabBar::tabAt(int index) const {
-    return index >= 0 && index < count() ? m_tabs[static_cast<std::size_t>(index)] : nullptr;
+    return index >= 0 && index < count() ? d->tabs[static_cast<std::size_t>(index)] : nullptr;
 }
 void TabBar::setCurrentIndex(int index) {
     auto sceneLock = lockScene();
     if (index < 0 || index >= count()) return;
-    m_currentIndex = index;
-    for (int i = 0; i < count(); ++i) m_tabs[static_cast<std::size_t>(i)]->setChecked(i == index);
+    d->currentIndex = index;
+    for (int i = 0; i < count(); ++i) d->tabs[static_cast<std::size_t>(i)]->setChecked(i == index);
     notifyPropertyChanged("currentIndex");
     emitSignal(signalCurrentIndexChanged, index);
 }
 void TabBar::layout() {
     auto sceneLock = lockScene();
-    if (m_tabs.empty()) return;
-    const float tabWidth = (width() > 0 ? width() : 120.0f * m_tabs.size()) / m_tabs.size();
-    for (std::size_t i = 0; i < m_tabs.size(); ++i)
-        m_tabs[i]->setGeometry(i * tabWidth, 0, tabWidth, height() > 0 ? height() : 40);
+    if (d->tabs.empty()) return;
+    const float tabWidth = (width() > 0 ? width() : 120.0f * d->tabs.size()) / d->tabs.size();
+    for (std::size_t i = 0; i < d->tabs.size(); ++i)
+        d->tabs[i]->setGeometry(i * tabWidth, 0, tabWidth, height() > 0 ? height() : 40);
 }
 } // namespace Controls
 } // namespace Gui

@@ -139,28 +139,43 @@ LocaleBackend* loadBackend(Object* host) {
 
 } // namespace
 
-Locale::Locale(Object* parent) : Object(parent) {
+class Locale::Impl {
+public:
+    explicit Impl(Locale* q) : q(q) {}
+
+    void onSystemLanguageChanged(const String& language);
+
+    Locale* q;
+    std::string systemLanguage;
+    std::string appLanguage; // empty while following the system
+    LocaleBackend* backend = nullptr; // child
+    Connection backendConnection;
+};
+
+Locale::Locale(Object* parent) : Object(parent), d(std::make_unique<Impl>(this)) {
     // FIRMIR_LANGUAGE is an explicit override and wins over the backend.
     const char* forced = std::getenv("FIRMIR_LANGUAGE");
     if (forced && *forced) {
-        m_systemLanguage = forced;
+        d->systemLanguage = forced;
     } else {
-        m_backend = loadBackend(this);
-        m_systemLanguage =
-            m_backend ? m_backend->language().toStdString() : envLanguage();
-        if (m_backend) {
-            m_backendConnection = m_backend->connect<String>(
+        d->backend = loadBackend(this);
+        d->systemLanguage =
+            d->backend ? d->backend->language().toStdString() : envLanguage();
+        if (d->backend) {
+            d->backendConnection = d->backend->connect<String>(
                 this, LocaleBackend::signalLanguageChanged,
                 [this](const String& language) {
-                    onSystemLanguageChanged(language);
+                    d->onSystemLanguageChanged(language);
                 });
         }
     }
-    if (m_systemLanguage.empty())
-        m_systemLanguage = envLanguage();
+    if (d->systemLanguage.empty())
+        d->systemLanguage = envLanguage();
     registerProperty<String>("language", &Locale::language,
                              &Locale::setLanguage);
 }
+
+Locale::~Locale() = default;
 
 Locale* Locale::instance() {
     static Locale* locale = [] {
@@ -174,27 +189,33 @@ Locale* Locale::instance() {
 }
 
 String Locale::language() const {
-    return String(m_appLanguage.empty() ? m_systemLanguage : m_appLanguage);
+    return String(d->appLanguage.empty() ? d->systemLanguage : d->appLanguage);
 }
+
+String Locale::systemLanguage() const { return String(d->systemLanguage); }
+
+bool Locale::followsSystemLanguage() const { return d->appLanguage.empty(); }
+
+LocaleBackend* Locale::backend() const { return d->backend; }
 
 void Locale::setLanguage(String language) {
     const std::string lang = language.toStdString();
-    if (lang.empty() || lang == m_appLanguage)
+    if (lang.empty() || lang == d->appLanguage)
         return;
-    m_appLanguage = lang;
+    d->appLanguage = lang;
     // The application override wins: stop following the backend.
-    m_backendConnection.disconnect();
+    d->backendConnection.disconnect();
     notifyPropertyChanged("language");
 }
 
-void Locale::onSystemLanguageChanged(const String& language) {
+void Locale::Impl::onSystemLanguageChanged(const String& language) {
     const std::string lang = language.toStdString();
-    if (lang.empty() || lang == m_systemLanguage)
+    if (lang.empty() || lang == systemLanguage)
         return;
-    m_systemLanguage = lang;
+    systemLanguage = lang;
     // With an application override the backend was disconnected and this
     // never runs; while following the system the change propagates.
-    notifyPropertyChanged("language");
+    q->notifyPropertyChanged("language");
 }
 
 } // namespace Firmir

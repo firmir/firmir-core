@@ -113,14 +113,8 @@ public:
     std::uint64_t totalWaitUs() const;
 
 private:
-    AcquireFn m_acquireFn;
-    void** m_slots = nullptr;
-    int m_capacity = 0;
-    int m_free = 0;
-    mutable std::mutex m_mutex;
-    std::atomic<std::uint64_t> m_acquired{0};
-    std::atomic<std::uint64_t> m_dropped{0};
-    std::atomic<std::uint64_t> m_waitUs{0};
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 /**

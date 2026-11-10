@@ -19,6 +19,12 @@
 namespace Firmir {
 namespace Multimedia {
 
+class VideoSource::Impl {
+public:
+    std::unique_ptr<VideoSourceBackend> backend;
+};
+
+
 namespace {
 
 const LoggingCategory& lcMm() {
@@ -168,7 +174,7 @@ VideoSource::VideoSource(Object* parent)
     : VideoSource(String("auto"), parent) {}
 
 VideoSource::VideoSource(const String& backend, Object* parent)
-    : Object(parent) {
+    : Object(parent), d(std::make_unique<Impl>()) {
     std::string name = backend.toStdString();
     if (name.empty() || name == "auto") {
         const auto backends = availableVideoSourceBackends();
@@ -178,71 +184,72 @@ VideoSource::VideoSource(const String& backend, Object* parent)
         return;
     const MmSourcePlugin* plugin = loadPlugin(name);
     if (plugin && plugin->create)
-        m_backend.reset(plugin->create(this));
+        d->backend.reset(plugin->create(this));
 }
 
 VideoSource::VideoSource(std::unique_ptr<VideoSourceBackend> backend,
                          Object* parent)
-    : Object(parent), m_backend(std::move(backend)) {
-    if (m_backend)
-        m_backend->setHost(this);
+    : Object(parent), d(std::make_unique<Impl>()) {
+    d->backend = std::move(backend);
+    if (d->backend)
+        d->backend->setHost(this);
 }
 
 VideoSource::~VideoSource() = default;
 
-bool VideoSource::isValid() const { return m_backend != nullptr; }
+bool VideoSource::isValid() const { return d->backend != nullptr; }
 
 bool VideoSource::open(const String& uri) {
-    if (!m_backend) {
+    if (!d->backend) {
         emitErrorMessage(String("no multimedia backend available"));
         return false;
     }
-    return m_backend->open(uri);
+    return d->backend->open(uri);
 }
 void VideoSource::close() {
-    if (m_backend)
-        m_backend->close();
+    if (d->backend)
+        d->backend->close();
 }
 void VideoSource::play() {
-    if (m_backend)
-        m_backend->play();
+    if (d->backend)
+        d->backend->play();
 }
 void VideoSource::pause() {
-    if (m_backend)
-        m_backend->pause();
+    if (d->backend)
+        d->backend->pause();
 }
 void VideoSource::stop() {
-    if (m_backend)
-        m_backend->stop();
+    if (d->backend)
+        d->backend->stop();
 }
 VideoSource::State VideoSource::state() const {
-    return m_backend ? m_backend->state() : State::Stopped;
+    return d->backend ? d->backend->state() : State::Stopped;
 }
 double VideoSource::duration() const {
-    return m_backend ? m_backend->duration() : -1.0;
+    return d->backend ? d->backend->duration() : -1.0;
 }
 double VideoSource::position() const {
-    return m_backend ? m_backend->position() : 0.0;
+    return d->backend ? d->backend->position() : 0.0;
 }
 void VideoSource::seek(double seconds) {
-    if (m_backend)
-        m_backend->seek(seconds);
+    if (d->backend)
+        d->backend->seek(seconds);
 }
 void VideoSource::videoSize(int& width, int& height) const {
-    if (m_backend)
-        m_backend->videoSize(width, height);
+    if (d->backend)
+        d->backend->videoSize(width, height);
     else {
         width = 0;
         height = 0;
     }
 }
-bool VideoSource::hasVideo() const { return m_backend && m_backend->hasVideo(); }
-bool VideoSource::hasAudio() const { return m_backend && m_backend->hasAudio(); }
+bool VideoSource::hasVideo() const { return d->backend && d->backend->hasVideo(); }
+bool VideoSource::hasAudio() const { return d->backend && d->backend->hasAudio(); }
 const char* VideoSource::backendName() const {
-    return m_backend ? m_backend->backendName() : "none";
+    return d->backend ? d->backend->backendName() : "none";
 }
 VideoMetrics VideoSource::metrics() const {
-    return m_backend ? m_backend->metrics() : VideoMetrics{};
+    return d->backend ? d->backend->metrics() : VideoMetrics{};
 }
 
 void VideoSource::emitFrameReady(VideoFrame frame) {

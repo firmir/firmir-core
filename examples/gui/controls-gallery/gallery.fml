@@ -74,10 +74,12 @@ Firmir.Gui.Window {
         width: 36
         height: 32
         text: "X"
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.rightMargin: 6
-        anchors.topMargin: 6
+        anchors {
+            right: parent.right
+            top: parent.top
+            rightMargin: 6
+            topMargin: 6
+        }
         onClicked: App.close()
     }
     Button {
@@ -85,33 +87,39 @@ Firmir.Gui.Window {
         width: 36
         height: 32
         text: "[]"
-        anchors.right: closeButton.left
-        anchors.top: parent.top
-        anchors.rightMargin: 4
-        anchors.topMargin: 6
+        anchors {
+            right: closeButton.left
+            top: parent.top
+            rightMargin: 4
+            topMargin: 6
+        }
         onClicked: App.toggleMaximized()
     }
     Button {
         width: 36
         height: 32
         text: "_"
-        anchors.right: maxButton.left
-        anchors.top: parent.top
-        anchors.rightMargin: 4
-        anchors.topMargin: 6
+        anchors {
+            right: maxButton.left
+            top: parent.top
+            rightMargin: 4
+            topMargin: 6
+        }
         onClicked: App.showMinimized()
     }
 
     // ------------------------- menu page (page -1) -------------------------
     ScrollView {
         id: menuPage
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        anchors.topMargin: 46
-        anchors.leftMargin: 8
-        anchors.rightMargin: 8
+        anchors {
+            left: parent.left
+            right: parent.right
+            top: parent.top
+            bottom: parent.bottom
+            topMargin: 46
+            leftMargin: 8
+            rightMargin: 8
+        }
         visible: gallery.page == -1
         contentWidth: 720
         contentHeight: 380
@@ -133,8 +141,10 @@ Firmir.Gui.Window {
 
     // ------------------------- page 0: Button ---------------------------
     Item {
-        anchors.fill: parent
-        anchors.topMargin: 46
+        anchors {
+            fill: parent
+            topMargin: 46
+        }
         visible: gallery.page == 0
         property number clicks: 0
 
@@ -187,8 +197,10 @@ Firmir.Gui.Window {
 
     // ------------------ page 1: CheckBox / RadioButton / Switch -----------
     Item {
-        anchors.fill: parent
-        anchors.topMargin: 46
+        anchors {
+            fill: parent
+            topMargin: 46
+        }
         visible: gallery.page == 1
 
         Button {
@@ -248,8 +260,10 @@ Firmir.Gui.Window {
 
     // ------------------------- page 2: ScrollView --------------------------
     Item {
-        anchors.fill: parent
-        anchors.topMargin: 46
+        anchors {
+            fill: parent
+            topMargin: 46
+        }
         visible: gallery.page == 2
 
         Button {
@@ -301,8 +315,10 @@ Firmir.Gui.Window {
 
     // ------------------------- page 3: SplitView ---------------------------
     Item {
-        anchors.fill: parent
-        anchors.topMargin: 46
+        anchors {
+            fill: parent
+            topMargin: 46
+        }
         visible: gallery.page == 3
 
         Button {
@@ -352,8 +368,10 @@ Firmir.Gui.Window {
 
     // ------------------------- page 4: StackView ---------------------------
     Item {
-        anchors.fill: parent
-        anchors.topMargin: 46
+        anchors {
+            fill: parent
+            topMargin: 46
+        }
         visible: gallery.page == 4
 
         Button {
@@ -419,8 +437,10 @@ Firmir.Gui.Window {
 
     // ------------------------- page 5: SwipeView ---------------------------
     Item {
-        anchors.fill: parent
-        anchors.topMargin: 46
+        anchors {
+            fill: parent
+            topMargin: 46
+        }
         visible: gallery.page == 5
 
         Button {
@@ -496,8 +516,10 @@ Firmir.Gui.Window {
 
     // --------------------------- page 6: TabBar ----------------------------
     Item {
-        anchors.fill: parent
-        anchors.topMargin: 46
+        anchors {
+            fill: parent
+            topMargin: 46
+        }
         visible: gallery.page == 6
 
         Button {
@@ -571,8 +593,10 @@ Firmir.Gui.Window {
 
     // ------------------- page 7: BusyIndicator & ProgressBar ----------------
     Item {
-        anchors.fill: parent
-        anchors.topMargin: 46
+        anchors {
+            fill: parent
+            topMargin: 46
+        }
         visible: gallery.page == 7
 
         Button {
@@ -638,8 +662,10 @@ Firmir.Gui.Window {
 
     // ------------------------ page 8: Text & Fonts -------------------------
     Item {
-        anchors.fill: parent
-        anchors.topMargin: 46
+        anchors {
+            fill: parent
+            topMargin: 46
+        }
         visible: gallery.page == 8
 
         Button {
@@ -682,8 +708,10 @@ Firmir.Gui.Window {
 
     // ---------------------------- page 9: Image ----------------------------
     Item {
-        anchors.fill: parent
-        anchors.topMargin: 46
+        anchors {
+            fill: parent
+            topMargin: 46
+        }
         visible: gallery.page == 9
 
         Button {
@@ -735,8 +763,10 @@ Firmir.Gui.Window {
 
     // ------------------------- page 10: ShaderEffect -------------------------
     Item {
-        anchors.fill: parent
-        anchors.topMargin: 46
+        anchors {
+            fill: parent
+            topMargin: 46
+        }
         visible: gallery.page == 10
 
         Button {
@@ -795,8 +825,10 @@ Firmir.Gui.Window {
 
     // --------------------------- page 11: MouseArea --------------------------
     Item {
-        anchors.fill: parent
-        anchors.topMargin: 46
+        anchors {
+            fill: parent
+            topMargin: 46
+        }
         visible: gallery.page == 11
 
         Button {
@@ -842,8 +874,10 @@ Firmir.Gui.Window {
 
     // --------------------------- page 12: Flickable --------------------------
     Item {
-        anchors.fill: parent
-        anchors.topMargin: 46
+        anchors {
+            fill: parent
+            topMargin: 46
+        }
         visible: gallery.page == 12
 
         Button {

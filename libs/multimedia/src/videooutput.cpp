@@ -15,7 +15,35 @@ constexpr int kFramePendingEvent = Event::User + 400;
 
 } // namespace
 
-VideoOutput::VideoOutput(Object* parent) : Gui::Item(parent) {
+
+class VideoOutput::Impl {
+public:
+    VideoSource* source = nullptr;
+    Connection frameConnection;
+    // Latest decoded frame waiting for the GUI thread; guarded by the mutex.
+    // framePosted is set while a "frame pending" event sits in the GUI
+    // queue, so the decoder posts at most one event per consumed frame.
+    std::mutex pendingMutex;
+    VideoFrame pendingFrame;
+    bool pendingValid = false;
+    std::atomic<bool> framePosted{false};
+    VideoFrame frame;
+    /// Previously shown frame: its GPU surface is released one frame late so
+    /// the renderer never races a surface the decoder has reclaimed
+    /// (renderer -> decoder sync without fences; see doc/multimedia/zero-copy.md).
+    VideoFrame previous;
+    /// Per-frame generation for the CPU pixel upload cache.
+    std::uint64_t generation = 0;
+    /// Per-source generation for the GPU import cache: a pool surface is
+    /// imported once and reused until the source changes.
+    std::uint64_t sourceGeneration = 0;
+    VideoTextureCache gpuTextures;
+    FillMode fillMode = FillMode::PreserveAspectFit;
+    std::uint64_t zeroCopyFrames = 0;
+    std::uint64_t cpuFallbackFrames = 0;
+};
+
+VideoOutput::VideoOutput(Object* parent) : Gui::Item(parent), d(std::make_unique<Impl>()) {
     setClip(true);
     registerPropertyImpl("fillMode", typeid(Firmir::String),
         [](const Object* o) -> std::any { return static_cast<const VideoOutput*>(o)->fillModeName(); },
@@ -24,24 +52,29 @@ VideoOutput::VideoOutput(Object* parent) : Gui::Item(parent) {
 
 VideoOutput::~VideoOutput() { setSource(nullptr); }
 
+VideoSource* VideoOutput::source() const { return d->source; }
+VideoOutput::FillMode VideoOutput::fillMode() const { return d->fillMode; }
+std::uint64_t VideoOutput::zeroCopyFrames() const { return d->zeroCopyFrames; }
+std::uint64_t VideoOutput::cpuFallbackFrames() const { return d->cpuFallbackFrames; }
+
 void VideoOutput::setSource(VideoSource* source) {
-    if (m_source == source)
+    if (d->source == source)
         return;
-    m_frameConnection.disconnect();
-    m_source = source;
-    m_frame = VideoFrame();
+    d->frameConnection.disconnect();
+    d->source = source;
+    d->frame = VideoFrame();
     {
-        std::lock_guard<std::mutex> lock(m_pendingMutex);
-        m_pendingFrame = VideoFrame();
-        m_pendingValid = false;
+        std::lock_guard<std::mutex> lock(d->pendingMutex);
+        d->pendingFrame = VideoFrame();
+        d->pendingValid = false;
     }
-    ++m_generation;
-    ++m_sourceGeneration; // a new decoder pool may recycle pool keys
+    ++d->generation;
+    ++d->sourceGeneration; // a new decoder pool may recycle pool keys
     update();
-    if (m_source) {
+    if (d->source) {
         // The decoder emits from its worker thread; a direct connection feeds
         // the coalescing slot, which posts a single event per shown frame.
-        m_frameConnection = m_source->connect<VideoFrame>(
+        d->frameConnection = d->source->connect<VideoFrame>(
             this, VideoSource::signalFrameReady,
             [this](const VideoFrame& frame) { onFrameDecoded(frame); },
             ConnectionMode::Direct);
@@ -50,24 +83,24 @@ void VideoOutput::setSource(VideoSource* source) {
 
 void VideoOutput::onFrameDecoded(const VideoFrame& frame) {
     {
-        std::lock_guard<std::mutex> lock(m_pendingMutex);
-        m_pendingFrame = frame;
-        m_pendingValid = true;
+        std::lock_guard<std::mutex> lock(d->pendingMutex);
+        d->pendingFrame = frame;
+        d->pendingValid = true;
     }
-    if (!m_framePosted.exchange(true))
+    if (!d->framePosted.exchange(true))
         Object::postEvent(this, std::make_unique<Event>(kFramePendingEvent));
 }
 
 bool VideoOutput::event(Event& e) {
     if (e.type() == kFramePendingEvent) {
-        m_framePosted.store(false);
+        d->framePosted.store(false);
         VideoFrame frame;
         {
-            std::lock_guard<std::mutex> lock(m_pendingMutex);
-            if (m_pendingValid) {
-                frame = std::move(m_pendingFrame);
-                m_pendingFrame = VideoFrame();
-                m_pendingValid = false;
+            std::lock_guard<std::mutex> lock(d->pendingMutex);
+            if (d->pendingValid) {
+                frame = std::move(d->pendingFrame);
+                d->pendingFrame = VideoFrame();
+                d->pendingValid = false;
             }
         }
         if (frame.isValid())
@@ -78,15 +111,15 @@ bool VideoOutput::event(Event& e) {
 }
 
 void VideoOutput::setFillMode(FillMode mode) {
-    if (m_fillMode == mode)
+    if (d->fillMode == mode)
         return;
-    m_fillMode = mode;
+    d->fillMode = mode;
     update();
     notifyPropertyChanged("fillMode");
 }
 
 String VideoOutput::fillModeName() const {
-    switch (m_fillMode) {
+    switch (d->fillMode) {
     case FillMode::Stretch: return String("Stretch");
     case FillMode::PreserveAspectCrop: return String("PreserveAspectCrop");
     case FillMode::Pad: return String("Pad");
@@ -109,9 +142,9 @@ void VideoOutput::onFrame(const VideoFrame& frame) {
     // Deferred release: the outgoing frame's GPU surface is returned to the
     // decoder pool only after the next frame has been shown, so the decoder
     // never overwrites a surface the renderer may still sample.
-    m_previous = m_frame;
-    m_frame = frame;
-    ++m_generation;
+    d->previous = d->frame;
+    d->frame = frame;
+    ++d->generation;
     update();
 }
 
@@ -150,24 +183,24 @@ Gui::RectF targetRect(VideoOutput::FillMode mode, float itemW, float itemH,
 void VideoOutput::paint(Gui::Painter& painter) {
     painter.fillRect(Gui::RectF{0, 0, width(), height()},
                      Gui::Color::rgb(0, 0, 0));
-    if (!m_frame.isValid())
+    if (!d->frame.isValid())
         return;
-    const Gui::RectF target = targetRect(m_fillMode, width(), height(),
-                                         m_frame.width, m_frame.height);
+    const Gui::RectF target = targetRect(d->fillMode, width(), height(),
+                                         d->frame.width, d->frame.height);
     // Zero-copy: import the dma-buf straight from the decoder pool (cached
     // per surface) and sample it on the GPU; YUV -> RGB in the sampler.
-    if (m_frame.gpu && zeroCopyEnabled() &&
-        m_gpuTextures.draw(painter, target, m_frame, m_sourceGeneration)) {
-        ++m_zeroCopyFrames;
+    if (d->frame.gpu && zeroCopyEnabled() &&
+        d->gpuTextures.draw(painter, target, d->frame, d->sourceGeneration)) {
+        ++d->zeroCopyFrames;
         return;
     }
     // CPU fallback: pull pixels through the backend's readback (counted).
-    if (!m_frame.ensureCpuPixels())
+    if (!d->frame.ensureCpuPixels())
         return;
-    if (m_frame.gpu)
-        ++m_cpuFallbackFrames;
-    painter.drawRgba(target, m_frame.rgba.data(), m_frame.width,
-                     m_frame.height, this, m_generation);
+    if (d->frame.gpu)
+        ++d->cpuFallbackFrames;
+    painter.drawRgba(target, d->frame.rgba.data(), d->frame.width,
+                     d->frame.height, this, d->generation);
 }
 
 } // namespace Multimedia

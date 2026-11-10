@@ -33,8 +33,8 @@ namespace Multimedia {
  */
 class VideoTextureCache {
 public:
-    VideoTextureCache() = default;
-    ~VideoTextureCache() = default;
+    VideoTextureCache();
+    ~VideoTextureCache();
 
     VideoTextureCache(const VideoTextureCache&) = delete;
     VideoTextureCache& operator=(const VideoTextureCache&) = delete;
@@ -56,12 +56,8 @@ public:
     void clear();
 
 private:
-    struct Entry {
-        std::shared_ptr<Render::RenderTexture> texture;
-        std::uint64_t generation = 0;
-    };
-    std::map<const void*, Entry> m_entries; ///< by GpuFrameHandle::poolKey()
-    bool m_unsupported = false;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Multimedia

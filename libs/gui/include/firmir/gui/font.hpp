@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -21,30 +22,35 @@ public:
     Font();
     explicit Font(std::string family, int pixelSize = 16,
                   int weight = Normal, bool italic = false);
+    Font(const Font& other);
+    Font& operator=(const Font& other);
+    Font(Font&&) noexcept;
+    Font& operator=(Font&&) noexcept;
+    ~Font();
 
-    const std::string& family() const { return m_family; }
+    const std::string& family() const;
     void setFamily(std::string family);
-    std::string styleName() const { return m_styleName; }
-    void setStyleName(std::string styleName) { m_styleName = std::move(styleName); }
-    int pixelSize() const { return m_pixelSize; }
+    std::string styleName() const;
+    void setStyleName(std::string styleName);
+    int pixelSize() const;
     void setPixelSize(int pixels);
-    float pointSize() const { return m_pointSize; }
+    float pointSize() const;
     void setPointSize(float points);
     int effectivePixelSize() const;
-    int weight() const { return m_weight; }
-    void setWeight(int weight) { m_weight = weight; }
-    bool bold() const { return m_weight >= DemiBold; }
-    void setBold(bool enabled) { m_weight = enabled ? Bold : Normal; }
-    Style style() const { return m_style; }
-    void setStyle(Style style) { m_style = style; }
-    bool italic() const { return m_style != StyleNormal; }
-    void setItalic(bool enabled) { m_style = enabled ? StyleItalic : StyleNormal; }
-    bool underline() const { return m_underline; }
-    void setUnderline(bool enabled) { m_underline = enabled; }
-    bool strikeOut() const { return m_strikeOut; }
-    void setStrikeOut(bool enabled) { m_strikeOut = enabled; }
-    float letterSpacing() const { return m_letterSpacing; }
-    void setLetterSpacing(float pixels) { m_letterSpacing = pixels; }
+    int weight() const;
+    void setWeight(int weight);
+    bool bold() const;
+    void setBold(bool enabled);
+    Style style() const;
+    void setStyle(Style style);
+    bool italic() const;
+    void setItalic(bool enabled);
+    bool underline() const;
+    void setUnderline(bool enabled);
+    bool strikeOut() const;
+    void setStrikeOut(bool enabled);
+    float letterSpacing() const;
+    void setLetterSpacing(float pixels);
 
     /// Stable key used by text/texture caches.
     std::string cacheKey() const;
@@ -53,15 +59,8 @@ public:
     }
     friend bool operator!=(const Font& lhs, const Font& rhs) { return !(lhs == rhs); }
 private:
-    std::string m_family;
-    std::string m_styleName;
-    int m_pixelSize = 16;
-    float m_pointSize = -1.0f;
-    int m_weight = Normal;
-    Style m_style = StyleNormal;
-    float m_letterSpacing = 0.0f;
-    bool m_underline = false;
-    bool m_strikeOut = false;
+    struct Impl;
+    std::unique_ptr<Impl> d;
 };
 
 /// CPU RGBA representation of a fully shaped UTF-8 text run. Glyphs are

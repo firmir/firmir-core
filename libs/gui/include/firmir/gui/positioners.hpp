@@ -2,6 +2,7 @@
 
 #include <firmir/gui/item.hpp>
 
+#include <memory>
 #include <vector>
 
 namespace Firmir {
@@ -27,6 +28,7 @@ public:
 
 protected:
     explicit Positioner(Object* parent = nullptr);
+    ~Positioner() override;
 
     /// Repositions the children (in effective-children order) and updates the
     /// implicit size. Called with the scene consistent; must not add/remove
@@ -41,9 +43,8 @@ protected:
 private:
     void rewatchChildren();
 
-    std::vector<Connection> m_childConnections;
-    float m_spacing = 0;
-    bool m_layingOut = false;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 /// Positions its children in a vertical column (y stacking; x untouched).
@@ -75,6 +76,7 @@ protected:
 class Grid : public Positioner {
 public:
     explicit Grid(Object* parent = nullptr);
+    ~Grid() override;
 
     /// Number of columns; 0 (with rows set) derives it from the row count.
     int columns() const;
@@ -87,8 +89,8 @@ protected:
     void layoutChildren(const std::vector<Item*>& children) override;
 
 private:
-    int m_columns = 4;
-    int m_rows = 0;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 } // namespace Gui

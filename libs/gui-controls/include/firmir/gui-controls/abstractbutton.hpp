@@ -5,6 +5,8 @@
 #include <firmir/gui/painter.hpp>
 #include <firmir/string.hpp>
 
+#include <memory>
+
 namespace Firmir {
 namespace Gui {
 namespace Controls {
@@ -13,15 +15,15 @@ class AbstractButton : public Item {
 public:
     explicit AbstractButton(Object* parent = nullptr);
     ~AbstractButton() override;
-    String text() const { return m_text; }
+    String text() const;
     void setText(String text);
-    Font font() const { return m_font; }
+    Font font() const;
     void setFont(Font font);
-    bool isPressed() const { return m_pressed; }
-    bool isChecked() const { return m_checked; }
+    bool isPressed() const;
+    bool isChecked() const;
     void setChecked(bool checked);
-    bool checkable() const { return m_checkable; }
-    void setCheckable(bool checkable) { auto lock = lockScene(); m_checkable = checkable; }
+    bool checkable() const;
+    void setCheckable(bool checkable);
     void click();
     static constexpr auto signalClicked = "clicked";
     static constexpr auto signalToggled = "toggled";
@@ -38,52 +40,53 @@ protected:
 private:
     void setPressed(bool pressed);
     void updateLabel();
-    String m_text;
-    Font m_font{kDefaultFontFamily, 16};
-    RasterizedText m_label;
-    std::uint64_t m_labelGeneration = 0;
-    bool m_pressed = false;
-    bool m_checked = false;
-    bool m_checkable = false;
+
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class Button : public AbstractButton {
 public:
     explicit Button(Object* parent = nullptr);
-    bool isFlat() const { return m_flat; }
-    void setFlat(bool flat) { auto lock = lockScene(); m_flat = flat; update(); }
+    ~Button() override;
+    bool isFlat() const;
+    void setFlat(bool flat);
 protected:
     void paint(Painter& painter) override;
 private:
-    bool m_flat = false;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class CheckBox : public AbstractButton {
 public:
     enum class CheckState { Unchecked, PartiallyChecked, Checked };
     explicit CheckBox(Object* parent = nullptr);
-    CheckState checkState() const { return m_checkState; }
+    ~CheckBox() override;
+    CheckState checkState() const;
     void setCheckState(CheckState state);
-    bool tristate() const { return m_tristate; }
+    bool tristate() const;
     void setTristate(bool enabled);
 protected:
     void paint(Painter& painter) override;
     void toggle() override;
 private:
-    CheckState m_checkState = CheckState::Unchecked;
-    bool m_tristate = false;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class RadioButton : public AbstractButton {
 public:
     explicit RadioButton(Object* parent = nullptr);
-    bool autoExclusive() const { return m_autoExclusive; }
-    void setAutoExclusive(bool enabled) { auto lock = lockScene(); m_autoExclusive = enabled; }
+    ~RadioButton() override;
+    bool autoExclusive() const;
+    void setAutoExclusive(bool enabled);
 protected:
     void paint(Painter& painter) override;
     void toggle() override;
 private:
-    bool m_autoExclusive = true;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class Switch : public AbstractButton {

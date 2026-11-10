@@ -70,6 +70,21 @@ private:
     bool m_framePending = false;
 };
 
+/// Event type for platform-originated geometry changes (see Window::event).
+constexpr int GeometryEventType = Event::User + 103;
+
+/// Posted to the window when the platform backend reports a new size from a
+/// backend thread (e.g. the Wayland dispatch thread on xdg_toplevel
+/// configure). Applying it inline would take the scene mutex while the
+/// backend holds its api lock — a lock-order inversion against the render
+/// thread (scene mutex held, api wanted in present()), i.e. a deadlock.
+class GeometryEvent : public Event {
+public:
+    explicit GeometryEvent(const Rect& geometry)
+        : Event(GeometryEventType), geometry(geometry) {}
+    Rect geometry;
+};
+
 } // namespace
 
 class Window::Impl {
@@ -239,6 +254,14 @@ void Window::setTitleProperty(std::string title) { setTitle(title); }
 
 Rect Window::geometry() const { return d->geometry; }
 
+bool Window::event(Event& event) {
+    if (event.type() == GeometryEventType) {
+        setGeometry(static_cast<GeometryEvent&>(event).geometry);
+        return true;
+    }
+    return Object::event(event);
+}
+
 void Window::setGeometry(const Rect& geometry) {
     std::lock_guard<std::recursive_mutex> lock(d->sceneMutex);
     const bool widthChanged = geometry.width != d->geometry.width;
@@ -276,7 +299,12 @@ void Window::show() {
     if (!d->platformWindow)
         return;
     d->platformWindow->geometryCallback = [this](const Rect& geometry) {
-        setGeometry(geometry);
+        // Backend threads must not block on the scene mutex (see
+        // GeometryEvent); the GUI thread applies the size directly.
+        if (Thread::currentThread() == thread())
+            setGeometry(geometry);
+        else
+            postEvent(this, std::make_unique<GeometryEvent>(geometry));
     };
     d->platformWindow->setTitle(d->title);
     d->platformWindow->setGeometry(d->geometry);

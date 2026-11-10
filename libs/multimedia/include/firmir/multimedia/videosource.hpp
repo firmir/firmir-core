@@ -126,7 +126,8 @@ public:
     void emitErrorMessage(const String& message);
 
 private:
-    std::unique_ptr<VideoSourceBackend> m_backend;
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 /// Creates a source for @p backend ("gstreamer", "ffmpeg"; "auto" picks the

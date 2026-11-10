@@ -210,6 +210,12 @@ private:
     static void onToplevelConfigure(void* data, xdg_toplevel*, std::int32_t width,
                                     std::int32_t height, wl_array*) {
         auto* self = static_cast<WaylandWindow*>(data);
+        // Remember the size the compositor expects: from the acked
+        // xdg_surface.configure on, only buffers of this size may be
+        // committed (a mismatched commit is a protocol error on strict
+        // compositors — WSLg kills the connection). {0,0} clears the
+        // constraint (the compositor leaves the size to the client).
+        self->m_pendingSize = Size{width, height};
         if (width > 0 && height > 0) {
             self->m_size = Size{width, height};
             if (self->geometryCallback)
@@ -245,6 +251,11 @@ private:
     Buffer m_buffers[2];
     Buffer* m_pending = nullptr; // filled, waiting for the first configure
     bool m_configured = false;
+    /// Size from the last xdg_toplevel.configure, adopted as m_requiredSize
+    /// at the following xdg_surface.configure ack.
+    Size m_pendingSize{0, 0};
+    /// Commits are gated on this size while non-zero (see commitBuffer).
+    Size m_requiredSize{0, 0};
     int m_shmCounter = 0;
     bool m_loggedFirstFrame = false;
     FrameProbe* m_frameProbe = nullptr;
@@ -697,6 +708,16 @@ void WaylandBackend::threadMain() {
         if (debugTrace() && dispatched > 0)
             trace("dispatch: ret=%d revents=0x%x dispatched=%d", ret,
                   pfd.revents, dispatched);
+        // A protocol error (or the compositor going away) kills the
+        // connection; stop instead of spinning on a dead fd.
+        if (m_clientDisplay->lastError() != 0 ||
+            (ret > 0 && (pfd.revents & (POLLERR | POLLHUP)))) {
+            std::fprintf(stderr,
+                         "firmir-wayland: connection lost (error=%d), "
+                         "dispatch loop exits\n",
+                         m_clientDisplay->lastError());
+            break;
+        }
     }
 }
 
@@ -724,8 +745,13 @@ void WaylandWindow::onSurfaceConfigure(void* data, xdg_surface* surface,
     auto* self = static_cast<WaylandWindow*>(data);
     xdg_surface_ack_configure(surface, serial);
     self->m_configured = true;
-    trace("configure serial=%u pending=%d visible=%d", serial,
-          self->m_pending != nullptr, self->m_visible);
+    // From this ack on, commits must match the size from the preceding
+    // xdg_toplevel.configure ({0,0} = no constraint).
+    self->m_requiredSize = self->m_pendingSize;
+    self->m_pendingSize = Size{0, 0};
+    trace("configure serial=%u pending=%d visible=%d required=%dx%d", serial,
+          self->m_pending != nullptr, self->m_visible, self->m_requiredSize.width,
+          self->m_requiredSize.height);
     if (self->m_pending && self->m_visible)
         self->commitBuffer(*self->m_pending);
 }
@@ -904,6 +930,17 @@ void WaylandWindow::present(const std::uint32_t* pixels, const Size& size) {
 }
 
 void WaylandWindow::commitBuffer(Buffer& buffer) {
+    if (m_requiredSize.width > 0 &&
+        (buffer.width != m_requiredSize.width ||
+         buffer.height != m_requiredSize.height)) {
+        // The acked configure demands another size (e.g. maximized): the GUI
+        // thread applies the new geometry asynchronously and re-renders;
+        // committing the old size would be a protocol error. Drop the frame.
+        trace("commit skipped: buffer %dx%d, required %dx%d", buffer.width,
+              buffer.height, m_requiredSize.width, m_requiredSize.height);
+        m_pending = nullptr;
+        return;
+    }
     // Debug probe: sample the compositor's presentation timestamp for this
     // commit (at most one wl_surface_frame request in flight).
     bool probing = false;

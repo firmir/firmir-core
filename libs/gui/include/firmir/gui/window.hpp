@@ -98,6 +98,10 @@ private:
     void dispatchTouch(TouchEvent& event);
     void dispatchKey(KeyEvent& event);
 
+    /// Handles events posted from backend threads (geometry changes arrive
+    /// as GeometryEvent so the backend never blocks on the scene mutex).
+    bool event(Event& event) override;
+
     /// Registered property adapters: Firml-generated code reads/writes the
     /// window geometry and title through the Object property system
     /// ("width"/"height" in pixels as double, "title" as std::string).

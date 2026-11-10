@@ -123,18 +123,24 @@ public:
     bool disconnect();
 
 private:
-    struct Control;
-    explicit Connection(std::shared_ptr<Control> control) : m_control(std::move(control)) {}
-    std::shared_ptr<Control> m_control;
+    struct Impl;
+    explicit Connection(std::shared_ptr<Impl> impl) : d(std::move(impl)) {}
+    std::shared_ptr<Impl> d;
     friend class Object;
 };
 
 /// RAII wrapper that disconnects its connection on destruction.
 class ScopedConnection {
 public:
-    ScopedConnection() = default;
-    explicit ScopedConnection(Connection connection) : m_connection(std::move(connection)) {}
-    ~ScopedConnection() { m_connection.disconnect(); }
+    ScopedConnection() : d(std::make_unique<Impl>()) {}
+    explicit ScopedConnection(Connection connection)
+        : d(std::make_unique<Impl>()) {
+        d->connection = std::move(connection);
+    }
+    ~ScopedConnection() {
+        if (d) // null after a move
+            d->connection.disconnect();
+    }
 
     ScopedConnection(const ScopedConnection&) = delete;
     ScopedConnection& operator=(const ScopedConnection&) = delete;
@@ -142,7 +148,12 @@ public:
     ScopedConnection& operator=(ScopedConnection&&) noexcept = default;
 
 private:
-    Connection m_connection;
+    // Header-only value wrapper; Impl is defined inline for the same reason
+    // as in Component (no core .cpp linkage for a two-line type).
+    struct Impl {
+        Connection connection;
+    };
+    std::unique_ptr<Impl> d;
 };
 
 /**
