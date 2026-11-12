@@ -27,6 +27,10 @@ target_include_directories(firmir-core
 
 target_link_libraries(firmir-core PUBLIC Threads::Threads
     PRIVATE ${CMAKE_DL_LIBS})
+if(WIN32)
+    # SocketNotifier waits on sockets via WSAEventSelect.
+    target_link_libraries(firmir-core PRIVATE ws2_32)
+endif()
 # Locale backend plugins are dlopen()ed from here as a last resort.
 target_compile_definitions(firmir-core PRIVATE
     FIRMIR_SYSTEM_PLUGIN_DIR="${FIRMIR_SYSTEM_PLUGIN_DIR}/core")

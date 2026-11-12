@@ -6,17 +6,25 @@
 #include FT_FREETYPE_H
 #include <hb.h>
 #include <hb-ft.h>
+#ifndef _WIN32
 #include <fontconfig/fontconfig.h>
+#endif
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <cstdlib>
 #include <memory>
 #include <limits>
 #include <mutex>
 #include <set>
 #include <utility>
+#ifdef _WIN32
+#include <filesystem>
+#include <system_error>
+#endif
 
 namespace Firmir {
 namespace Gui {
@@ -103,13 +111,35 @@ struct ApplicationFont {
     std::vector<std::string> styles;
 };
 
+#ifdef _WIN32
+// Windows has no fontconfig: the system font index is built by scanning the
+// font directories with FreeType (see ensureSystemFonts()).
+struct SystemFontEntry {
+    std::string path;
+    int index = 0;
+    std::string family;
+    std::string style;
+    int weight = 400; // CSS scale, derived from the style name
+    bool italic = false;
+};
+#endif
+
 struct Database {
     Database() { FT_Init_FreeType(&library); }
-    ~Database() { if (library) FT_Done_FreeType(library); FcFini(); }
+    ~Database() {
+        if (library) FT_Done_FreeType(library);
+#ifndef _WIN32
+        FcFini();
+#endif
+    }
     std::mutex mutex;
     FT_Library library = nullptr;
     std::vector<ApplicationFont> applicationFonts;
     int nextId = 0;
+#ifdef _WIN32
+    bool systemFontsScanned = false;
+    std::vector<SystemFontEntry> systemFonts;
+#endif
 };
 
 Database& database() {
@@ -125,6 +155,11 @@ bool inspectFace(FT_Face face, ApplicationFont& entry) {
     return true;
 }
 
+#ifdef _WIN32
+void rebuildApplicationFonts(Database&) {
+    // The application fonts are consulted directly; no fontconfig to update.
+}
+#else
 void rebuildApplicationFonts(Database& db) {
     FcConfig* config = FcConfigGetCurrent();
     FcConfigAppFontClear(config);
@@ -132,6 +167,94 @@ void rebuildApplicationFonts(Database& db) {
         if (!entry.path.empty())
             FcConfigAppFontAddFile(config, reinterpret_cast<const FcChar8*>(entry.path.c_str()));
 }
+#endif
+
+#ifdef _WIN32
+std::string lowercase(const std::string& s) {
+    std::string out = s;
+    for (char& c : out)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+bool equalIgnoreCase(const std::string& a, const std::string& b) {
+    return lowercase(a) == lowercase(b);
+}
+
+/// Derives the CSS-scale weight and the italic flag from a FreeType style
+/// name ("Bold Italic", "SemiLight", ...).
+void parseStyle(const std::string& style, int& weight, bool& italic) {
+    const std::string s = lowercase(style);
+    italic = s.find("italic") != std::string::npos ||
+             s.find("oblique") != std::string::npos;
+    const auto has = [&s](const char* word) {
+        return s.find(word) != std::string::npos;
+    };
+    if (has("extra bold") || has("extrabold") || has("heavy"))
+        weight = 800;
+    else if (has("semi bold") || has("semibold") || has("demi bold") ||
+             has("demibold"))
+        weight = 600;
+    else if (has("bold"))
+        weight = 700;
+    else if (has("black"))
+        weight = 900;
+    else if (has("semi light") || has("semilight"))
+        weight = 350;
+    else if (has("extra light") || has("extralight"))
+        weight = 200;
+    else if (has("light"))
+        weight = 300;
+    else if (has("thin"))
+        weight = 100;
+    else if (has("medium"))
+        weight = 500;
+}
+
+void scanSystemFontDir(Database& db, const std::string& dir) {
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        const std::string path = entry.path().string();
+        std::string ext = lowercase(entry.path().extension().string());
+        if (ext != ".ttf" && ext != ".otf" && ext != ".ttc")
+            continue;
+        FT_Face probe = nullptr;
+        if (FT_New_Face(db.library, path.c_str(), -1, &probe) != 0)
+            continue;
+        const FT_Long faces = probe->num_faces;
+        FT_Done_Face(probe);
+        for (FT_Long i = 0; i < faces; ++i) {
+            FT_Face face = nullptr;
+            if (FT_New_Face(db.library, path.c_str(), i, &face) != 0)
+                continue;
+            if (face->family_name) {
+                SystemFontEntry entry2;
+                entry2.path = path;
+                entry2.index = static_cast<int>(i);
+                entry2.family = face->family_name;
+                entry2.style = face->style_name ? face->style_name : "Regular";
+                parseStyle(entry2.style, entry2.weight, entry2.italic);
+                db.systemFonts.push_back(std::move(entry2));
+            }
+            FT_Done_Face(face);
+        }
+    }
+}
+
+/// Indexes the Windows font directories once (call with db.mutex held).
+void ensureSystemFonts(Database& db) {
+    if (db.systemFontsScanned || !db.library)
+        return;
+    db.systemFontsScanned = true;
+    const char* winDir = std::getenv("WINDIR");
+    scanSystemFontDir(db, (winDir && *winDir ? std::string(winDir)
+                                             : std::string("C:/Windows")) +
+                          "/Fonts");
+    const char* localAppData = std::getenv("LOCALAPPDATA");
+    if (localAppData && *localAppData)
+        scanSystemFontDir(db, std::string(localAppData) + "/Microsoft/Fonts");
+}
+#endif // _WIN32
 
 } // namespace
 
@@ -139,6 +262,11 @@ std::vector<std::string> FontDatabase::families() {
     auto& db = database();
     std::lock_guard<std::mutex> lock(db.mutex);
     std::set<std::string> result;
+#ifdef _WIN32
+    ensureSystemFonts(db);
+    for (const auto& entry : db.systemFonts)
+        result.insert(entry.family);
+#else
     FcPattern* pattern = FcPatternCreate();
     FcObjectSet* objects = FcObjectSetBuild(FC_FAMILY, nullptr);
     FcFontSet* fonts = FcFontList(FcConfigGetCurrent(), pattern, objects);
@@ -152,6 +280,7 @@ std::vector<std::string> FontDatabase::families() {
     }
     if (objects) FcObjectSetDestroy(objects);
     if (pattern) FcPatternDestroy(pattern);
+#endif
     for (const auto& entry : db.applicationFonts)
         result.insert(entry.families.begin(), entry.families.end());
     return {result.begin(), result.end()};
@@ -161,6 +290,12 @@ std::vector<std::string> FontDatabase::styles(const std::string& family) {
     auto& db = database();
     std::lock_guard<std::mutex> lock(db.mutex);
     std::set<std::string> result;
+#ifdef _WIN32
+    ensureSystemFonts(db);
+    for (const auto& entry : db.systemFonts)
+        if (equalIgnoreCase(entry.family, family))
+            result.insert(entry.style);
+#else
     FcPattern* pattern = FcPatternCreate();
     FcPatternAddString(pattern, FC_FAMILY, reinterpret_cast<const FcChar8*>(family.c_str()));
     FcObjectSet* objects = FcObjectSetBuild(FC_STYLE, nullptr);
@@ -175,6 +310,7 @@ std::vector<std::string> FontDatabase::styles(const std::string& family) {
     }
     if (objects) FcObjectSetDestroy(objects);
     if (pattern) FcPatternDestroy(pattern);
+#endif
     for (const auto& entry : db.applicationFonts)
         if (std::find(entry.families.begin(), entry.families.end(), family) != entry.families.end())
             result.insert(entry.styles.begin(), entry.styles.end());
@@ -192,9 +328,14 @@ int FontDatabase::addApplicationFont(const std::string& fileName) {
         return -1;
     const bool valid = inspectFace(face, entry);
     FT_Done_Face(face);
+#ifndef _WIN32
     if (!valid || !FcConfigAppFontAddFile(FcConfigGetCurrent(),
             reinterpret_cast<const FcChar8*>(fileName.c_str())))
         return -1;
+#else
+    if (!valid)
+        return -1;
+#endif
     entry.id = db.nextId++;
     entry.path = fileName;
     db.applicationFonts.push_back(std::move(entry));
@@ -257,12 +398,64 @@ struct ResolvedFont {
     int index = 0;
 };
 
+#ifdef _WIN32
+/// Best-matching system font for @p family ("" = any family). Scoring: exact
+/// style name first, then the weight distance and the italic flag.
+const SystemFontEntry* matchSystemFont(const Database& db,
+                                       const std::string& family,
+                                       const std::string& styleName,
+                                       int weight, bool italic) {
+    const SystemFontEntry* best = nullptr;
+    int bestScore = std::numeric_limits<int>::max();
+    for (const auto& entry : db.systemFonts) {
+        if (!family.empty() && !equalIgnoreCase(entry.family, family))
+            continue;
+        int score = std::abs(entry.weight - weight);
+        if (entry.italic != italic)
+            score += 1000;
+        if (!styleName.empty())
+            score += lowercase(entry.style) == lowercase(styleName) ? -2000 : 500;
+        if (score < bestScore) {
+            bestScore = score;
+            best = &entry;
+        }
+    }
+    return best;
+}
+#endif
+
 ResolvedFont resolveFont(Database& db, const Font& font) {
     for (const auto& entry : db.applicationFonts) {
         if (std::find(entry.families.begin(), entry.families.end(), font.family()) != entry.families.end())
             return {entry.path, entry.bytes, 0};
     }
     ResolvedFont result;
+#ifdef _WIN32
+    ensureSystemFonts(db);
+    const std::string family =
+        font.family().empty() ? kDefaultFontFamily : font.family();
+    const int weight = std::clamp(font.weight(), 100, 900);
+    const bool italic = font.italic();
+    // Family fallback chain: requested -> default -> Segoe UI -> Arial -> any.
+    const SystemFontEntry* chosen =
+        matchSystemFont(db, family, font.styleName(), weight, italic);
+    if (!chosen && family != kDefaultFontFamily)
+        chosen = matchSystemFont(db, kDefaultFontFamily, font.styleName(),
+                                 weight, italic);
+    if (!chosen)
+        chosen = matchSystemFont(db, "Segoe UI", font.styleName(), weight,
+                                 italic);
+    if (!chosen)
+        chosen = matchSystemFont(db, "Arial", font.styleName(), weight,
+                                 italic);
+    if (!chosen)
+        chosen = matchSystemFont(db, "", font.styleName(), weight, italic);
+    if (chosen) {
+        result.path = chosen->path;
+        result.index = chosen->index;
+    }
+    return result;
+#else
     FcPattern* pattern = FcPatternCreate();
     const std::string family = font.family().empty() ? kDefaultFontFamily : font.family();
     FcPatternAddString(pattern, FC_FAMILY, reinterpret_cast<const FcChar8*>(family.c_str()));
@@ -287,6 +480,7 @@ ResolvedFont resolveFont(Database& db, const Font& font) {
     }
     FcPatternDestroy(pattern);
     return result;
+#endif
 }
 
 struct ShapedLine {

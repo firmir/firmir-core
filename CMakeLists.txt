@@ -26,6 +26,42 @@ option(FIRMIR_BUILD_PLUGIN_RENDER_SOFT "Build the software render plugin" ON)
 option(FIRMIR_BUILD_PLUGIN_RENDER_OPENGL "Build the OpenGL ES render plugin" ON)
 option(FIRMIR_BUILD_PLUGIN_RENDER_VULKAN "Build the Vulkan render plugin" ON)
 
+# Target system the build runs on: "linux" (default) or "windows". Modules
+# that cannot work on the selected system are skipped automatically.
+set(FIRMIR_BUILD_SYSTEM "linux" CACHE STRING "Target system: linux or windows")
+set_property(CACHE FIRMIR_BUILD_SYSTEM PROPERTY STRINGS linux windows)
+if(NOT FIRMIR_BUILD_SYSTEM MATCHES "^(linux|windows)$")
+    message(FATAL_ERROR
+        "FIRMIR_BUILD_SYSTEM='${FIRMIR_BUILD_SYSTEM}' is not supported; "
+        "expected 'linux' or 'windows'")
+endif()
+if(FIRMIR_BUILD_SYSTEM STREQUAL "windows")
+    # Wayland, D-Bus (unix sockets) and the evdev/DRM backends have no
+    # Windows counterpart — do not build them for this system.
+    set(FIRMIR_BUILD_LIB_DBUS OFF)
+    set(FIRMIR_BUILD_LIB_WAYLAND OFF)
+    set(FIRMIR_BUILD_LIB_WAYLAND_COMPOSITOR OFF)
+    set(FIRMIR_BUILD_PLUGIN_GUI_DRM OFF)
+    set(FIRMIR_BUILD_PLUGIN_GUI_EVDEV OFF)
+    set(FIRMIR_BUILD_PLUGIN_GUI_WAYLAND OFF)
+    if(NOT FIRMIR_SANITIZER STREQUAL "")
+        message(WARNING "FIRMIR_SANITIZER is not supported on windows; ignoring")
+        set(FIRMIR_SANITIZER "")
+    endif()
+    # No dllexport annotations in the sources: let CMake export every symbol
+    # from the shared libraries (the public API carries no global data, and
+    # plugin entry points are plain extern \"C\" functions).
+    set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
+    # Keep all DLLs/EXEs in one directory so executables find the libraries
+    # at runtime (Windows has no RPATH) and the exe-relative plugin lookup
+    # (<exe>/../plugins) works the same as on Linux.
+    set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
+    message(STATUS "Firmir target system: windows "
+        "(dbus/wayland/evdev/drm are Linux-only and are skipped)")
+else()
+    message(STATUS "Firmir target system: linux")
+endif()
+
 if(FIRMIR_BUILD_TESTS)
     enable_testing()
 endif()
@@ -35,7 +71,23 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-add_compile_options(-Wall -Wextra -Werror)
+if(MSVC)
+    # /Wall on MSVC is unusable (noise in system headers); /W4 is the
+    # /W4 /WX is the -Wall -Wextra -Werror equivalent. Suppressed classes
+    # match warnings GCC does not raise with -Wall -Wextra (i.e. the project
+    # never enforced them): C4244/C4267 are -Wconversion territory (numeric
+    # narrowing in pixel/math code), C4458/C4456 are member/local shadowing
+    # (the GUI code names locals `d` next to the PIMPL member `d` on purpose;
+    # GCC only warns with -Wshadow, which the project does not use),
+    # C4324 is "structure padded due to alignas" (intended padding) and
+    # C4611 is "setjmp + C++ destructors not portable" (libjpeg's documented
+    # error-handling idiom).
+    add_compile_options(/W4 /WX /permissive- /utf-8 /Zc:__cplusplus /EHsc /MP
+                        /wd4244 /wd4267 /wd4456 /wd4458 /wd4324 /wd4611)
+    add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+else()
+    add_compile_options(-Wall -Wextra -Werror)
+endif()
 
 if(FIRMIR_SANITIZER STREQUAL "address")
     add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)

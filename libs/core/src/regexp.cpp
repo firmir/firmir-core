@@ -52,7 +52,15 @@ std::string makeMinimal(const std::string& pattern) {
                 }
             }
         }
-        if (quantifier && (i + 1 >= pattern.size() || pattern[i + 1] != '?'))
+        if (quantifier && i + 1 < pattern.size() && pattern[i + 1] == '?') {
+            // Already lazy: keep the marker and skip it so it is not
+            // re-marked ("a.*?b" stays as-is; "a.*??b" is a bad repeat for
+            // stricter engines — MSVC's std::regex rejects it outright).
+            out.push_back('?');
+            ++i;
+            continue;
+        }
+        if (quantifier)
             out.push_back('?');
     }
     return out;

@@ -2,9 +2,9 @@
 
 #include <cstdio>
 #include <cstdlib>
+#include <filesystem>
 #include <map>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <system_error>
 
 namespace Firmir {
 
@@ -56,25 +56,35 @@ std::string trim(const std::string& s) {
 
 /// Creates parent directories of @p path (like `mkdir -p`).
 bool mkpath(const std::string& path) {
-    std::string current;
-    for (char c : path) {
-        current += c;
-        if (c == '/' && current.size() > 1) {
-            if (::mkdir(current.c_str(), 0700) != 0 && errno != EEXIST)
-                return false;
-        }
-    }
-    return true;
+    const std::filesystem::path parent =
+        std::filesystem::path(path).parent_path();
+    if (parent.empty())
+        return true;
+    std::error_code ec;
+    return std::filesystem::create_directories(parent, ec) ||
+           std::filesystem::is_directory(parent);
 }
 
 std::string defaultFilePath(const String& organization,
                             const String& application) {
+#ifdef _WIN32
+    // %APPDATA%/<org>/<app>.ini (fallback: <USERPROFILE>/AppData/Roaming).
+    const char* appData = std::getenv("APPDATA");
+    std::string base;
+    if (appData && *appData) {
+        base = appData;
+    } else {
+        const char* profile = std::getenv("USERPROFILE");
+        base = std::string(profile ? profile : ".") + "/AppData/Roaming";
+    }
+#else
     const char* configHome = std::getenv("XDG_CONFIG_HOME");
     const char* home = std::getenv("HOME");
     std::string base =
         configHome && *configHome
             ? std::string(configHome)
             : (std::string(home ? home : ".") + "/.config");
+#endif
     return base + "/" + organization.toStdString() + "/" +
            application.toStdString() + ".ini";
 }
@@ -257,13 +267,24 @@ std::vector<String> Settings::childGroups() const {
 
 bool Settings::isWritable() const {
     const std::string path = d->filePath.toStdString();
-    if (::access(path.c_str(), W_OK) == 0)
+    std::error_code ec;
+    if (std::filesystem::exists(path, ec)) {
+        // Opening for append does not truncate and proves writability.
+        if (std::FILE* f = std::fopen(path.c_str(), "ab")) {
+            std::fclose(f);
+            return true;
+        }
+        return false;
+    }
+    // The file may not exist yet; probe the parent directory by creating a
+    // throwaway sibling file.
+    const std::string probe = path + ".probe";
+    if (std::FILE* f = std::fopen(probe.c_str(), "wb")) {
+        std::fclose(f);
+        std::filesystem::remove(probe, ec);
         return true;
-    // The file may not exist yet; check the parent directory.
-    const std::size_t slash = path.find_last_of('/');
-    const std::string dir =
-        slash == std::string::npos ? std::string(".") : path.substr(0, slash);
-    return ::access(dir.c_str(), W_OK) == 0;
+    }
+    return false;
 }
 
 String Settings::fileName() const { return d->filePath; }

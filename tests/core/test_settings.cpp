@@ -4,17 +4,33 @@
 
 #include <cstdio>
 #include <cstdlib>
-#include <unistd.h>
+#include <filesystem>
+
+#ifdef _WIN32
+#  include <process.h>
+#else
+#  include <unistd.h>
+#endif
 
 using namespace Firmir;
 
 namespace {
 
+int currentPid() {
+#ifdef _WIN32
+    return ::_getpid();
+#else
+    return ::getpid();
+#endif
+}
+
 /// Creates a unique temporary INI file path (the file itself is removed
 /// so the test starts from a clean state).
 String tempSettingsPath(const char* tag) {
-    String path = "/tmp/firmir-settings-" + String(tag) + "-" +
-                  String::number(static_cast<long long>(::getpid())) + ".ini";
+    const auto full = std::filesystem::temp_directory_path() /
+                      ("firmir-settings-" + std::string(tag) + "-" +
+                       std::to_string(currentPid()) + ".ini");
+    String path(full.string());
     std::remove(path.toStdString().c_str());
     return path;
 }
@@ -127,7 +143,12 @@ TEST_CASE(settings_writable) {
     CHECK(s.isWritable());
     CHECK_EQ(s.fileName(), path);
 
+#ifdef _WIN32
+    // An invalid path (< is not allowed in Windows file names): fopen fails.
+    Settings ro("C:/firmir</<invalid>/not-writable.ini");
+#else
     Settings ro("/proc/firmir/definitely/not-writable.ini");
+#endif
     CHECK(!ro.isWritable());
     ro.setValue("k", "v"); // a no-op sync() of clean state would succeed
     CHECK(!ro.sync());

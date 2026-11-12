@@ -16,8 +16,11 @@ add_custom_command(
 add_library(firmir-render-vulkan SHARED vulkan.cpp ${VERT_SPV} ${FRAG_SPV})
 set_target_properties(firmir-render-vulkan PROPERTIES
     PREFIX ""
-    LIBRARY_OUTPUT_DIRECTORY ${FIRMIR_RENDER_PLUGIN_DIR})
+    LIBRARY_OUTPUT_DIRECTORY ${FIRMIR_RENDER_PLUGIN_DIR}
+    RUNTIME_OUTPUT_DIRECTORY ${FIRMIR_RENDER_PLUGIN_DIR})
 target_include_directories(firmir-render-vulkan PRIVATE ${GENERATED_DIR})
 target_link_libraries(firmir-render-vulkan PRIVATE firmir-render Vulkan::Vulkan)
 # Vulkan C structures are intentionally initialized field-by-field/partially.
-target_compile_options(firmir-render-vulkan PRIVATE -Wno-missing-field-initializers)
+if(NOT MSVC)
+    target_compile_options(firmir-render-vulkan PRIVATE -Wno-missing-field-initializers)
+endif()

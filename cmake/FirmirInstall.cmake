@@ -7,7 +7,7 @@
 #   backend plugins  -> lib/firmir/plugins/{gui,render}/
 #   pkg-config files -> lib/pkgconfig/firmir-<module>.pc
 
-if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
+if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT AND NOT WIN32)
     set(CMAKE_INSTALL_PREFIX "/usr" CACHE PATH "Install prefix" FORCE)
 endif()
 
@@ -17,6 +17,10 @@ set(FIRMIR_INSTALL_INCLUDEDIR include)
 # Absolute path baked into firmir-gui / firmir-render as the fallback plugin
 # search directory (used by installed binaries).
 set(FIRMIR_SYSTEM_PLUGIN_DIR ${CMAKE_INSTALL_PREFIX}/lib/firmir/plugins)
+if(WIN32)
+    # Windows has no lib/ share/ split: keep plugins next to the binaries.
+    set(FIRMIR_SYSTEM_PLUGIN_DIR ${CMAKE_INSTALL_PREFIX}/plugins)
+endif()
 
 # firmir_install_library(<target> MODULE <module>
 #                        [REQUIRES <pkg-config name>...] [HEADERS <dir>])

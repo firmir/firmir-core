@@ -25,8 +25,13 @@
     } while (false)
 
 int main() {
-    ::setenv("FIRMIR_GUI_DISPLAY", "headless", 1);
-    ::setenv("FIRMIR_GUI_INPUT", "headless", 1);
+    #ifdef _WIN32
+      ::_putenv("FIRMIR_GUI_DISPLAY=headless");
+      ::_putenv("FIRMIR_GUI_INPUT=headless");
+    #else
+      ::setenv("FIRMIR_GUI_DISPLAY", "headless", 1);
+      ::setenv("FIRMIR_GUI_INPUT", "headless", 1);
+    #endif
     auto* platform = Firmir::Gui::Platform::instance();
     (void)platform;
     firmir_gui_headless_add_screen("CALC-1", 800, 600);

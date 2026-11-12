@@ -95,6 +95,9 @@ if(TARGET firmir-render-vulkan)
     add_dependencies(tests firmir-render-vulkan)
 endif()
 target_link_libraries(tests PRIVATE ${TEST_LIBS})
+if(WIN32)
+    target_link_libraries(tests PRIVATE ws2_32)
+endif()
 
 if(TARGET firmir-mm-ffmpeg)
     target_compile_definitions(tests PRIVATE

@@ -12,16 +12,88 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <openssl/ssl.h>
+#include <stdexcept>
+#include <thread>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <fcntl.h>
 #include <netdb.h>
-#include <openssl/ssl.h>
 #include <poll.h>
-#include <stdexcept>
 #include <sys/socket.h>
-#include <thread>
 #include <unistd.h>
+#endif
 
 namespace Firmir {
+
+namespace {
+
+// ---------------------------------------------------------------------------
+// Socket portability: POSIX on Linux, Winsock2 on Windows.
+// ---------------------------------------------------------------------------
+#ifdef _WIN32
+using SocketFd = SOCKET;
+constexpr SocketFd kInvalidSocket = INVALID_SOCKET;
+using PollFd = WSAPOLLFD;
+using SockLen = int;
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
+
+/// WSAStartup, once per process.
+bool ensureWsa() {
+    static const bool ok = [] {
+        WSADATA data;
+        return ::WSAStartup(MAKEWORD(2, 2), &data) == 0;
+    }();
+    return ok;
+}
+
+int socketError() { return ::WSAGetLastError(); }
+bool isIntrError(int e) { return e == WSAEINTR; }
+bool isWouldBlockError(int e) { return e == WSAEWOULDBLOCK; }
+bool isInProgressError(int e) { return e == WSAEWOULDBLOCK; }
+void closeSocketFd(SocketFd fd) { ::closesocket(fd); }
+
+bool setNonBlockingFd(SocketFd fd) {
+    u_long on = 1;
+    return ::ioctlsocket(fd, FIONBIO, &on) == 0;
+}
+
+int pollSocketFd(PollFd* pfd, int timeoutMs) {
+    return ::WSAPoll(pfd, 1, timeoutMs);
+}
+#else
+using SocketFd = int;
+constexpr SocketFd kInvalidSocket = -1;
+using PollFd = struct pollfd;
+using SockLen = socklen_t;
+
+bool ensureWsa() { return true; }
+int socketError() { return errno; }
+bool isIntrError(int e) { return e == EINTR; }
+bool isWouldBlockError(int e) { return e == EAGAIN || e == EWOULDBLOCK; }
+bool isInProgressError(int e) { return e == EINPROGRESS; }
+void closeSocketFd(SocketFd fd) { ::close(fd); }
+
+bool setNonBlockingFd(SocketFd fd) {
+    const int flags = ::fcntl(fd, F_GETFL, 0);
+    return flags >= 0 && ::fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+}
+
+int pollSocketFd(PollFd* pfd, int timeoutMs) { return ::poll(pfd, 1, timeoutMs); }
+#endif
+
+} // namespace
 
 struct NetworkReply::Impl {
     Error error = Error::NoError;
@@ -109,12 +181,15 @@ class Socket {
 public:
     ~Socket() { close(); }
 
-    int fd() const { return fd_; }
+    // OpenSSL's SSL_set_fd takes an int even on Windows; socket values fit.
+    int fd() const { return static_cast<int>(fd_); }
 
     /// Connects to host:port; the TCP connect is bounded by @p timeout
     /// (milliseconds; 0 = wait indefinitely).
     IoStatus connectTo(const std::string& host, int port,
                        std::chrono::milliseconds timeout) {
+        if (!ensureWsa())
+            return IoStatus::Failed;
         struct addrinfo hints {};
         hints.ai_family = AF_UNSPEC;
         hints.ai_socktype = SOCK_STREAM;
@@ -128,19 +203,21 @@ public:
         IoStatus status = IoStatus::Failed;
         for (struct addrinfo* rp = result; rp; rp = rp->ai_next) {
             fd_ = ::socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
-            if (fd_ == -1)
+            if (fd_ == kInvalidSocket)
                 continue;
             setNonBlocking();
-            if (::connect(fd_, rp->ai_addr, rp->ai_addrlen) == 0) {
+            if (::connect(fd_, rp->ai_addr,
+                          static_cast<SockLen>(rp->ai_addrlen)) == 0) {
                 status = IoStatus::Ok;
                 break;
             }
-            if (errno == EINPROGRESS) {
+            if (isInProgressError(socketError())) {
                 const int wait = remainingMs(deadline, hasDeadline);
                 if (wait != 0 && pollFd(POLLOUT, wait)) {
                     int soError = 0;
-                    socklen_t len = sizeof(soError);
-                    if (::getsockopt(fd_, SOL_SOCKET, SO_ERROR, &soError,
+                    SockLen len = sizeof(soError);
+                    if (::getsockopt(fd_, SOL_SOCKET, SO_ERROR,
+                                     reinterpret_cast<char*>(&soError),
                                      &len) == 0 &&
                         soError == 0) {
                         status = IoStatus::Ok;
@@ -155,8 +232,8 @@ public:
                                  : IoStatus::Failed;
                 }
             }
-            ::close(fd_);
-            fd_ = -1;
+            closeSocketFd(fd_);
+            fd_ = kInvalidSocket;
             if (status == IoStatus::TimedOut)
                 break;
         }
@@ -167,16 +244,16 @@ public:
     /// Waits for @p events for up to @p timeoutMs (-1 = forever). Returns
     /// false on error or timeout expiry.
     bool pollFd(short events, int timeoutMs) {
-        struct pollfd pfd {};
+        PollFd pfd {};
         pfd.fd = fd_;
         pfd.events = events;
         for (;;) {
-            const int rc = ::poll(&pfd, 1, timeoutMs);
+            const int rc = pollSocketFd(&pfd, timeoutMs);
             if (rc > 0)
                 return pfd.revents & (events | POLLERR | POLLHUP);
             if (rc == 0)
                 return false; // timeout
-            if (errno != EINTR)
+            if (!isIntrError(socketError()))
                 return false;
         }
     }
@@ -186,15 +263,16 @@ public:
                       bool hasDeadline) {
         std::size_t sent = 0;
         while (sent < data.size()) {
-            const ssize_t n = ::send(fd_, data.data() + sent,
-                                     data.size() - sent, MSG_NOSIGNAL);
+            const int n = ::send(fd_, data.data() + sent,
+                                 static_cast<int>(data.size() - sent),
+                                 MSG_NOSIGNAL);
             if (n > 0) {
                 sent += static_cast<std::size_t>(n);
                 continue;
             }
-            if (n < 0 && errno == EINTR)
+            if (n < 0 && isIntrError(socketError()))
                 continue;
-            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (n < 0 && isWouldBlockError(socketError())) {
                 const int wait = remainingMs(deadline, hasDeadline);
                 if (wait != 0 && pollFd(POLLOUT, wait))
                     continue;
@@ -213,16 +291,16 @@ public:
                      bool hasDeadline) {
         char buf[8192];
         for (;;) {
-            const ssize_t n = ::recv(fd_, buf, sizeof(buf), 0);
+            const int n = ::recv(fd_, buf, static_cast<int>(sizeof(buf)), 0);
             if (n > 0) {
                 out.append(buf, static_cast<std::size_t>(n));
                 continue;
             }
             if (n == 0)
                 return IoStatus::Ok;
-            if (errno == EINTR)
+            if (isIntrError(socketError()))
                 continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            if (isWouldBlockError(socketError())) {
                 const int wait = remainingMs(deadline, hasDeadline);
                 if (wait != 0 && pollFd(POLLIN, wait))
                     continue;
@@ -234,16 +312,13 @@ public:
         }
     }
 
-    bool setNonBlocking() {
-        const int flags = ::fcntl(fd_, F_GETFL, 0);
-        return flags >= 0 && ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK) == 0;
-    }
+    bool setNonBlocking() { return setNonBlockingFd(fd_); }
 
     /// Drains currently available bytes without waiting for more data.
     bool readAvailable(std::string& out, bool& eof) {
         char buf[8192];
         for (;;) {
-            const ssize_t n = ::recv(fd_, buf, sizeof(buf), 0);
+            const int n = ::recv(fd_, buf, static_cast<int>(sizeof(buf)), 0);
             if (n > 0) {
                 out.append(buf, static_cast<std::size_t>(n));
                 continue;
@@ -252,23 +327,23 @@ public:
                 eof = true;
                 return true;
             }
-            if (errno == EINTR)
+            if (isIntrError(socketError()))
                 continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            if (isWouldBlockError(socketError()))
                 return true;
             return false;
         }
     }
 
     void close() {
-        if (fd_ != -1) {
-            ::close(fd_);
-            fd_ = -1;
+        if (fd_ != kInvalidSocket) {
+            closeSocketFd(fd_);
+            fd_ = kInvalidSocket;
         }
     }
 
 private:
-    int fd_ = -1;
+    SocketFd fd_ = kInvalidSocket;
 };
 /// A minimal TLS wrapper around OpenSSL. The underlying socket is
 /// non-blocking; every wait is a poll bounded by a deadline.
@@ -371,7 +446,7 @@ public:
             else if (error == SSL_ERROR_WANT_WRITE)
                 events = POLLOUT;
             else if (error == SSL_ERROR_SYSCALL &&
-                     (errno == EAGAIN || errno == EWOULDBLOCK))
+                     isWouldBlockError(socketError()))
                 events = POLLIN;
             else if (error == SSL_ERROR_SYSCALL && n == 0)
                 return IoStatus::Ok; // orderly close without close_notify
@@ -405,7 +480,7 @@ public:
                 return true;
             }
             if (error == SSL_ERROR_SYSCALL &&
-                (errno == EAGAIN || errno == EWOULDBLOCK))
+                isWouldBlockError(socketError()))
                 return true;
             return false;
         }

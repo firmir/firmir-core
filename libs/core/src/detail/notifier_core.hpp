@@ -20,10 +20,12 @@ namespace detail {
 struct NotifierCore {
     std::mutex m;           ///< Guards alive, armed, events, notifier, dupFd.
     bool alive = true;      ///< Cleared during SocketNotifier destruction.
-    bool armed = false;     ///< True while fd is registered in epoll.
-    int fd = -1;            ///< Watched descriptor (not owned).
-    int dupFd = -1;         ///< dup() of fd when fd was already registered.
-    std::uint32_t events = 0; ///< epoll event mask.
+    bool armed = false;     ///< True while the descriptor is watched by the loop.
+    int fd = -1;            ///< Watched descriptor/socket (not owned).
+    int dupFd = -1;         ///< Linux: dup() of fd when fd was already registered.
+    /// Windows: WSAEVENT bound to fd via WSAEventSelect (owned).
+    std::intptr_t eventHandle = 0;
+    std::uint32_t events = 0; ///< Linux: epoll mask; Windows: FD_* mask.
     std::atomic<bool> enabled{false};
     Thread* owner = nullptr;
     SocketNotifier* notifier = nullptr; ///< Valid while alive; loop thread only.

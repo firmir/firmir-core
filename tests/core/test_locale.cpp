@@ -16,8 +16,8 @@ TEST_CASE(locale_backend_and_app_override) {
     // Pick the test backend deterministically (the tests binary lives in
     // build/tests/, so build/plugins/core is found exe-relative anyway) and
     // neutralize a possible FIRMIR_LANGUAGE from the environment.
-    ::unsetenv("FIRMIR_LANGUAGE");
-    ::setenv("FIRMIR_LOCALE_BACKEND", "test", 1);
+    testing::unsetEnv("FIRMIR_LANGUAGE");
+    testing::setEnv("FIRMIR_LOCALE_BACKEND", "test");
 
     Locale* locale = Locale::instance();
     CHECK(locale->backend() != nullptr);

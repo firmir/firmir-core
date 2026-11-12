@@ -7,29 +7,61 @@
 
 #include <chrono>
 #include <cstring>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
 #include <thread>
-#include <unistd.h>
+
+#ifdef _WIN32
+#  ifndef WIN32_LEAN_AND_MEAN
+#    define WIN32_LEAN_AND_MEAN
+#  endif
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+using socklen_t = int;
+#else
+#  include <netdb.h>
+#  include <netinet/in.h>
+#  include <sys/socket.h>
+#  include <unistd.h>
+#endif
 
 using namespace Firmir;
 
 namespace {
 
+#ifdef _WIN32
+using TestSocket = SOCKET;
+constexpr TestSocket kInvalidSocket = INVALID_SOCKET;
+constexpr int kNoSignalFlag = 0; // MSG_NOSIGNAL does not exist on Windows
+void closeSocket(TestSocket s) { ::closesocket(s); }
+#else
+using TestSocket = int;
+constexpr TestSocket kInvalidSocket = -1;
+constexpr int kNoSignalFlag = MSG_NOSIGNAL;
+void closeSocket(TestSocket s) { ::close(s); }
+#endif
+
+int sendAll(TestSocket s, const char* data, std::size_t size) {
+    return ::send(s, data, static_cast<int>(size), kNoSignalFlag);
+}
+
 /// A one-shot blocking HTTP server on 127.0.0.1 with an ephemeral port.
 class TestHttpServer {
 public:
     TestHttpServer() {
+#ifdef _WIN32
+        WSADATA wsa{};
+        ::WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
         listenFd_ = ::socket(AF_INET, SOCK_STREAM, 0);
         int one = 1;
-        ::setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+        ::setsockopt(listenFd_, SOL_SOCKET, SO_REUSEADDR,
+                     reinterpret_cast<const char*>(&one),
+                     static_cast<socklen_t>(sizeof(one)));
         struct sockaddr_in addr {};
         addr.sin_family = AF_INET;
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         addr.sin_port = 0;
         ::bind(listenFd_, reinterpret_cast<struct sockaddr*>(&addr),
-               sizeof(addr));
+               static_cast<socklen_t>(sizeof(addr)));
         ::listen(listenFd_, 4);
         socklen_t len = sizeof(addr);
         ::getsockname(listenFd_, reinterpret_cast<struct sockaddr*>(&addr),
@@ -38,8 +70,8 @@ public:
     }
 
     ~TestHttpServer() {
-        if (listenFd_ != -1)
-            ::close(listenFd_);
+        if (listenFd_ != kInvalidSocket)
+            closeSocket(listenFd_);
     }
 
     int port() const { return port_; }
@@ -48,15 +80,15 @@ public:
     void serveOnce(const std::string& response) {
         struct sockaddr_in peer {};
         socklen_t len = sizeof(peer);
-        const int conn = ::accept(
+        const TestSocket conn = ::accept(
             listenFd_, reinterpret_cast<struct sockaddr*>(&peer), &len);
-        if (conn == -1)
+        if (conn == kInvalidSocket)
             return;
         // Drain the request headers.
         std::string request;
         char buf[1024];
         for (;;) {
-            const ssize_t n = ::recv(conn, buf, sizeof(buf), 0);
+            const int n = ::recv(conn, buf, static_cast<int>(sizeof(buf)), 0);
             if (n <= 0)
                 break;
             request.append(buf, static_cast<std::size_t>(n));
@@ -64,17 +96,17 @@ public:
                 break;
         }
         lastRequest_ = request;
-        ::send(conn, response.data(), response.size(), MSG_NOSIGNAL);
-        ::close(conn);
+        sendAll(conn, response.data(), response.size());
+        closeSocket(conn);
     }
 
     std::string lastRequest() const { return lastRequest_; }
 
     /// Raw acceptor for tests that need a custom (e.g. silent) connection.
-    int listenFdForTest() const { return listenFd_; }
+    TestSocket listenFdForTest() const { return listenFd_; }
 
 private:
-    int listenFd_ = -1;
+    TestSocket listenFd_ = kInvalidSocket;
     int port_ = 0;
     std::string lastRequest_;
 };
@@ -163,16 +195,21 @@ TEST_CASE(networking_http_error_status) {
 }
 
 TEST_CASE(networking_connection_refused) {
+#ifdef _WIN32
+    WSADATA wsa{};
+    ::WSAStartup(MAKEWORD(2, 2), &wsa);
+#endif
     // Bind and close a socket to obtain a guaranteed-free port.
-    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    TestSocket fd = ::socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in addr {};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    ::bind(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr));
+    ::bind(fd, reinterpret_cast<struct sockaddr*>(&addr),
+           static_cast<socklen_t>(sizeof(addr)));
     socklen_t len = sizeof(addr);
     ::getsockname(fd, reinterpret_cast<struct sockaddr*>(&addr), &len);
     const int port = ntohs(addr.sin_port);
-    ::close(fd);
+    closeSocket(fd);
 
     NetworkAccessManager manager;
     auto* reply = manager.get(
@@ -296,13 +333,13 @@ TEST_CASE(networking_transfer_timeout) {
     std::thread silentThread([&server] {
         struct sockaddr_in peer {};
         socklen_t len = sizeof(peer);
-        const int conn = ::accept(server.listenFdForTest(),
-                                  reinterpret_cast<struct sockaddr*>(&peer),
-                                  &len);
-        if (conn == -1)
+        const TestSocket conn =
+            ::accept(server.listenFdForTest(),
+                     reinterpret_cast<struct sockaddr*>(&peer), &len);
+        if (conn == kInvalidSocket)
             return;
         std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-        ::close(conn);
+        closeSocket(conn);
     });
 
     NetworkAccessManager manager;
@@ -342,13 +379,13 @@ TEST_CASE(networking_current_thread_timeout) {
     std::thread silentThread([&server] {
         struct sockaddr_in peer {};
         socklen_t len = sizeof(peer);
-        const int conn = ::accept(server.listenFdForTest(),
-                                  reinterpret_cast<struct sockaddr*>(&peer),
-                                  &len);
-        if (conn == -1)
+        const TestSocket conn =
+            ::accept(server.listenFdForTest(),
+                     reinterpret_cast<struct sockaddr*>(&peer), &len);
+        if (conn == kInvalidSocket)
             return;
         std::this_thread::sleep_for(std::chrono::milliseconds(3000));
-        ::close(conn);
+        closeSocket(conn);
     });
 
     NetworkAccessManager manager;

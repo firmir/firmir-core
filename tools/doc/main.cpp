@@ -16,14 +16,13 @@
 
 #include <algorithm>
 #include <cctype>
-#include <cerrno>
 #include <cstdio>
-#include <dirent.h>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <regex>
 #include <string>
-#include <sys/stat.h>
+#include <system_error>
 #include <vector>
 
 namespace {
@@ -205,40 +204,25 @@ Page parseHeader(const std::string& path, const std::string& relPath) {
 
 void collectHeaders(const std::string& dir, const std::string& prefix,
                     std::vector<std::string>& out) {
-    DIR* d = ::opendir(dir.c_str());
-    if (!d)
-        return;
-    struct dirent* ent;
-    while ((ent = ::readdir(d))) {
-        const std::string name = ent->d_name;
-        if (name == "." || name == "..")
-            continue;
-        const std::string full = dir + "/" + name;
+    std::error_code ec;
+    for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+        const std::string name = entry.path().filename().string();
         const std::string rel = prefix.empty() ? name : prefix + "/" + name;
-        struct stat st {};
-        if (::stat(full.c_str(), &st) != 0)
-            continue;
-        if (S_ISDIR(st.st_mode)) {
-            collectHeaders(full, rel, out);
-        } else if (name.size() > 4 &&
+        if (entry.is_directory()) {
+            collectHeaders((std::filesystem::path(dir) / name).string(), rel,
+                           out);
+        } else if (entry.is_regular_file() && name.size() > 4 &&
                    name.compare(name.size() - 4, 4, ".hpp") == 0) {
             out.push_back(rel);
         }
     }
-    ::closedir(d);
     std::sort(out.begin(), out.end());
 }
 
 bool makePath(const std::string& dir) {
-    std::string current;
-    for (const char c : dir) {
-        current += c;
-        if (c == '/' && current.size() > 1) {
-            if (::mkdir(current.c_str(), 0755) != 0 && errno != EEXIST)
-                return false;
-        }
-    }
-    return ::mkdir(dir.c_str(), 0755) == 0 || errno == EEXIST;
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    return !ec;
 }
 
 std::string renderPage(const Page& page) {

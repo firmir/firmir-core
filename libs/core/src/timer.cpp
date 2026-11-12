@@ -12,9 +12,19 @@
 #include <system_error>
 #include <thread>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
 #include <sys/epoll.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
+#endif
 
 namespace Firmir {
 
@@ -29,6 +39,28 @@ void armTimer(const std::shared_ptr<TimerCore>& core) {
     if (ms <= 0)
         return;
 
+#ifdef _WIN32
+    if (core->fd < 0) {
+        // Auto-reset waitable timer: signals on its own, no epoll needed;
+        // the event loop waits on the handle directly.
+        const HANDLE handle = ::CreateWaitableTimerExW(
+            nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+        if (!handle)
+            throw std::system_error(::GetLastError(), std::system_category(),
+                                    "CreateWaitableTimerExW");
+        core->fd = reinterpret_cast<std::intptr_t>(handle);
+        ThreadBridgeAccess::registerTimerFd(owner, core->fd, core);
+    }
+
+    // Negative relative due time in 100ns units; the period is milliseconds.
+    LARGE_INTEGER due{};
+    due.QuadPart = -static_cast<LONGLONG>(ms) * 10000LL;
+    const LONG period = core->single.load() ? 0 : static_cast<LONG>(ms);
+    if (!::SetWaitableTimer(reinterpret_cast<HANDLE>(core->fd), &due, period,
+                            nullptr, nullptr, FALSE))
+        throw std::system_error(::GetLastError(), std::system_category(),
+                                "SetWaitableTimer");
+#else
     if (core->fd < 0) {
         core->fd = ::timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
         if (core->fd < 0)
@@ -55,6 +87,7 @@ void armTimer(const std::shared_ptr<TimerCore>& core) {
     }
     if (::timerfd_settime(core->fd, 0, &spec, nullptr) < 0)
         throw std::system_error(errno, std::generic_category(), "timerfd_settime");
+#endif
     core->armed = true;
     core->active.store(true);
 }
@@ -62,11 +95,17 @@ void armTimer(const std::shared_ptr<TimerCore>& core) {
 void disarmTimerLocked(const std::shared_ptr<TimerCore>& core) {
     // Caller holds core->m and runs in the owner thread (or the loop is inactive).
     if (core->fd >= 0) {
+#ifdef _WIN32
+        ::CloseHandle(reinterpret_cast<HANDLE>(core->fd));
+        ThreadBridgeAccess::unregisterTimerFd(core->owner, core->fd);
+        core->fd = -1;
+#else
         const int epfd = ThreadBridgeAccess::epollFd(core->owner);
         ::epoll_ctl(epfd, EPOLL_CTL_DEL, core->fd, nullptr);
         ThreadBridgeAccess::unregisterTimerFd(core->owner, core->fd);
         ::close(core->fd);
         core->fd = -1;
+#endif
     }
     core->armed = false;
     core->active.store(false);

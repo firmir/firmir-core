@@ -19,9 +19,11 @@ namespace detail {
 struct TimerCore {
     std::mutex m;          ///< Guards alive, armed, fd, timer.
     bool alive = true;     ///< Cleared during Timer destruction.
-    bool armed = false;    ///< True while fd is registered in epoll.
+    bool armed = false;    ///< True while the timer is registered in the loop.
     bool adopted = false;  ///< singleShot: owner thread deletes it if it never fires.
-    int fd = -1;           ///< timerfd, created/closed in the owner thread.
+    /// Linux: timerfd; Windows: waitable timer HANDLE. Created/closed in the
+    /// owner thread.
+    std::intptr_t fd = -1;
     std::atomic<bool> active{false};
     std::atomic<bool> single{false};
     std::atomic<std::int64_t> intervalMs{0};

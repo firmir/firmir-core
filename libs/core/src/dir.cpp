@@ -115,8 +115,13 @@ String Dir::currentPath() {
 }
 
 String Dir::homePath() {
+#ifdef _WIN32
+    const char* home = std::getenv("USERPROFILE");
+    return String(home ? home : "C:/");
+#else
     const char* home = std::getenv("HOME");
     return String(home ? home : "/");
+#endif
 }
 
 } // namespace Firmir

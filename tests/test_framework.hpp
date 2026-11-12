@@ -49,6 +49,23 @@ bool waitFor(F&& pred, std::chrono::milliseconds timeout = std::chrono::millisec
     return pred();
 }
 
+/// Windows has no setenv/unsetenv; _putenv("name=") deletes a variable.
+inline void setEnv(const char* name, const char* value) {
+#ifdef _WIN32
+    ::_putenv((std::string(name) + "=" + value).c_str());
+#else
+    ::setenv(name, value, 1);
+#endif
+}
+
+inline void unsetEnv(const char* name) {
+#ifdef _WIN32
+    ::_putenv((std::string(name) + "=").c_str());
+#else
+    ::unsetenv(name);
+#endif
+}
+
 } // namespace testing
 
 #define TEST_CASE(name)                                                        \

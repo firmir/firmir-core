@@ -8,6 +8,9 @@
 #include <firmir/gui/shadereffect.hpp>
 #include <firmir/gui/text.hpp>
 
+#include <cstdlib>
+#include <string>
+
 using namespace Firmir;
 using namespace Firmir::Gui;
 
@@ -27,8 +30,17 @@ TEST_CASE(gui_native_font_and_database) {
     CHECK_EQ(text.fontFamily().toStdString(), "DejaVu Serif");
     text.setProperty("font.italic", true);
     CHECK(text.fontItalic());
+#ifdef _WIN32
+    // Windows has no DejaVu by default; Arial ships with every installation.
+    const char* winDir = std::getenv("WINDIR");
+    const std::string fontPath =
+        (winDir && *winDir ? std::string(winDir) : std::string("C:/Windows")) +
+        "/Fonts/arial.ttf";
+    const int id = FontDatabase::addApplicationFont(fontPath);
+#else
     const int id = FontDatabase::addApplicationFont(
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
+#endif
     CHECK(id >= 0);
     CHECK(!FontDatabase::applicationFontFamilies(id).empty());
     CHECK(FontDatabase::removeApplicationFont(id));

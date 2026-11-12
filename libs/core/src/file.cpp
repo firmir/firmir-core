@@ -2,7 +2,8 @@
 
 #include <cerrno>
 #include <cstring>
-#include <sys/stat.h>
+#include <filesystem>
+#include <system_error>
 
 namespace Firmir {
 
@@ -74,30 +75,51 @@ void File::flush() {
         std::fflush(d->handle);
 }
 
+namespace {
+
+// 64-bit file offsets: ftell/fseek are 32-bit in the Windows CRT.
+long long tellPos(std::FILE* handle) {
+#ifdef _WIN32
+    return static_cast<long long>(::_ftelli64(handle));
+#else
+    return static_cast<long long>(std::ftell(handle));
+#endif
+}
+
+bool seekTo(std::FILE* handle, long long offset, int origin) {
+#ifdef _WIN32
+    return ::_fseeki64(handle, offset, origin) == 0;
+#else
+    return std::fseek(handle, static_cast<long>(offset), origin) == 0;
+#endif
+}
+
+} // namespace
+
 long long File::pos() const {
     if (!d->handle)
         return 0;
-    return static_cast<long long>(std::ftell(d->handle));
+    return tellPos(d->handle);
 }
 
 long long File::size() const {
     if (!d->handle) {
-        struct stat st {};
-        if (::stat(d->name.toStdString().c_str(), &st) != 0)
-            return 0;
-        return static_cast<long long>(st.st_size);
+        std::error_code ec;
+        const auto size =
+            std::filesystem::file_size(d->name.toStdString(), ec);
+        return ec ? 0 : static_cast<long long>(size);
     }
     const long long current = pos();
-    std::fseek(d->handle, 0, SEEK_END);
+    seekTo(d->handle, 0, SEEK_END);
     const long long end = pos();
-    std::fseek(d->handle, current, SEEK_SET);
+    seekTo(d->handle, current, SEEK_SET);
     return end;
 }
 
 bool File::seek(long long pos) {
     if (!d->handle)
         return false;
-    return std::fseek(d->handle, static_cast<long>(pos), SEEK_SET) == 0;
+    return seekTo(d->handle, pos, SEEK_SET);
 }
 
 bool File::atEnd() const {
@@ -145,8 +167,8 @@ long long File::write(const ByteArray& data) {
 String File::errorString() const { return d->error; }
 
 bool File::exists(const String& name) {
-    struct stat st {};
-    return ::stat(name.toStdString().c_str(), &st) == 0;
+    std::error_code ec;
+    return std::filesystem::exists(name.toStdString(), ec);
 }
 
 bool File::remove(const String& name) {

@@ -1,13 +1,12 @@
 #include <firmir/render/render.hpp>
 
+#include <firmir/detail/dynload.hpp>
 #include <firmir/log.hpp>
 
 #include <cstdlib>
-#include <dlfcn.h>
 #include <mutex>
 #include <utility>
 #include <vector>
-#include <unistd.h>
 
 namespace Firmir {
 namespace Render {
@@ -19,37 +18,15 @@ const LoggingCategory& lcRender() {
     return category;
 }
 
-/// Directories searched for firmir-render-<name>.so plugins:
-/// FIRMIR_RENDER_PLUGIN_PATH (colon-separated), then `plugins/render`
-/// relative to the running executable (build tree and installed layouts).
+/// Directories searched for firmir-render-<name> plugins (.so/.dll):
+/// FIRMIR_RENDER_PLUGIN_PATH (separator: ':' on Linux, ';' on Windows), then
+/// `plugins/render` relative to the running executable (build tree and
+/// installed layouts).
 std::vector<std::string> pluginDirs() {
-    std::vector<std::string> dirs;
-    const char* path = std::getenv("FIRMIR_RENDER_PLUGIN_PATH");
-    if (path && *path) {
-        std::string rest = path;
-        for (;;) {
-            const std::size_t colon = rest.find(':');
-            dirs.push_back(rest.substr(0, colon));
-            if (colon == std::string::npos)
-                break;
-            rest.erase(0, colon + 1);
-        }
-    }
-    char exePath[4096];
-    const ssize_t len =
-        ::readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
-    if (len > 0) {
-        exePath[len] = '\0';
-        std::string dir = exePath;
-        const std::size_t slash = dir.rfind('/');
-        if (slash != std::string::npos) {
-            dir.erase(slash);
-            dirs.push_back(dir + "/../plugins/render");
-            dirs.push_back(dir + "/../../plugins/render");
-            dirs.push_back(dir + "/../../../plugins/render");
-            dirs.push_back(dir + "/plugins/render");
-        }
-    }
+    std::vector<std::string> dirs = detail::pluginSearchDirs(
+        "FIRMIR_RENDER_PLUGIN_PATH",
+        {"../plugins/render", "../../plugins/render", "../../../plugins/render",
+         "plugins/render"});
 #ifdef FIRMIR_SYSTEM_PLUGIN_DIR
     dirs.push_back(FIRMIR_SYSTEM_PLUGIN_DIR);
 #endif
@@ -88,23 +65,24 @@ RenderBackend* Render::backend(const std::string& name) {
                 return loaded.backend;
         }
 
-        const std::string file = "firmir-render-" + backendName + ".so";
+        const std::string file =
+            "firmir-render-" + backendName + detail::sharedLibrarySuffix();
         for (const std::string& dir : pluginDirs()) {
             const std::string path = dir + "/" + file;
-            void* handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+            void* handle = detail::libraryOpen(path);
             if (!handle)
                 continue;
             auto create = reinterpret_cast<CreateRenderBackendFunc>(
-                dlsym(handle, FIRMIR_RENDER_CREATE_BACKEND));
+                detail::librarySymbol(handle, FIRMIR_RENDER_CREATE_BACKEND));
             if (!create) {
                 cLogWarning(lcRender())
                     << "no" << FIRMIR_RENDER_CREATE_BACKEND << "in" << path;
-                dlclose(handle);
+                detail::libraryClose(handle);
                 continue;
             }
             RenderBackend* backend = create();
             if (!backend) {
-                dlclose(handle);
+                detail::libraryClose(handle);
                 continue;
             }
             g_backends.push_back({backendName, handle, backend});
@@ -135,7 +113,7 @@ void Render::shutdown() {
         loaded.swap(g_backends);
     }
     for (auto it = loaded.rbegin(); it != loaded.rend(); ++it)
-        dlclose(it->handle);
+        detail::libraryClose(it->handle);
 }
 
 } // namespace Render

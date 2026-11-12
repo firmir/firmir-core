@@ -4,14 +4,12 @@
 
 #include <firmir/locale.hpp>
 
+#include <firmir/detail/dynload.hpp>
 #include <firmir/localebackend.hpp>
 #include <firmir/log.hpp>
 
-#include <dlfcn.h>
-#include <dirent.h>
-#include <unistd.h>
-
 #include <cstdlib>
+#include <filesystem>
 #include <vector>
 
 namespace Firmir {
@@ -23,35 +21,12 @@ const LoggingCategory& lcLocale() {
     return category;
 }
 
-/// Directories searched for firmir-locale-<name>.so plugins.
+/// Directories searched for firmir-locale-<name> plugins (.so/.dll).
 std::vector<std::string> pluginDirs() {
-    std::vector<std::string> dirs;
-    const char* path = std::getenv("FIRMIR_CORE_PLUGIN_PATH");
-    if (path && *path) {
-        std::string rest = path;
-        for (;;) {
-            const std::size_t colon = rest.find(':');
-            dirs.push_back(rest.substr(0, colon));
-            if (colon == std::string::npos)
-                break;
-            rest.erase(0, colon + 1);
-        }
-    }
-    char exePath[4096];
-    const ssize_t len =
-        ::readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
-    if (len > 0) {
-        exePath[len] = '\0';
-        std::string dir = exePath;
-        const std::size_t slash = dir.rfind('/');
-        if (slash != std::string::npos) {
-            dir.erase(slash);
-            dirs.push_back(dir + "/../plugins/core");
-            dirs.push_back(dir + "/../../plugins/core");
-            dirs.push_back(dir + "/../../../plugins/core");
-            dirs.push_back(dir + "/plugins/core");
-        }
-    }
+    std::vector<std::string> dirs = detail::pluginSearchDirs(
+        "FIRMIR_CORE_PLUGIN_PATH",
+        {"../plugins/core", "../../plugins/core", "../../../plugins/core",
+         "plugins/core"});
 #ifdef FIRMIR_SYSTEM_PLUGIN_DIR
     dirs.push_back(std::string(FIRMIR_SYSTEM_PLUGIN_DIR));
 #endif
@@ -79,29 +54,30 @@ std::string envLanguage() {
     return locale;
 }
 
-/// Tries to load firmir-locale-<name>.so from every search directory.
+/// Tries to load firmir-locale-<name> (.so/.dll) from every search directory.
 LocaleBackend* loadBackendNamed(const std::string& name, Object* host) {
-    const std::string file = "firmir-locale-" + name + ".so";
+    const std::string file =
+        "firmir-locale-" + name + detail::sharedLibrarySuffix();
     for (const std::string& dir : pluginDirs()) {
         const std::string path = dir + "/" + file;
-        void* handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+        void* handle = detail::libraryOpen(path);
         if (!handle)
             continue;
         auto entry = reinterpret_cast<LocalePluginEntry>(
-            dlsym(handle, FIRMIR_LOCALE_PLUGIN_ENTRY));
+            detail::librarySymbol(handle, FIRMIR_LOCALE_PLUGIN_ENTRY));
         const LocalePlugin* plugin = entry ? entry() : nullptr;
         if (!plugin || plugin->abiVersion != FIRMIR_LOCALE_PLUGIN_ABI) {
             cLogWarning(lcLocale()) << "bad plugin ABI in" << path;
-            dlclose(handle);
+            detail::libraryClose(handle);
             continue;
         }
         if (plugin->available && !plugin->available()) {
             cLogInfo(lcLocale()) << "locale backend unavailable:" << name;
-            dlclose(handle);
+            detail::libraryClose(handle);
             continue;
         }
         if (!plugin->create) {
-            dlclose(handle);
+            detail::libraryClose(handle);
             continue;
         }
         cLogInfo(lcLocale()) << "loaded locale backend" << path;
@@ -111,28 +87,28 @@ LocaleBackend* loadBackendNamed(const std::string& name, Object* host) {
 }
 
 /// Picks a backend: FIRMIR_LOCALE_BACKEND pins a name; otherwise the first
-/// firmir-locale-*.so found in the search directories.
+/// firmir-locale-* plugin found in the search directories.
 LocaleBackend* loadBackend(Object* host) {
     const char* pinned = std::getenv("FIRMIR_LOCALE_BACKEND");
     if (pinned && *pinned)
         return loadBackendNamed(pinned, host);
+    const std::string suffix = detail::sharedLibrarySuffix();
+    std::error_code ec;
     for (const std::string& dir : pluginDirs()) {
-        DIR* d = opendir(dir.c_str());
-        if (!d)
-            continue;
-        while (const dirent* entry = readdir(d)) {
-            const std::string file = entry->d_name;
+        for (const auto& entry :
+             std::filesystem::directory_iterator(dir, ec)) {
+            const std::string file = entry.path().filename().string();
             if (file.rfind("firmir-locale-", 0) != 0 ||
-                file.compare(file.size() - 3, 3, ".so") != 0)
+                file.size() <= suffix.size() + 14 ||
+                file.compare(file.size() - suffix.size(), suffix.size(),
+                             suffix) != 0)
                 continue;
+            // Strip the prefix and the library suffix.
             const std::string name =
-                file.substr(14, file.size() - 14 - 3); // strip prefix + ".so"
-            if (LocaleBackend* backend = loadBackendNamed(name, host)) {
-                closedir(d);
+                file.substr(14, file.size() - 14 - suffix.size());
+            if (LocaleBackend* backend = loadBackendNamed(name, host))
                 return backend;
-            }
         }
-        closedir(d);
     }
     return nullptr;
 }

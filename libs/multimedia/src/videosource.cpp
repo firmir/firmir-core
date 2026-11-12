@@ -1,18 +1,16 @@
 // VideoSource plugin loading: decode backends live in
-// firmir-mm-<name>.so (plugins/multimedia/<name>/), found in
-// FIRMIR_MULTIMEDIA_PLUGIN_PATH (colon-separated), then
-// `plugins/multimedia` relative to the running executable, then the system
-// plugin directory.
+// firmir-mm-<name> plugins (.so/.dll; plugins/multimedia/<name>/), found in
+// FIRMIR_MULTIMEDIA_PLUGIN_PATH (separator: ':' on Linux, ';' on Windows),
+// then `plugins/multimedia` relative to the running executable, then the
+// system plugin directory.
 
+#include <firmir/detail/dynload.hpp>
 #include <firmir/log.hpp>
 #include <firmir/multimedia/mmplugin.hpp>
 #include <firmir/multimedia/videosource.hpp>
 
-#include <dlfcn.h>
-#include <dirent.h>
-#include <unistd.h>
-
 #include <algorithm>
+#include <filesystem>
 #include <mutex>
 #include <string>
 
@@ -32,35 +30,12 @@ const LoggingCategory& lcMm() {
     return category;
 }
 
-/// Directories searched for firmir-mm-<name>.so plugins.
+/// Directories searched for firmir-mm-<name> plugins.
 std::vector<std::string> pluginDirs() {
-    std::vector<std::string> dirs;
-    const char* path = std::getenv("FIRMIR_MULTIMEDIA_PLUGIN_PATH");
-    if (path && *path) {
-        std::string rest = path;
-        for (;;) {
-            const std::size_t colon = rest.find(':');
-            dirs.push_back(rest.substr(0, colon));
-            if (colon == std::string::npos)
-                break;
-            rest.erase(0, colon + 1);
-        }
-    }
-    char exePath[4096];
-    const ssize_t len =
-        ::readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
-    if (len > 0) {
-        exePath[len] = '\0';
-        std::string dir = exePath;
-        const std::size_t slash = dir.rfind('/');
-        if (slash != std::string::npos) {
-            dir.erase(slash);
-            dirs.push_back(dir + "/../plugins/multimedia");
-            dirs.push_back(dir + "/../../plugins/multimedia");
-            dirs.push_back(dir + "/../../../plugins/multimedia");
-            dirs.push_back(dir + "/plugins/multimedia");
-        }
-    }
+    std::vector<std::string> dirs = detail::pluginSearchDirs(
+        "FIRMIR_MULTIMEDIA_PLUGIN_PATH",
+        {"../plugins/multimedia", "../../plugins/multimedia",
+         "../../../plugins/multimedia", "plugins/multimedia"});
 #ifdef FIRMIR_SYSTEM_PLUGIN_DIR
     dirs.push_back(std::string(FIRMIR_SYSTEM_PLUGIN_DIR) + "/multimedia");
 #endif
@@ -84,23 +59,24 @@ const MmSourcePlugin* loadPlugin(const std::string& name) {
         if (loaded.name == name)
             return loaded.plugin;
     }
-    const std::string file = "firmir-mm-" + name + ".so";
+    const std::string file =
+        "firmir-mm-" + name + detail::sharedLibrarySuffix();
     for (const std::string& dir : pluginDirs()) {
         const std::string path = dir + "/" + file;
-        void* handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+        void* handle = detail::libraryOpen(path);
         if (!handle)
             continue;
         auto entry = reinterpret_cast<MmPluginEntry>(
-            dlsym(handle, FIRMIR_MM_PLUGIN_ENTRY));
+            detail::librarySymbol(handle, FIRMIR_MM_PLUGIN_ENTRY));
         const MmSourcePlugin* plugin = entry ? entry() : nullptr;
         if (!plugin || plugin->abiVersion != FIRMIR_MM_PLUGIN_ABI) {
             cLogWarning(lcMm()) << "bad plugin ABI in" << path;
-            dlclose(handle);
+            detail::libraryClose(handle);
             continue;
         }
         if (plugin->available && !plugin->available()) {
             cLogInfo(lcMm()) << "multimedia backend unavailable:" << name;
-            dlclose(handle);
+            detail::libraryClose(handle);
             continue;
         }
         g_plugins.push_back({name, handle, plugin});
@@ -114,21 +90,22 @@ const MmSourcePlugin* loadPlugin(const std::string& name) {
 /// All installed plugin names (scanned from the plugin directories).
 std::vector<std::string> installedBackends() {
     std::vector<std::string> names;
+    const std::string suffix = detail::sharedLibrarySuffix();
+    std::error_code ec;
     for (const std::string& dir : pluginDirs()) {
-        DIR* dp = opendir(dir.c_str());
-        if (!dp)
-            continue;
-        while (dirent* de = readdir(dp)) {
-            const std::string file = de->d_name;
-            if (file.size() > 12 && file.compare(0, 10, "firmir-mm-") == 0 &&
-                file.compare(file.size() - 3, 3, ".so") == 0) {
-                const std::string name = file.substr(10, file.size() - 13);
+        for (const auto& entry : std::filesystem::directory_iterator(dir, ec)) {
+            const std::string file = entry.path().filename().string();
+            if (file.size() > 10 + suffix.size() &&
+                file.compare(0, 10, "firmir-mm-") == 0 &&
+                file.compare(file.size() - suffix.size(), suffix.size(),
+                             suffix) == 0) {
+                const std::string name =
+                    file.substr(10, file.size() - 10 - suffix.size());
                 if (std::find(names.begin(), names.end(), name) ==
                     names.end())
                     names.push_back(name);
             }
         }
-        closedir(dp);
     }
     // "auto" preference: gstreamer, then ffmpeg, then anything else.
     const auto rank = [](const std::string& n) {

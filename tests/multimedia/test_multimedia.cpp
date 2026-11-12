@@ -108,7 +108,7 @@ struct MockVideoSource {
 TEST_CASE(multimedia_backend_factory) {
     using namespace Firmir::Multimedia;
 #ifdef FIRMIR_MM_TEST_PLUGIN_DIR
-    ::setenv("FIRMIR_MULTIMEDIA_PLUGIN_PATH", FIRMIR_MM_TEST_PLUGIN_DIR, 1);
+    testing::setEnv("FIRMIR_MULTIMEDIA_PLUGIN_PATH", FIRMIR_MM_TEST_PLUGIN_DIR);
 #endif
     CHECK(createVideoSource("definitely-not-a-backend") == nullptr);
     const auto backends = availableVideoSourceBackends();
@@ -182,7 +182,7 @@ TEST_CASE(multimedia_video_output_receives_queued_frame) {
 #ifdef FIRMIR_RENDER_TEST_SOFT
 TEST_CASE(multimedia_video_output_renders_letterboxed_frame) {
 #ifdef FIRMIR_RENDER_TEST_PLUGIN_DIR
-    ::setenv("FIRMIR_RENDER_PLUGIN_PATH", FIRMIR_RENDER_TEST_PLUGIN_DIR, 1);
+    testing::setEnv("FIRMIR_RENDER_PLUGIN_PATH", FIRMIR_RENDER_TEST_PLUGIN_DIR);
 #endif
     auto device = Firmir::Render::Render::createDevice("soft");
     CHECK(device != nullptr);
@@ -316,7 +316,7 @@ TEST_CASE(multimedia_video_output_fill_modes) {
     // 4x2 red frame in a 100x100 output: Fit letterboxes to 100x50 centered,
     // Pad draws 1:1 centered, Crop covers the whole area (clipped).
 #ifdef FIRMIR_RENDER_TEST_PLUGIN_DIR
-    ::setenv("FIRMIR_RENDER_PLUGIN_PATH", FIRMIR_RENDER_TEST_PLUGIN_DIR, 1);
+    testing::setEnv("FIRMIR_RENDER_PLUGIN_PATH", FIRMIR_RENDER_TEST_PLUGIN_DIR);
 #endif
     auto device = Firmir::Render::Render::createDevice("soft");
     CHECK(device != nullptr);
@@ -391,7 +391,7 @@ TEST_CASE(multimedia_video_output_gpu_frame_soft_fallback) {
     // Soft renderer cannot import dma-buf: a GPU frame falls back to the
     // readback + CPU draw path and is counted as a fallback frame.
 #ifdef FIRMIR_RENDER_TEST_PLUGIN_DIR
-    ::setenv("FIRMIR_RENDER_PLUGIN_PATH", FIRMIR_RENDER_TEST_PLUGIN_DIR, 1);
+    testing::setEnv("FIRMIR_RENDER_PLUGIN_PATH", FIRMIR_RENDER_TEST_PLUGIN_DIR);
 #endif
     auto device = Firmir::Render::Render::createDevice("soft");
     CHECK(device != nullptr);

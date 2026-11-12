@@ -8,18 +8,31 @@
 
 #include <cstdlib>
 #include <filesystem>
-#include <unistd.h>
+
+#ifdef _WIN32
+#  include <process.h>
+#else
+#  include <unistd.h>
+#endif
 
 using namespace Firmir;
 
 namespace {
+
+int currentPid() {
+#ifdef _WIN32
+    return ::_getpid();
+#else
+    return ::getpid();
+#endif
+}
 
 /// RAII temp directory for IO tests.
 struct TempDir {
     TempDir() {
         path = String(
             (std::filesystem::temp_directory_path() /
-             ("firmir-test-" + std::to_string(::getpid())))
+             ("firmir-test-" + std::to_string(currentPid())))
                 .string());
         Dir().mkpath(path);
     }
@@ -97,7 +110,9 @@ TEST_CASE(fileinfo_queries) {
     CHECK_EQ(info.baseName(), "archive");
     CHECK_EQ(info.suffix(), "gz");
     CHECK_EQ(info.size(), 7);
-    CHECK(info.absoluteFilePath().startsWith("/"));
+    // Absolute path: "/..." on POSIX, "C:\..." or "C:/..." on Windows.
+    CHECK(std::filesystem::path(info.absoluteFilePath().toStdString())
+              .is_absolute());
     CHECK(info.absoluteFilePath().endsWith("archive.tar.gz"));
     CHECK(info.lastModified().time_since_epoch().count() > 0);
 

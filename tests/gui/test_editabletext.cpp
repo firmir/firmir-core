@@ -20,8 +20,8 @@ namespace {
 /// Initializes the platform singleton with the headless backend once.
 void ensurePlatform() {
     static const bool once = [] {
-        ::setenv("FIRMIR_GUI_DISPLAY", "headless", 1);
-        ::setenv("FIRMIR_GUI_INPUT", "headless", 1);
+        testing::setEnv("FIRMIR_GUI_DISPLAY", "headless");
+        testing::setEnv("FIRMIR_GUI_INPUT", "headless");
         Platform::instance();
         return true;
     }();

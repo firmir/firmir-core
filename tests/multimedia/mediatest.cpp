@@ -84,7 +84,7 @@ bool synthesizeAvi(const char* path) {
 
 int main() {
 #ifdef FIRMIR_MM_TEST_PLUGIN_DIR
-    ::setenv("FIRMIR_MULTIMEDIA_PLUGIN_PATH", FIRMIR_MM_TEST_PLUGIN_DIR, 1);
+    testing::setEnv("FIRMIR_MULTIMEDIA_PLUGIN_PATH", FIRMIR_MM_TEST_PLUGIN_DIR);
 #endif
     const char* path = "/tmp/firmir_multimedia_mediatest.avi";
     if (!synthesizeAvi(path)) {

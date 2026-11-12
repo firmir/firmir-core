@@ -7,7 +7,9 @@
 #include <cstdlib>
 #include <memory>
 #include <vector>
-#include <unistd.h>
+#ifndef _WIN32
+#  include <unistd.h>
+#endif
 
 using namespace Firmir::Render;
 
@@ -24,7 +26,7 @@ std::vector<std::uint8_t> shaderCode(const char* text) {
 
 TEST_CASE(render_null_records_primitive_draws) {
 #ifdef FIRMIR_RENDER_TEST_PLUGIN_DIR
-    ::setenv("FIRMIR_RENDER_PLUGIN_PATH", FIRMIR_RENDER_TEST_PLUGIN_DIR, 1);
+    testing::setEnv("FIRMIR_RENDER_PLUGIN_PATH", FIRMIR_RENDER_TEST_PLUGIN_DIR);
 #endif
     Null::reset();
 
@@ -353,7 +355,8 @@ TEST_CASE(render_opengl_clear_quad_and_texture) {
 }
 #endif // FIRMIR_RENDER_TEST_OPENGL
 
-#ifdef FIRMIR_RENDER_TEST_OPENGL
+#if defined(FIRMIR_RENDER_TEST_OPENGL) && !defined(_WIN32)
+// dma-buf import is POSIX-only.
 TEST_CASE(render_opengl_dmabuf_capability) {
     // Capability detection + graceful failure of the dma-buf import path.
     SoftScene scene = makeSoftScene(false, "opengl");
@@ -383,9 +386,10 @@ TEST_CASE(render_opengl_dmabuf_capability) {
         ::close(fds[1]);
     }
 }
-#endif // FIRMIR_RENDER_TEST_OPENGL
+#endif // FIRMIR_RENDER_TEST_OPENGL && !_WIN32
 
 #ifdef FIRMIR_RENDER_TEST_VULKAN
+#ifndef _WIN32 // dma-buf import is POSIX-only.
 TEST_CASE(render_vulkan_dmabuf_capability) {
     SoftScene scene = makeSoftScene(false, "vulkan");
     if (!scene.device) {
@@ -413,6 +417,7 @@ TEST_CASE(render_vulkan_dmabuf_capability) {
         ::close(fds[1]);
     }
 }
+#endif // !_WIN32
 
 TEST_CASE(render_vulkan_clear_quad_scissor_texture_and_indices) {
     SoftScene scene = makeSoftScene(true, "vulkan");

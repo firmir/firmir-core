@@ -14,5 +14,8 @@ target_link_libraries(firmir-networking
     PUBLIC firmir-core
     PRIVATE OpenSSL::SSL OpenSSL::Crypto
 )
+if(WIN32)
+    target_link_libraries(firmir-networking PRIVATE ws2_32)
+endif()
 
 firmir_install_library(firmir-networking MODULE networking REQUIRES firmir-core)

@@ -18,8 +18,11 @@
 #include <string>
 #include <utility>
 #include <vector>
+#ifndef _WIN32
+// dma-buf import (VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) is POSIX-only.
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 using namespace Firmir::Render;
 
@@ -396,6 +399,11 @@ Texture::Texture(Device* device, const DmaBufTextureDesc& desc)
     if (m_memory) { vkFreeMemory(device->handle(), m_memory, nullptr); m_memory = VK_NULL_HANDLE; }
 }
 
+#ifdef _WIN32
+bool Texture::importDmaBuf(const DmaBufTextureDesc&) {
+    return false; // dma-buf does not exist on Windows.
+}
+#else
 bool Texture::importDmaBuf(const DmaBufTextureDesc& desc) {
     const VkFormat format = vkFormatFromFourcc(desc.fourcc);
     const bool yuv = desc.fourcc != Fourcc::Abgr8;
@@ -548,6 +556,7 @@ bool Texture::importDmaBuf(const DmaBufTextureDesc& desc) {
                              nullptr, 0, nullptr, 1, &barrier);
     });
 }
+#endif // _WIN32
 
 RenderTexture* Device::importDmaBufTexture(const DmaBufTextureDesc& desc) {
     if (!valid() || !supportsDmaBufTextures())

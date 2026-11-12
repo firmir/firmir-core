@@ -12,6 +12,8 @@
 #include <firmir/gui/screen.hpp>
 #include <firmir/gui/text.hpp>
 #include <firmir/gui/theme.hpp>
+
+#include <filesystem>
 #include <firmir/gui/window.hpp>
 #if __has_include(<firmir/gui-controls/containers.hpp>)
 #include <firmir/gui-controls/Button.hpp>
@@ -42,8 +44,8 @@ namespace {
 /// Initializes the platform singleton with the headless backend once.
 void ensurePlatform() {
     static const bool once = [] {
-        ::setenv("FIRMIR_GUI_DISPLAY", "headless", 1);
-        ::setenv("FIRMIR_GUI_INPUT", "headless", 1);
+        testing::setEnv("FIRMIR_GUI_DISPLAY", "headless");
+        testing::setEnv("FIRMIR_GUI_INPUT", "headless");
         Platform::instance();
         return true;
     }();
@@ -1436,7 +1438,7 @@ TEST_CASE(gui_theme_config_file) {
     theme->setProperty("paddingMedium", 13.5);
     theme->setProperty("highlightColor", Firmir::String("#FFA000"));
     theme->setProperty("colorScheme", Firmir::String("darkOnLight"));
-    const char* path = "/tmp/firmir-test-theme.json";
+    const std::string path = (std::filesystem::temp_directory_path() / "firmir-test-theme.json").string();
     CHECK(theme->saveToFile(String(path)));
 
     theme->setProperty("paddingMedium", 8.0);
@@ -1462,31 +1464,31 @@ TEST_CASE(gui_theme_config_file) {
     // Unknown keys are skipped (and must not create dynamic properties).
     const std::size_t metaCount = theme->propertyMetaList().size();
     {
-        std::ofstream out("/tmp/firmir-test-theme-partial.json");
+        std::ofstream out((std::filesystem::temp_directory_path() / "firmir-test-theme-partial.json").string());
         out << "{\"paddingSmall\": 7.5, \"noSuchKey\": 1, "
                "\"fontSizeLarge\": \"not a number\"}";
     }
     const double savedSmall = theme->paddingSmall();
     const int savedFontLarge = theme->fontSizeLarge();
-    CHECK(theme->loadFromFile(String("/tmp/firmir-test-theme-partial.json")));
+    CHECK(theme->loadFromFile(String((std::filesystem::temp_directory_path() / "firmir-test-theme-partial.json").string())));
     CHECK_EQ(theme->paddingSmall(), 7.5);
     CHECK_EQ(theme->fontSizeLarge(), savedFontLarge); // type mismatch skipped
     CHECK_EQ(theme->propertyMetaList().size(), metaCount); // no dynamic prop
     theme->setProperty("paddingSmall", savedSmall);
 
     // Missing/broken files report failure.
-    CHECK(!theme->loadFromFile(String("/tmp/firmir-test-theme-none.json")));
+    CHECK(!theme->loadFromFile(String((std::filesystem::temp_directory_path() / "firmir-test-theme-none.json").string())));
     {
-        std::ofstream out("/tmp/firmir-test-theme-bad.json");
+        std::ofstream out((std::filesystem::temp_directory_path() / "firmir-test-theme-bad.json").string());
         out << "not json";
     }
-    CHECK(!theme->loadFromFile(String("/tmp/firmir-test-theme-bad.json")));
+    CHECK(!theme->loadFromFile(String((std::filesystem::temp_directory_path() / "firmir-test-theme-bad.json").string())));
 
     // Restore and clean up.
     theme->setProperty("paddingMedium", savedPadding);
     theme->setProperty("highlightColor", savedHighlight);
     theme->setColorScheme(savedScheme);
-    std::remove(path);
-    std::remove("/tmp/firmir-test-theme-partial.json");
-    std::remove("/tmp/firmir-test-theme-bad.json");
+    std::remove(path.c_str());
+    std::remove((std::filesystem::temp_directory_path() / "firmir-test-theme-partial.json").string().c_str());
+    std::remove((std::filesystem::temp_directory_path() / "firmir-test-theme-bad.json").string().c_str());
 }

@@ -101,7 +101,9 @@ JsonObject JsonValue::toObject() const {
 JsonArray::JsonArray() : d(std::make_shared<Impl>()) {}
 
 void JsonArray::detach() {
-    if (!d.unique())
+    // shared_ptr::unique() is deprecated in C++17; use_count() == 1 is the
+    // documented equivalent for detach-on-write here (no weak refs exist).
+    if (d.use_count() > 1)
         d = std::make_shared<Impl>(*d);
 }
 
@@ -139,7 +141,7 @@ void JsonArray::removeAt(int i) {
 JsonObject::JsonObject() : d(std::make_shared<Impl>()) {}
 
 void JsonObject::detach() {
-    if (!d.unique())
+    if (d.use_count() > 1)
         d = std::make_shared<Impl>(*d);
 }
 

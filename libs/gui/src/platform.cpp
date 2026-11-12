@@ -2,7 +2,7 @@
 
 #include <algorithm>
 #include <cstdlib>
-#include <dlfcn.h>
+#include <firmir/detail/dynload.hpp>
 #include <firmir/thread.hpp>
 #include <firmir/gui/backend.hpp>
 #include <firmir/gui/screen.hpp>
@@ -10,7 +10,9 @@
 #include <firmir/log.hpp>
 #include <mutex>
 #include <stdexcept>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 namespace Firmir {
 namespace Gui {
@@ -42,43 +44,21 @@ public:
     InputEvent input;
 };
 
-/// Directories searched for firmir-gui-<name>.so plugins:
-/// FIRMIR_GUI_PLUGIN_PATH (colon-separated), then directories relative to
-/// the running executable (build tree and installed layouts).
+/// Directories searched for firmir-gui-<name> plugins (.so/.dll):
+/// FIRMIR_GUI_PLUGIN_PATH (separator: ':' on Linux, ';' on Windows), then
+/// directories relative to the running executable (build tree and installed
+/// layouts).
 std::vector<std::string> pluginDirs() {
-    std::vector<std::string> dirs;
-    const char* path = std::getenv("FIRMIR_GUI_PLUGIN_PATH");
-    if (path && *path) {
-        std::string rest = path;
-        for (;;) {
-            const std::size_t colon = rest.find(':');
-            dirs.push_back(rest.substr(0, colon));
-            if (colon == std::string::npos)
-                break;
-            rest.erase(0, colon + 1);
-        }
-    }
-    char exePath[4096];
-    const ssize_t len =
-        ::readlink("/proc/self/exe", exePath, sizeof(exePath) - 1);
-    if (len > 0) {
-        exePath[len] = '\0';
-        std::string dir = exePath;
-        const std::size_t slash = dir.rfind('/');
-        if (slash != std::string::npos) {
-            dir.erase(slash);
-            dirs.push_back(dir + "/../plugins");
-            dirs.push_back(dir + "/../../plugins");
-            dirs.push_back(dir + "/../../../plugins");
-            dirs.push_back(dir + "/plugins");
-        }
-    }
+    std::vector<std::string> dirs = Firmir::detail::pluginSearchDirs(
+        "FIRMIR_GUI_PLUGIN_PATH",
+        {"../plugins", "../../plugins", "../../../plugins", "plugins"});
 #ifdef FIRMIR_SYSTEM_PLUGIN_DIR
     dirs.push_back(FIRMIR_SYSTEM_PLUGIN_DIR);
 #endif
     return dirs;
 }
 
+#ifndef _WIN32
 /// True when a Wayland compositor socket exists ($XDG_RUNTIME_DIR/
 /// $WAYLAND_DISPLAY, defaulting to wayland-0).
 bool waylandSocketExists() {
@@ -100,12 +80,14 @@ bool drmDeviceExists() {
     }
     return false;
 }
+#endif
 
 void* loadPlugin(const char* kind, const std::string& name) {
-    const std::string file = "firmir-gui-" + name + ".so";
+    const std::string file =
+        "firmir-gui-" + name + Firmir::detail::sharedLibrarySuffix();
     for (const std::string& dir : pluginDirs()) {
         const std::string path = dir + "/" + file;
-        if (void* handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL)) {
+        if (void* handle = Firmir::detail::libraryOpen(path)) {
             cLogInfo(lcGui()) << "loaded" << kind << "backend" << path;
             return handle;
         }
@@ -135,16 +117,19 @@ public:
 void Platform::Impl::loadBackends(Platform* q) {
     // Display backend: FIRMIR_GUI_DISPLAY when set, otherwise the first
     // loadable of: wayland (when a compositor socket exists), drm (with
-    // evdev input, when a /dev/dri/cardN node exists), headless.
+    // evdev input, when a /dev/dri/cardN node exists), headless. Neither
+    // wayland nor drm exists on Windows — headless is the default there.
     const char* displayName = std::getenv("FIRMIR_GUI_DISPLAY");
     std::vector<std::string> candidates;
     if (displayName && *displayName) {
         candidates.push_back(displayName);
     } else {
+#ifndef _WIN32
         if (waylandSocketExists())
             candidates.push_back("wayland");
         if (drmDeviceExists())
             candidates.push_back("drm");
+#endif
         candidates.push_back("headless");
     }
     std::string display;
@@ -162,7 +147,7 @@ void Platform::Impl::loadBackends(Platform* q) {
     if (!displayHandle)
         throw std::runtime_error("firmir-gui: no usable display backend");
     auto createDisplay = reinterpret_cast<CreateDisplayFunc>(
-        dlsym(displayHandle, FIRMIR_GUI_CREATE_DISPLAY));
+        Firmir::detail::librarySymbol(displayHandle, FIRMIR_GUI_CREATE_DISPLAY));
     if (!createDisplay)
         throw std::runtime_error("firmir-gui: no " FIRMIR_GUI_CREATE_DISPLAY
                                  " in backend: " + display);
@@ -181,16 +166,18 @@ void Platform::Impl::loadBackends(Platform* q) {
     const char* inputName = std::getenv("FIRMIR_GUI_INPUT");
     if (inputName && *inputName) {
         inputHandle = loadPlugin("input", inputName);
-    } else if (dlsym(displayHandle, FIRMIR_GUI_CREATE_INPUT)) {
+    } else if (Firmir::detail::librarySymbol(displayHandle, FIRMIR_GUI_CREATE_INPUT)) {
         inputHandle = displayHandle;
     } else if (display != "headless") {
+#ifndef _WIN32
         inputHandle = loadPlugin("input", "evdev");
+#endif
         if (!inputHandle)
             inputHandle = loadPlugin("input", "headless");
     }
     if (inputHandle) {
         auto createInput = reinterpret_cast<CreateInputFunc>(
-            dlsym(inputHandle, FIRMIR_GUI_CREATE_INPUT));
+            Firmir::detail::librarySymbol(inputHandle, FIRMIR_GUI_CREATE_INPUT));
         if (createInput) {
             input = createInput();
             input->eventCallback = [q](const InputEvent& event) {

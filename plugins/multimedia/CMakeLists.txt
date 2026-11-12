@@ -19,7 +19,8 @@ if(FIRMIR_MM_GST_FOUND)
     add_library(firmir-mm-gstreamer SHARED gstreamer/gstvideosource.cpp)
     set_target_properties(firmir-mm-gstreamer PROPERTIES
         PREFIX ""
-        LIBRARY_OUTPUT_DIRECTORY ${FIRMIR_MM_PLUGIN_DIR})
+        LIBRARY_OUTPUT_DIRECTORY ${FIRMIR_MM_PLUGIN_DIR}
+        RUNTIME_OUTPUT_DIRECTORY ${FIRMIR_MM_PLUGIN_DIR})
     target_link_libraries(firmir-mm-gstreamer
         PRIVATE firmir-multimedia PkgConfig::FIRMIR_MM_GST)
     firmir_install_plugin(firmir-mm-gstreamer multimedia)
@@ -33,7 +34,8 @@ if(FIRMIR_MM_FFMPEG_FOUND)
     add_library(firmir-mm-ffmpeg SHARED ffmpeg/ffmpegvideosource.cpp)
     set_target_properties(firmir-mm-ffmpeg PROPERTIES
         PREFIX ""
-        LIBRARY_OUTPUT_DIRECTORY ${FIRMIR_MM_PLUGIN_DIR})
+        LIBRARY_OUTPUT_DIRECTORY ${FIRMIR_MM_PLUGIN_DIR}
+        RUNTIME_OUTPUT_DIRECTORY ${FIRMIR_MM_PLUGIN_DIR})
     target_link_libraries(firmir-mm-ffmpeg
         PRIVATE firmir-multimedia PkgConfig::FIRMIR_MM_FFMPEG)
     firmir_install_plugin(firmir-mm-ffmpeg multimedia)

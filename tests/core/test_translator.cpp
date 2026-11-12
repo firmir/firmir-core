@@ -6,9 +6,19 @@
 #include <firmir/translator.hpp>
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 
 using namespace Firmir;
+
+namespace {
+
+/// Temp-dir path for a test file ("/tmp" does not exist on Windows).
+std::string tempPath(const char* name) {
+    return (std::filesystem::temp_directory_path() / name).string();
+}
+
+} // namespace
 
 TEST_CASE(translator_trid_language_switch) {
     auto* tr = Translator::instance();
@@ -18,8 +28,8 @@ TEST_CASE(translator_trid_language_switch) {
     CHECK_EQ(tr->trId(String("weather-title")).toStdString(),
              std::string("weather-title"));
 
-    const char* ruPath = "/tmp/firmir-test-ru.json";
-    const char* enPath = "/tmp/firmir-test-en.json";
+    const std::string ruPath = tempPath("firmir-test-ru.json");
+    const std::string enPath = tempPath("firmir-test-en.json");
     {
         std::ofstream ru(ruPath);
         ru << "{\"language\":\"ru\",\"strings\":{\"weather-title\":\"\\u041f\\u043e\\u0433\\u043e\\u0434\\u0430\","
@@ -72,17 +82,17 @@ TEST_CASE(translator_trid_language_switch) {
     CHECK(!tr->removeTranslationFile(String(ruPath))); // already gone
 
     // Bad files are rejected without touching the state.
-    CHECK(!tr->addTranslationFile(String("/tmp/firmir-test-missing.json")));
+    CHECK(!tr->addTranslationFile(String(tempPath("firmir-test-missing.json"))));
     {
-        std::ofstream bad("/tmp/firmir-test-bad.json");
+        std::ofstream bad(tempPath("firmir-test-bad.json"));
         bad << "not json";
     }
-    CHECK(!tr->addTranslationFile(String("/tmp/firmir-test-bad.json")));
+    CHECK(!tr->addTranslationFile(String(tempPath("firmir-test-bad.json"))));
 
     CHECK(tr->removeTranslationFile(String(enPath)));
-    std::remove(ruPath);
-    std::remove(enPath);
-    std::remove("/tmp/firmir-test-bad.json");
+    std::remove(ruPath.c_str());
+    std::remove(enPath.c_str());
+    std::remove(tempPath("firmir-test-bad.json").c_str());
     tr->setLanguage(String(savedLanguage));
 }
 
@@ -91,8 +101,8 @@ TEST_CASE(translator_arguments_and_plurals) {
     auto* tr = Translator::instance();
     const std::string savedLanguage = tr->language().toStdString();
 
-    const char* ruPath = "/tmp/firmir-test-plural-ru.json";
-    const char* enPath = "/tmp/firmir-test-plural-en.json";
+    const std::string ruPath = tempPath("firmir-test-plural-ru.json");
+    const std::string enPath = tempPath("firmir-test-plural-en.json");
     {
         std::ofstream ru(ruPath);
         ru << "{\"language\":\"ru\",\"strings\":{"
@@ -162,7 +172,7 @@ TEST_CASE(translator_arguments_and_plurals) {
 
     // A language with fewer forms than the rule index clamps to the last.
     tr->setLanguage(String("ru"));
-    const char* shortRu = "/tmp/firmir-test-plural-short.json";
+    const std::string shortRu = tempPath("firmir-test-plural-short.json");
     {
         std::ofstream f(shortRu);
         f << "{\"language\":\"ru\",\"strings\":{"
@@ -175,8 +185,8 @@ TEST_CASE(translator_arguments_and_plurals) {
 
     CHECK(tr->removeTranslationFile(String(ruPath)));
     CHECK(tr->removeTranslationFile(String(enPath)));
-    std::remove(ruPath);
-    std::remove(enPath);
-    std::remove(shortRu);
+    std::remove(ruPath.c_str());
+    std::remove(enPath.c_str());
+    std::remove(shortRu.c_str());
     tr->setLanguage(String(savedLanguage));
 }
