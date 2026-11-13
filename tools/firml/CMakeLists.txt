@@ -359,4 +359,19 @@ if(FIRMIR_BUILD_TESTS)
             add_test(NAME firmlc.m6.app COMMAND $<TARGET_FILE:firmlc_m6_app>)
         endif()
     endif()
+
+    # The e2e test binaries link firmir-gui; sandboxed build environments
+    # (scratchbox2) ignore the absolute RUNPATH baked in at link time, so the
+    # build-tree libraries are exported explicitly.
+    if(TARGET firmir-gui)
+        firmir_add_test_library_path(${FIRMIR_TEST_RUNTIME_TARGETS})
+        # The e2e binaries are also expected to run standalone (no ctest env).
+        foreach(firml_app IN ITEMS firml_e2e_app firml_e2e_repeater
+                                  firmlc_handlers_app firmlc_component_app
+                                  firmlc_connections_app firmlc_function_app
+                                  firmlc_window_app firmlc_calc_app
+                                  firmlc_m6_app)
+            firmir_bake_library_path(${firml_app} ${FIRMIR_TEST_RUNTIME_TARGETS})
+        endforeach()
+    endif()
 endif()

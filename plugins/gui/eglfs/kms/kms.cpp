@@ -11,6 +11,7 @@
 // Device node: FIRMIR_EGLFS_KMS_DEVICE, falling back to FIRMIR_DRM_DEVICE
 // (default /dev/dri/card0).
 
+#include <firmir/gui/detail/drmenumeration.hpp>
 #include <firmir/gui/eglfsintegration.hpp>
 #include <firmir/log.hpp>
 
@@ -25,8 +26,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <drm/drm.h>
-#include <drm/drm_mode.h>
 #include <fcntl.h>
 #include <memory>
 #include <mutex>
@@ -45,6 +44,7 @@
 #endif
 
 using namespace Firmir::Gui;
+using Firmir::Gui::detail::drmIoctl;
 
 namespace {
 
@@ -57,23 +57,8 @@ const Firmir::LoggingCategory& lcKms() {
 /// needs neither drm_fourcc.h nor libdrm.
 constexpr std::uint32_t DrmFormatXrgb8888 = 0x34325258u;
 
-int drmIoctl(int fd, unsigned long request, void* arg) {
-    int ret;
-    do {
-        ret = ::ioctl(fd, request, arg);
-    } while (ret == -1 && (errno == EINTR || errno == EAGAIN));
-    return ret;
-}
-
 /// A connected connector with its chosen mode and usable CRTC.
-struct OutputInfo {
-    std::uint32_t connectorId = 0;
-    std::uint32_t crtcId = 0;
-    std::uint32_t encoderId = 0;
-    drm_mode_modeinfo mode{};
-    std::string name;
-    drm_mode_crtc savedCrtc{};
-};
+using OutputInfo = Firmir::Gui::detail::DrmOutput;
 
 class KmsScreen : public PlatformScreen {
 public:
@@ -121,6 +106,8 @@ private:
     GLuint m_vertexBuffer = 0;
     OutputInfo m_output;
     Size m_size;
+    /// Size of the frame currently stored in m_texture.
+    Size m_textureSize;
     // Buffer being scanned out: released after the next successful flip.
     gbm_bo* m_displayedBo = nullptr;
     std::uint32_t m_displayedFb = 0;
@@ -324,6 +311,7 @@ bool KmsWindow::initGl() {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_size.width, m_size.height, 0,
                  GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    m_textureSize = m_size;
     return true;
 }
 
@@ -410,25 +398,34 @@ void KmsWindow::present(const std::uint32_t* pixels, const Size& size) {
     if (!m_visible || !m_gbmSurface || m_eglSurface == EGL_NO_SURFACE ||
         !m_program || !m_texture || !m_vertexBuffer)
         return;
-    if (size.width != m_size.width || size.height != m_size.height) {
-        // Only fullscreen surfaces are supported, like the DRM backend.
-        if (!m_sizeMismatchLogged) {
-            cLogWarning(lcKms()) << "window size" << size.width << size.height
-                                 << "does not match the mode" << m_size.width
-                                 << m_size.height << "- frame dropped";
-            m_sizeMismatchLogged = true;
-        }
+    if (size.width <= 0 || size.height <= 0)
         return;
-    }
     if (!makeCurrent())
         return;
+
+    if (size.width != m_textureSize.width ||
+        size.height != m_textureSize.height) {
+        // eglfs has no window manager: a window that is not exactly the mode
+        // size is stretched over the whole output instead of being dropped,
+        // otherwise a non-fullscreen window would leave the screen black.
+        glBindTexture(GL_TEXTURE_2D, m_texture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, size.width, size.height, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        m_textureSize = size;
+        if (!m_sizeMismatchLogged) {
+            cLogInfo(lcKms()) << "window size" << size.width << size.height
+                              << "does not match the mode" << m_size.width
+                              << m_size.height << "- stretching to fullscreen";
+            m_sizeMismatchLogged = true;
+        }
+    }
 
     glViewport(0, 0, m_size.width, m_size.height);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_texture);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, m_size.width, m_size.height,
-                    GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, size.width, size.height, GL_RGBA,
+                    GL_UNSIGNED_BYTE, pixels);
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glUseProgram(m_program);
@@ -491,11 +488,9 @@ private:
     bool initEgl();
     void refreshScreens();
     void pollHotplug();
-    bool queryConnector(std::uint32_t connectorId,
-                        const std::vector<std::uint32_t>& crtcs,
-                        std::vector<bool>& crtcUsed, OutputInfo& info);
 
     int m_fd = -1;
+    std::string m_node;
     gbm_device* m_gbmDevice = nullptr;
     EGLDisplay m_eglDisplay = EGL_NO_DISPLAY;
     EGLConfig m_eglConfig = nullptr;
@@ -504,6 +499,10 @@ private:
     std::vector<std::unique_ptr<KmsWindow>> m_windows;
     std::thread m_pollThread;
     bool m_stop = false;
+    // One-shot diagnostics: the hotplug thread retries every second, so an
+    // unavailable device would otherwise flood the log.
+    bool m_enumerateErrorLogged = false;
+    bool m_noOutputsLogged = false;
 };
 
 } // namespace
@@ -512,16 +511,26 @@ KmsIntegration::KmsIntegration() {
     const char* device = std::getenv("FIRMIR_EGLFS_KMS_DEVICE");
     if (!device || !*device)
         device = std::getenv("FIRMIR_DRM_DEVICE");
-    const std::string node = device && *device ? device : "/dev/dri/card0";
-    m_fd = ::open(node.c_str(), O_RDWR | O_CLOEXEC);
+    m_node = device && *device ? device : "/dev/dri/card0";
+    m_fd = ::open(m_node.c_str(), O_RDWR | O_CLOEXEC);
     if (m_fd < 0) {
-        cLogWarning(lcKms()) << "cannot open" << (node + ":")
+        cLogWarning(lcKms()) << "cannot open" << (m_node + ":")
                              << std::strerror(errno);
         return;
     }
+    // Without DRM master the screens can still be enumerated, but SETCRTC and
+    // page flips are refused with EACCES, so report it right away instead of
+    // failing on the first frame.
+    if (drmIoctl(m_fd, DRM_IOCTL_SET_MASTER, nullptr) != 0) {
+        cLogWarning(lcKms()) << "cannot become DRM master on" << m_node << ":"
+                             << std::strerror(errno)
+                             << "- mode setting and page flips will fail";
+    } else {
+        cLogDebug(lcKms()) << "became DRM master on" << m_node;
+    }
     m_gbmDevice = gbm_create_device(m_fd);
     if (!m_gbmDevice) {
-        cLogWarning(lcKms()) << "gbm_create_device failed for" << node;
+        cLogWarning(lcKms()) << "gbm_create_device failed for" << m_node;
         ::close(m_fd);
         m_fd = -1;
         return;
@@ -644,25 +653,40 @@ void KmsIntegration::destroyWindow(PlatformWindow* window) {
 }
 
 void KmsIntegration::refreshScreens() {
-    drm_mode_card_res res{};
-    if (drmIoctl(m_fd, DRM_IOCTL_MODE_GETRESOURCES, &res) != 0)
+    Firmir::Gui::detail::DrmEnumerationResult enumeration =
+        Firmir::Gui::detail::enumerateDrmOutputs(m_fd);
+    if (!enumeration.error.empty()) {
+        if (!m_enumerateErrorLogged) {
+            cLogWarning(lcKms()) << "cannot enumerate KMS outputs on" << m_node
+                                 << ":" << enumeration.error;
+            m_enumerateErrorLogged = true;
+        }
         return;
-    std::vector<std::uint32_t> crtcs(res.count_crtcs);
-    std::vector<std::uint32_t> encoders(res.count_encoders);
-    std::vector<std::uint32_t> connectors(res.count_connectors);
-    res.crtc_id_ptr = reinterpret_cast<std::uint64_t>(crtcs.data());
-    res.encoder_id_ptr = reinterpret_cast<std::uint64_t>(encoders.data());
-    res.connector_id_ptr = reinterpret_cast<std::uint64_t>(connectors.data());
-    if (drmIoctl(m_fd, DRM_IOCTL_MODE_GETRESOURCES, &res) != 0)
-        return;
-    connectors.resize(res.count_connectors);
+    }
+    m_enumerateErrorLogged = false;
+    std::vector<OutputInfo> current = std::move(enumeration.outputs);
 
-    std::vector<bool> crtcUsed(crtcs.size(), false);
-    std::vector<OutputInfo> current;
-    for (const std::uint32_t connectorId : connectors) {
-        OutputInfo info;
-        if (queryConnector(connectorId, crtcs, crtcUsed, info))
-            current.push_back(std::move(info));
+    if (current.empty() && !m_noOutputsLogged) {
+        std::string connectors;
+        for (const auto& report : enumeration.connectors) {
+            if (!connectors.empty())
+                connectors += ", ";
+            connectors += "connector-" + std::to_string(report.connectorId) +
+                " " + Firmir::Gui::detail::drmConnectorStatusName(report.status) +
+                " (" + std::to_string(report.modeCount) + " modes, " +
+                std::to_string(report.encoderCount) + " encoders" +
+                (report.note.empty() ? "" : ", " + report.note) + ")";
+        }
+        if (connectors.empty())
+            connectors = "the device reports no connectors";
+        cLogWarning(lcKms()) << "no usable KMS output on" << m_node << ":"
+                             << connectors
+                             << "- pick another node with FIRMIR_EGLFS_KMS_DEVICE";
+        m_noOutputsLogged = true;
+    }
+    if (!current.empty() && m_noOutputsLogged) {
+        m_noOutputsLogged = false;
+        cLogInfo(lcKms()) << "KMS output available again on" << m_node;
     }
 
     std::vector<std::pair<PlatformScreen*, bool>> events;
@@ -699,47 +723,6 @@ void KmsIntegration::refreshScreens() {
     for (const auto& [screen, added] : events)
         if (screenCallback)
             screenCallback(screen, added);
-}
-
-bool KmsIntegration::queryConnector(std::uint32_t connectorId,
-                                    const std::vector<std::uint32_t>& crtcs,
-                                    std::vector<bool>& crtcUsed,
-                                    OutputInfo& info) {
-    drm_mode_get_connector conn{};
-    conn.connector_id = connectorId;
-    if (drmIoctl(m_fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn) != 0 ||
-        conn.connection != DRM_MODE_CONNECTED || conn.count_modes == 0)
-        return false;
-    std::vector<drm_mode_modeinfo> modes(conn.count_modes);
-    std::vector<std::uint32_t> encoders(conn.count_encoders);
-    conn.modes_ptr = reinterpret_cast<std::uint64_t>(modes.data());
-    conn.encoders_ptr = reinterpret_cast<std::uint64_t>(encoders.data());
-    if (drmIoctl(m_fd, DRM_IOCTL_MODE_GETCONNECTOR, &conn) != 0)
-        return false;
-
-    info.connectorId = connectorId;
-    info.mode = modes[0]; // first mode is the preferred one
-    info.name = "connector-" + std::to_string(connectorId);
-
-    // Find an encoder (prefer the current one) and a free CRTC it can drive.
-    for (const std::uint32_t encoderId : encoders) {
-        drm_mode_get_encoder enc{};
-        enc.encoder_id = encoderId;
-        if (drmIoctl(m_fd, DRM_IOCTL_MODE_GETENCODER, &enc) != 0)
-            continue;
-        for (std::size_t i = 0; i < crtcs.size(); ++i) {
-            if (crtcUsed[i] || !(enc.possible_crtcs & (1u << i)))
-                continue;
-            crtcUsed[i] = true;
-            info.crtcId = crtcs[i];
-            info.encoderId = encoderId;
-            // Saved so the window destructor can restore the previous state.
-            info.savedCrtc.crtc_id = info.crtcId;
-            drmIoctl(m_fd, DRM_IOCTL_MODE_GETCRTC, &info.savedCrtc);
-            return true;
-        }
-    }
-    return false;
 }
 
 void KmsIntegration::pollHotplug() {

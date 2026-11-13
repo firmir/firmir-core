@@ -14,10 +14,12 @@ namespace Render {
  * @brief Entry point for loading render backends and creating devices.
  *
  * Backend selection order for createDevice(): the explicit @p name argument,
- * then FIRMIR_RENDER_BACKEND, otherwise the first loadable plugin of
- * "vulkan", "opengl", "soft". Plugins are searched in
- * FIRMIR_RENDER_PLUGIN_PATH, in `plugins/render` directories relative to the
- * running executable and in the system plugin directory.
+ * then FIRMIR_RENDER_BACKEND, otherwise the first plugin of "vulkan",
+ * "opengl", "soft" that both loads and creates a device - a plugin that loads
+ * but cannot initialise (e.g. OpenGL without a usable EGL display) is skipped.
+ * Plugins are searched in FIRMIR_RENDER_PLUGIN_PATH, in `plugins/render`
+ * directories relative to the running executable and in the system plugin
+ * directory.
  */
 class Render {
 public:

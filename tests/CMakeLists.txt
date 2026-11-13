@@ -1,6 +1,19 @@
 set(TEST_SOURCES main.cpp)
 set(TEST_LIBS)
 
+# gui/test_drm_enumeration.cpp exercises the DRM/KMS enumeration protocol
+# (firmir/gui/detail/drmenumeration.hpp) against a fake kernel, so it needs the
+# DRM uapi headers on its include path — but no DRM device or libdrm.
+include(${PROJECT_SOURCE_DIR}/cmake/FirmirHeaders.cmake)
+set(FIRMIR_TEST_DRM_HEADERS FALSE)
+set(FIRMIR_TEST_DRM_INCLUDE_DIR "")
+if(FIRMIR_DRM_HEADERS STREQUAL "on")
+    set(FIRMIR_TEST_DRM_HEADERS TRUE)
+elseif(NOT FIRMIR_DRM_HEADERS STREQUAL "off")
+    firmir_find_headers(FIRMIR_TEST_DRM_HEADERS FIRMIR_TEST_DRM_INCLUDE_DIR
+        HEADERS drm/drm.h drm/drm_mode.h PACKAGES libdrm)
+endif()
+
 if(FIRMIR_BUILD_LIB_CORE)
     list(APPEND TEST_SOURCES
         core/test_byte_array.cpp
@@ -32,7 +45,10 @@ if(FIRMIR_BUILD_LIB_NETWORKING)
 endif()
 if(FIRMIR_BUILD_LIB_GUI AND TARGET firmir-gui-headless)
     list(APPEND TEST_SOURCES gui/test_gui.cpp gui/test_abstract_data_list.cpp gui/test_listmodel.cpp gui/test_editabletext.cpp gui/test_mousearea.cpp
-        gui/test_positioners.cpp)
+        gui/test_positioners.cpp gui/test_backend_selection.cpp)
+    if(FIRMIR_TEST_DRM_HEADERS)
+        list(APPEND TEST_SOURCES gui/test_drm_enumeration.cpp)
+    endif()
     list(APPEND TEST_LIBS firmir-gui firmir-gui-headless)
 elseif(FIRMIR_BUILD_LIB_GUI)
     message(STATUS "firmir-gui tests require the headless plugin; skipping them")
@@ -77,6 +93,9 @@ endif()
 
 add_executable(tests ${TEST_SOURCES})
 target_include_directories(tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+# <drm/drm.h> for gui/test_drm_enumeration.cpp (kernel uapi headers: system,
+# so they must not trip -Werror).
+firmir_use_headers(tests "${FIRMIR_TEST_DRM_INCLUDE_DIR}")
 
 # Multimedia backend e2e: synthesizes a rawvideo AVI with libavformat and
 # plays it back through the ffmpeg backend plugin (real decode, pts pacing,
@@ -110,6 +129,20 @@ endif()
 target_link_libraries(tests PRIVATE ${TEST_LIBS})
 if(WIN32)
     target_link_libraries(tests PRIVATE ws2_32)
+endif()
+
+# <firmir/gui/detail/drmuapi.hpp> must keep working with pre-4.0 DRM uapi
+# headers, where struct drm_buf_map has a member named "virtual" and including
+# <drm/drm.h> from C++ therefore fails ("expected unqualified-id before
+# 'virtual'"). Built against the fixture header in
+# tests/fixtures/old_drm_header/ (put first on the include path), so the
+# regression is caught on hosts whose own headers are already fixed.
+if(FIRMIR_BUILD_LIB_GUI AND TARGET firmir-gui-backend)
+    add_executable(firmir-gui-drmuapi-test gui/drmuapi_old_header.cpp)
+    target_include_directories(firmir-gui-drmuapi-test PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/old_drm_header)
+    target_link_libraries(firmir-gui-drmuapi-test PRIVATE firmir-gui-backend)
+    add_test(NAME firmir.gui.drmuapi_old_header COMMAND firmir-gui-drmuapi-test)
 endif()
 
 if(TARGET firmir-mm-ffmpeg)
@@ -219,3 +252,14 @@ if(FIRMIR_SANITIZER STREQUAL "thread" AND TARGET firmir-render-vulkan)
     set_tests_properties(firmir.vulkan PROPERTIES
         ENVIRONMENT "FIRMIR_TEST_FILTER=render_vulkan;TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan-lavapipe.supp")
 endif()
+
+# The test binary, the libraries it links and the plugins it loads carry an
+# absolute RUNPATH into the build tree, which sandboxed build environments
+# (scratchbox2) ignore. Point the loader at the build-tree libraries instead.
+firmir_add_test_library_path(${FIRMIR_TEST_RUNTIME_TARGETS})
+
+# Self-contained launch: the test binaries carry the absolute build-tree
+# library directories in their DT_RPATH, so `./build/tests/tests` starts
+# without LD_LIBRARY_PATH or any other environment setup.
+firmir_bake_library_path(tests ${FIRMIR_TEST_RUNTIME_TARGETS})
+firmir_bake_library_path(firmir-multimedia-mediatest ${FIRMIR_TEST_RUNTIME_TARGETS})

@@ -13,10 +13,11 @@ target_link_libraries(firmir-gui-eglfs PRIVATE firmir-gui-backend firmir-core)
 target_compile_definitions(firmir-gui-eglfs PRIVATE
     FIRMIR_EGLFS_SYSTEM_PLUGIN_DIR="${FIRMIR_SYSTEM_PLUGIN_DIR}/gui/eglfs")
 
-include(CheckIncludeFileCXX)
-check_include_file_cxx(drm/drm.h FIRMIR_EGLFS_HAVE_DRM_H)
-if(FIRMIR_EGLFS_HAVE_DRM_H)
+# The DRM/KMS headers were located once for the whole plugins/gui tree (see
+# ../CMakeLists.txt): reuse that verdict instead of probing again.
+if(FIRMIR_HAVE_DRM_H)
     add_subdirectory(kms)
 else()
-    message(STATUS "drm/drm.h not found; skipping the eglfs kms integration")
+    message(STATUS "drm/drm.h not found; skipping the eglfs kms integration "
+        "(see FIRMIR_DRM_HEADERS)")
 endif()

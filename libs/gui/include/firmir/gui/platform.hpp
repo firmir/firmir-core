@@ -16,9 +16,11 @@ class Window;
  * @brief Platform integration singleton: loads backend plugins and routes
  *        screen hotplug and input events.
  *
- * The display and input backends are dlopen()ed on first use, selected via
- * the FIRMIR_GUI_DISPLAY / FIRMIR_GUI_INPUT environment variables and found
- * in FIRMIR_GUI_PLUGIN_PATH (see backend.hpp).
+ * The display and input backends are dlopen()ed on first use. Which ones are
+ * tried is controlled by FIRMIR_GUI_BACKENDS (ordered, comma-separated list
+ * such as "drm,eglfs"), optionally pinned by FIRMIR_GUI_DISPLAY /
+ * FIRMIR_GUI_INPUT; plugins are searched in FIRMIR_GUI_PLUGIN_PATH (see
+ * backend.hpp).
  */
 class Platform : public Object {
 public:

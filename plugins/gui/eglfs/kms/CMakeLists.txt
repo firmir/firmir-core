@@ -12,9 +12,10 @@ if(NOT FIRMIR_EGLFS_KMS_FOUND)
 endif()
 
 add_library(firmir-gui-eglfs-kms SHARED kms.cpp)
+firmir_use_headers(firmir-gui-eglfs-kms "${FIRMIR_DRM_INCLUDE_DIR}")
 set_target_properties(firmir-gui-eglfs-kms PROPERTIES
     PREFIX ""
     LIBRARY_OUTPUT_DIRECTORY ${FIRMIR_GUI_PLUGIN_DIR}/eglfs
     RUNTIME_OUTPUT_DIRECTORY ${FIRMIR_GUI_PLUGIN_DIR}/eglfs)
 target_link_libraries(firmir-gui-eglfs-kms PRIVATE
-    firmir-gui-backend PkgConfig::FIRMIR_EGLFS_KMS)
+    firmir-gui-backend firmir-core PkgConfig::FIRMIR_EGLFS_KMS)

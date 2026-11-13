@@ -54,56 +54,95 @@ struct LoadedBackend {
 std::mutex g_backendsMutex;
 std::vector<LoadedBackend> g_backends;
 
+/// Returns the already-loaded backend or dlopen()s it; nullptr when the plugin
+/// is missing, exports no factory or the factory fails. Caller holds
+/// g_backendsMutex.
+RenderBackend* loadBackend(const std::string& backendName) {
+    for (const auto& loaded : g_backends) {
+        if (loaded.name == backendName)
+            return loaded.backend;
+    }
+
+    const std::string file =
+        "firmir-render-" + backendName + detail::sharedLibrarySuffix();
+    for (const std::string& dir : pluginDirs()) {
+        const std::string path = dir + "/" + file;
+        void* handle = detail::libraryOpen(path);
+        if (!handle)
+            continue;
+        auto create = reinterpret_cast<CreateRenderBackendFunc>(
+            detail::librarySymbol(handle, FIRMIR_RENDER_CREATE_BACKEND));
+        if (!create) {
+            cLogWarning(lcRender())
+                << "no" << FIRMIR_RENDER_CREATE_BACKEND << "in" << path;
+            detail::libraryClose(handle);
+            continue;
+        }
+        RenderBackend* backend = create();
+        if (!backend) {
+            detail::libraryClose(handle);
+            continue;
+        }
+        g_backends.push_back({backendName, handle, backend});
+        cLogInfo(lcRender()) << "loaded render backend" << path;
+        return backend;
+    }
+    return nullptr;
+}
+
+/// Logs a backend that could not be loaded at all. An explicitly requested
+/// backend is a warning; a missing default candidate is informational, because
+/// the selection order continues with the next one.
+void logBackendUnavailable(const std::string& backendName,
+                           bool explicitBackend) {
+    if (explicitBackend)
+        cLogWarning(lcRender())
+            << "render backend not found:" << backendName;
+    else
+        cLogInfo(lcRender())
+            << "render backend unavailable:" << backendName;
+}
+
 } // namespace
 
 RenderBackend* Render::backend(const std::string& name) {
     const std::vector<std::string> candidates = backendCandidates(name);
     std::lock_guard<std::mutex> lock(g_backendsMutex);
     for (const std::string& backendName : candidates) {
-        for (const auto& loaded : g_backends) {
-            if (loaded.name == backendName)
-                return loaded.backend;
-        }
-
-        const std::string file =
-            "firmir-render-" + backendName + detail::sharedLibrarySuffix();
-        for (const std::string& dir : pluginDirs()) {
-            const std::string path = dir + "/" + file;
-            void* handle = detail::libraryOpen(path);
-            if (!handle)
-                continue;
-            auto create = reinterpret_cast<CreateRenderBackendFunc>(
-                detail::librarySymbol(handle, FIRMIR_RENDER_CREATE_BACKEND));
-            if (!create) {
-                cLogWarning(lcRender())
-                    << "no" << FIRMIR_RENDER_CREATE_BACKEND << "in" << path;
-                detail::libraryClose(handle);
-                continue;
-            }
-            RenderBackend* backend = create();
-            if (!backend) {
-                detail::libraryClose(handle);
-                continue;
-            }
-            g_backends.push_back({backendName, handle, backend});
-            cLogInfo(lcRender()) << "loaded render backend" << path;
+        if (RenderBackend* backend = loadBackend(backendName))
             return backend;
-        }
-        if (candidates.size() == 1)
-            cLogWarning(lcRender()) << "render backend not found:" << backendName;
-        else
-            cLogInfo(lcRender())
-                << "render backend unavailable:" << backendName;
+        logBackendUnavailable(backendName, candidates.size() == 1);
     }
     return nullptr;
 }
 
 std::unique_ptr<RenderDevice> Render::createDevice(const std::string& name,
                                                    const DeviceDesc& desc) {
-    RenderBackend* selected = backend(name);
-    if (!selected)
-        return nullptr;
-    return std::unique_ptr<RenderDevice>(selected->createDevice(desc));
+    // An explicit backend (the name argument or FIRMIR_RENDER_BACKEND) is used
+    // as-is. The default order, however, falls through to the next candidate
+    // when a plugin loads but cannot create a device - for example OpenGL
+    // without a usable EGL display in a sandboxed build still gets a soft
+    // device instead of no device at all.
+    const std::vector<std::string> candidates = backendCandidates(name);
+    const bool explicitBackend = candidates.size() == 1;
+    for (const std::string& backendName : candidates) {
+        RenderBackend* selected = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_backendsMutex);
+            selected = loadBackend(backendName);
+        }
+        if (!selected) {
+            logBackendUnavailable(backendName, explicitBackend);
+            continue;
+        }
+        if (std::unique_ptr<RenderDevice> device{selected->createDevice(desc)})
+            return device;
+        if (explicitBackend)
+            break;
+        cLogWarning(lcRender())
+            << "render backend" << backendName << "cannot create a device";
+    }
+    return nullptr;
 }
 
 void Render::shutdown() {

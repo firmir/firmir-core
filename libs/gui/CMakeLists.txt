@@ -23,6 +23,7 @@ add_library(firmir-gui SHARED
     src/text.cpp
     src/theme.cpp
     src/window.cpp
+    src/detail/backendselection.cpp
 )
 target_include_directories(firmir-gui PUBLIC include)
 # firmir-render is PUBLIC: painter.hpp exposes Render::DmaBufTextureDesc

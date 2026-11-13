@@ -20,7 +20,7 @@ Vulkan/OpenGL, FreeType/Fontconfig/HarfBuzz, PNG/JPEG и базовую libwayla
 | dbus-daemon | `dbus` | приватная сессионная шина в тестах и примере D-Bus (без него D-Bus-тесты пропускаются) |
 | setarch | `util-linux` | запуск TSan-сборки с отключённым ASLR |
 | linux/input.h | `linux-libc-dev` | GUI-плагин evdev (опционально) |
-| drm/drm.h | `libdrm-dev` | GUI-плагин drm (опционально) |
+| drm/drm.h | `libdrm-dev` | GUI-плагин drm и kms-интеграция eglfs (опционально) |
 | wayland-client/server | `libwayland-dev` | firmir-wayland-client/server/compositor и GUI-плагин |
 | wayland-scanner + protocols | `libwayland-bin`, `wayland-protocols` | C/C++ protocol generation, xdg-shell/viewporter/decoration/output |
 | lcov + genhtml | `lcov` | отчёт о покрытии (см. «Тестовое покрытие») |
@@ -70,7 +70,9 @@ tests/          собственный мини-фреймворк, один б�
 
 Рендеринг GUI идёт через firmir-render: сцена элементов записывается в
 командный буфер и исполняется выбранным backend (`FIRMIR_RENDER_BACKEND`;
-по умолчанию — первый загружаемый из `vulkan`, `opengl`, `soft`). `opengl`
+по умолчанию — первый из `vulkan`, `opengl`, `soft`, который загрузился и
+смог создать device; если плагин загрузился, но не инициализировался —
+например, EGL без display — берётся следующий). `opengl`
 использует EGL/GLES2/FBO/glReadPixels; `vulkan` — SPIR-V pipelines,
 buffers/images/descriptors/render passes и readback в `CpuRenderTarget`.
 Display backends получают одинаковый ARGB-кадр.
@@ -141,10 +143,44 @@ cmake --build build -j"$(nproc)"
 | `FIRMIR_BUILD_PLUGIN_RENDER_SOFT` | `ON`/`OFF` | `ON` | software render-бэкенд |
 | `FIRMIR_BUILD_PLUGIN_RENDER_OPENGL` | `ON`/`OFF` | `ON` | OpenGL ES 2 бэкенд (пропускается без EGL/GLES2) |
 | `FIRMIR_SANITIZER` | `""`, `address`, `thread` | `""` | санитайзер: ASan+UBSan или TSan |
+| `FIRMIR_DRM_HEADERS` | `auto`, `on`, `off` | `auto` | заголовки DRM/KMS (`drm/drm.h`, `drm/drm_mode.h`) для плагина `drm` и kms-интеграции `eglfs`: `auto` — искать в системе |
 
 Все библиотеки собираются как shared (`libfirmir-*.so`) в
 `build/libs/<модуль>/`, исполняемые файлы — в `build/examples/<имя>/`,
 `build/tests/`, `build/tools/doc/`, GUI-плагины — в `build/plugins/`.
+
+Наличие опциональных заголовков (`drm/drm.h`, `linux/input.h`) определяется
+поиском по файловой системе, без `check_include_file_cxx()`: тот кэширует
+результат в `CMakeCache.txt` (поставили `libdrm-dev` после первой настройки —
+cmake продолжает считать, что заголовка нет) и линкует тестовую программу,
+что в scratchbox2/cross-окружениях может падать по причинам, не связанным с
+самим заголовком. Ищутся `drm/drm.h` + `drm/drm_mode.h` в include-каталогах
+`pkg-config` (`libdrm.pc`), затем в `/usr/include`, `/usr/include/libdrm`,
+`/usr/local/include` и в `${CMAKE_SYSROOT}/usr/include`; найденный
+нестандартный каталог добавляется плагинам как `-isystem`. Заголовки нужны
+только uapi-шные: на Ubuntu/Sailfish они приходят из `linux-libc-dev`
+(`/usr/include/drm/`), на Debian-подобных — из `libdrm-dev`
+(`/usr/include/libdrm/`). Если автоопределение в вашем окружении не видит
+целевой sysroot, сборку можно форсировать: `-DFIRMIR_DRM_HEADERS=on`
+(или `off`, чтобы явно пропустить `drm`/`eglfs-kms`), а дополнительные
+каталоги подсказать через `-DFIRMIR_HEADER_SEARCH_ROOTS=/путь/к/include`.
+Итог поиска печатается при настройке: `drm/drm.h: found in …`.
+
+Заголовки ядра — обычный C, и не каждая их копия компилируется из C++:
+в `drm/drm.h` до версии ядра 4.0 структура `drm_buf_map` объявляет поле
+с именем `virtual` (upstream позже спрятал его в `#ifdef __cplusplus` и
+переименовал в `virt`), поэтому `#include <drm/drm.h>` из C++ падает с
+`expected unqualified-id before 'virtual'`. В firmir этот заголовок
+включается только через обёртку `firmir/gui/detail/drmuapi.hpp`: она
+на время include маскирует ключевое слово
+(`#define virtual firmir_drm_uapi_virtual_member`) и сразу снимает макрос,
+так что структуры
+и номера ioctl остаются ровно такими, какими их объявила системная
+копия (firmir `drm_buf_map` не использует вовсе). Новый код должен
+включать `<firmir/gui/detail/drmuapi.hpp>`, а не `<drm/...>` напрямую;
+регрессия проверяется тестом `firmir/gui/drmuapi_old_header`, который
+собирается против фикстуры `tests/fixtures/old_drm_header/` с таким
+старым заголовком.
 
 ## Установка
 
@@ -225,19 +261,43 @@ GUI-пример находит плагины в `build/plugins/` автома�
 ./build/examples/gui/firmir-example-gui-animation
 ```
 
-Display-бэкенд по умолчанию выбирается автоматически: `wayland`, если есть
-сокет композитора (`$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY`), иначе `drm` (с
-input-бэкендом `evdev`), если существует `/dev/dri/cardN`, иначе `headless`.
+Display-бэкенд по умолчанию выбирается перебором списка
+`wayland,eglfs,drm,evdev,headless`: `wayland`, если есть композитор, к которому
+можно подключиться, иначе `eglfs`, иначе `drm` (оба — при наличии
+`/dev/dri/cardN`, input-бэкендом к ним идёт `evdev`), иначе `headless`.
 На headless-бэкенде экранов нет — они создаются программно через control API
 плагина (так делают тесты), поэтому без реального дисплея пример завершится
 с кодом 1 и сообщением «no screens». Явный выбор бэкендов:
 
 ```sh
 FIRMIR_GUI_PLUGIN_PATH=build/plugins \  # пути поиска firmir-gui-<имя>.so, через ':'
-FIRMIR_GUI_DISPLAY=drm \                # display-бэкенд (default: wayland → drm → headless)
-FIRMIR_GUI_INPUT=evdev \                # input-бэкенд (default: из display-плагина, иначе evdev)
+FIRMIR_GUI_BACKENDS=drm,eglfs \         # список бэкендов, которые нужно попробовать, по порядку
+FIRMIR_GUI_DISPLAY=drm \                # закрепить display-бэкенд (перекрывает FIRMIR_GUI_BACKENDS)
+FIRMIR_GUI_INPUT=evdev \                # закрепить input-бэкенд (перекрывает FIRMIR_GUI_BACKENDS)
 ./build/examples/gui/firmir-example-gui-animation
 ```
+
+`FIRMIR_GUI_BACKENDS` — список имён через запятую (пробелы и регистр не важны,
+повторы игнорируются); по умолчанию
+`wayland,eglfs,drm,evdev,headless`. Display-бэкендами могут быть `headless`,
+`wayland`, `drm`, `eglfs`, input-бэкендами — `headless`, `wayland`
+(Wayland-плагин даёт и ввод) и `evdev`. Первое display-имя, чей плагин
+загрузился, становится display-бэкендом, первое input-имя — input-бэкендом;
+имена «не своей роли» игнорируются. Если бэкенд заведомо недоступен (у
+`wayland` нет сокета, к которому можно подключиться, у `drm`/`eglfs` нет
+`/dev/dri/cardN`, плагина нет в build-дереве), он пропускается с
+предупреждением `display backend skipped (unavailable)` и пробуется следующий
+из списка; если не подошёл никто — ошибка
+`firmir-gui: no usable display backend in FIRMIR_GUI_BACKENDS=…`.
+
+`evdev` — исключение: он не display-бэкенд, а input-бэкенд, который работает
+*рядом* с аппаратными `drm`/`eglfs`, поэтому для них он пробуется всегда, даже
+если его нет в списке (и идёт первым). Для `wayland` естественная пара —
+собственный input-бэкенд Wayland-плагина, для `headless` — его собственный
+headless-ввод (события реальных устройств без экрана не имеют смысла).
+`FIRMIR_GUI_DISPLAY`/`FIRMIR_GUI_INPUT` закрепляют ровно один бэкенд (без
+fallback'а и без проверки устройства) и перекрывают список. Неизвестное имя в
+списке даёт предупреждение `unknown backend in FIRMIR_GUI_BACKENDS`.
 
 ### eglfs
 
@@ -259,17 +319,55 @@ FIRMIR_EGLFS_KMS_DEVICE=/dev/dri/card0 \        # default; альтернати�
 ./build/examples/gui/firmir-example-gui-animation
 ```
 
-Интеграция `kms` требует DRM master (свободная VT или CAP_SYS_ADMIN) и, как и
-бэкенд `drm`, поддерживает только полноэкранные окна размером с режим вывода.
+Интеграция `kms` требует DRM master (свободная VT или CAP_SYS_ADMIN). Окно
+всегда занимает весь вывод: кадр другого размера растягивается на режим (в
+логе — `stretching to fullscreen`), как это делает eglfs.
 ABI подплагинов описан в `<firmir/gui/eglfsintegration.hpp>`: интеграция
 экспортирует `firmir_eglfs_create_integration()` и
 `firmir_eglfs_integration_abi()`.
 
+Если экран не находится, `gui.eglfs.kms` пишет причину: `cannot become DRM
+master` (занят другой программой — нужна свободная VT), `cannot enumerate KMS
+outputs` (ioctl вернул ошибку) или `no usable KMS output` — со списком
+коннекторов (`connector-<id> connected/disconnected/unknown`, число режимов и
+энкодеров). Перечисление идёт через `firmir/gui/detail/drmenumeration.hpp`:
+kernel требует буфер под каждое ненулевое поле `count_*` (включая `count_fbs`
+и `count_props`), иначе второй вызов `GETRESOURCES`/`GETCONNECTOR` возвращает
+`EFAULT` и выводов «нет».
+
 `FIRMIR_RENDER_PLUGIN_PATH` (по умолчанию `build/plugins/render`), выбор —
-`FIRMIR_RENDER_BACKEND` (по умолчанию первый загружаемый из `vulkan`,
-`opengl`, `soft`).
+`FIRMIR_RENDER_BACKEND` (по умолчанию — первый из `vulkan`, `opengl`,
+`soft`, который загрузился и смог создать device).
 
 ## Тестовое покрытие
+
+`ctest` выставляет `LD_LIBRARY_PATH` на каталоги библиотек и плагинов в
+build-дереве (`cmake/FirmirTestEnv.cmake`) — на случай, если загрузчик в
+песочнице сборки (scratchbox2, qemu-сборки пакетов) не учитывает пути, зашитые
+в сами бинарники.
+
+Тестовые бинарники при этом самодостаточны: в них зашиты пути до всех
+каталогов с библиотеками и плагинами build-дерева (`DT_RPATH`,
+`--disable-new-dtags`) — и абсолютные, и относительные от самого бинарника
+(`$ORIGIN/../libs/...`, `BUILD_RPATH_USE_ORIGIN`). Поэтому запускать можно без
+окружения, из любого текущего каталога и даже если build-дерево в рантайме
+лежит по другому абсолютному пути, чем при конфигурации:
+
+```sh
+./build/tests/tests
+```
+
+Тесты, которым нужны системные ресурсы, деградируют в «skip», а не в провал:
+`gui_native_font_and_database` ищет файл шрифта по путям популярных
+дистрибутивов, затем рекурсивно в `/usr/share/fonts` (переопределяется
+`FIRMIR_TEST_FONT=/path/to/font.ttf`), а при полном отсутствии шрифтов в
+build-root'е (rpmbuild, scratchbox, минимальные контейнеры) пропускает проверки
+метрик и `addApplicationFont()` с сообщением `[ SKIP ]`. Так же
+`socket_notifier_exception_oob`: `MSG_OOB` на `socketpair(AF_UNIX)` принимают не
+все ядра и не все эмуляторы, поэтому транспорт проверяется пробой, при отказе
+используется пара loopback TCP, а если окружение вообще не сообщает об urgent
+данных (`epoll` не выставляет `EPOLLPRI`), кейс пропускается — молчание
+нотификатора там, где ядро событие отдаёт, остаётся провалом.
 
 Сборка gcov-инструментированной конфигурации в `build-cov`, прогон тестов
 и отчёт (требуются lcov и genhtml):

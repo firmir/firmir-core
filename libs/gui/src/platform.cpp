@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <firmir/detail/dynload.hpp>
+#include <firmir/gui/detail/backendselection.hpp>
 #include <firmir/thread.hpp>
 #include <firmir/gui/backend.hpp>
 #include <firmir/gui/screen.hpp>
@@ -11,6 +12,9 @@
 #include <mutex>
 #include <stdexcept>
 #ifndef _WIN32
+#include <cstring>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 #endif
 
@@ -59,16 +63,32 @@ std::vector<std::string> pluginDirs() {
 }
 
 #ifndef _WIN32
-/// True when a Wayland compositor socket exists ($XDG_RUNTIME_DIR/
-/// $WAYLAND_DISPLAY, defaulting to wayland-0).
-bool waylandSocketExists() {
-    const char* runtimeDir = std::getenv("XDG_RUNTIME_DIR");
-    if (!runtimeDir || !*runtimeDir)
-        return false;
+/// True when a Wayland compositor accepts connections: $WAYLAND_DISPLAY
+/// (absolute, or relative to $XDG_RUNTIME_DIR; default wayland-0) must exist
+/// and be connectable. A stale socket file counts as "no compositor" so the
+/// next backend of the list is tried instead of failing with "no screens".
+bool waylandCompositorAvailable() {
     const char* display = std::getenv("WAYLAND_DISPLAY");
-    const std::string socket = std::string(runtimeDir) + "/" +
-        (display && *display ? display : "wayland-0");
-    return ::access(socket.c_str(), F_OK) == 0;
+    std::string socket = display && *display ? display : "";
+    if (socket.empty() || socket.front() != '/') {
+        const char* runtimeDir = std::getenv("XDG_RUNTIME_DIR");
+        if (!runtimeDir || !*runtimeDir)
+            return false;
+        socket = std::string(runtimeDir) + "/" +
+                 (socket.empty() ? std::string("wayland-0") : socket);
+    }
+    sockaddr_un address{};
+    if (socket.size() >= sizeof(address.sun_path))
+        return false;
+    address.sun_family = AF_UNIX;
+    std::memcpy(address.sun_path, socket.c_str(), socket.size() + 1);
+    const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0)
+        return false;
+    const bool connected =
+        ::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
+    ::close(fd);
+    return connected;
 }
 
 /// True when at least one /dev/dri/cardN device node exists.
@@ -115,37 +135,49 @@ public:
 };
 
 void Platform::Impl::loadBackends(Platform* q) {
-    // Display backend: FIRMIR_GUI_DISPLAY when set, otherwise the first
-    // loadable of: wayland (when a compositor socket exists), drm (with
-    // evdev input, when a /dev/dri/cardN node exists), headless. Neither
-    // wayland nor drm exists on Windows — headless is the default there.
+    // Backends: FIRMIR_GUI_DISPLAY / FIRMIR_GUI_INPUT pin a single backend,
+    // FIRMIR_GUI_BACKENDS holds an ordered, comma-separated list of names to
+    // try ("drm,eglfs") and defaults to wayland,eglfs,drm,evdev,headless.
+    const char* backendsEnv = std::getenv("FIRMIR_GUI_BACKENDS");
+    const std::vector<std::string> requested =
+        detail::parseBackendList(backendsEnv ? backendsEnv : "");
+    for (const std::string& name : requested)
+        if (!detail::isDisplayBackendName(name) && !detail::isInputBackendName(name))
+            cLogWarning(lcGui()) << "unknown backend in FIRMIR_GUI_BACKENDS:" << name;
+
     const char* displayName = std::getenv("FIRMIR_GUI_DISPLAY");
-    std::vector<std::string> candidates;
-    if (displayName && *displayName) {
-        candidates.push_back(displayName);
-    } else {
+    const std::string pinnedDisplay = displayName ? displayName : "";
 #ifndef _WIN32
-        if (waylandSocketExists())
-            candidates.push_back("wayland");
-        if (drmDeviceExists())
-            candidates.push_back("drm");
+    const bool waylandAvailable = waylandCompositorAvailable();
+    const bool drmAvailable = drmDeviceExists();
+#else
+    // Neither wayland nor drm exists on Windows: headless is the default.
+    const bool waylandAvailable = false;
+    const bool drmAvailable = false;
 #endif
-        candidates.push_back("headless");
-    }
     std::string display;
-    for (const std::string& candidate : candidates) {
+    std::vector<std::string> skipped;
+    const std::vector<std::string> displayCandidates = detail::displayBackendCandidates(
+        pinnedDisplay, requested, waylandAvailable, drmAvailable, &skipped);
+    for (const std::string& name : skipped)
+        cLogWarning(lcGui()) << "display backend skipped (unavailable):" << name;
+    for (const std::string& candidate : displayCandidates) {
         displayHandle = loadPlugin("display", candidate);
         if (displayHandle) {
             display = candidate;
             break;
         }
-        if (displayName && *displayName)
+        if (!pinnedDisplay.empty())
             throw std::runtime_error("firmir-gui: display backend not found: " +
                                      candidate);
         cLogWarning(lcGui()) << "display backend unavailable:" << candidate;
     }
-    if (!displayHandle)
-        throw std::runtime_error("firmir-gui: no usable display backend");
+    if (!displayHandle) {
+        std::string message = "firmir-gui: no usable display backend";
+        if (backendsEnv && *backendsEnv)
+            message += std::string(" in FIRMIR_GUI_BACKENDS=") + backendsEnv;
+        throw std::runtime_error(message);
+    }
     auto createDisplay = reinterpret_cast<CreateDisplayFunc>(
         Firmir::detail::librarySymbol(displayHandle, FIRMIR_GUI_CREATE_DISPLAY));
     if (!createDisplay)
@@ -160,27 +192,42 @@ void Platform::Impl::loadBackends(Platform* q) {
                               std::make_unique<ScreenChangedEvent>(screen, added));
     };
 
-    // Input: an explicitly named plugin, else the display plugin's own input
-    // factory (combined backends like Wayland), else evdev (pairs with DRM),
-    // else headless.
+    // Input: FIRMIR_GUI_INPUT, else the input-capable names of
+    // FIRMIR_GUI_BACKENDS, else the display plugin's own input factory
+    // (combined backends like Wayland), else evdev (pairs with DRM), else
+    // headless.
     const char* inputName = std::getenv("FIRMIR_GUI_INPUT");
-    if (inputName && *inputName) {
-        inputHandle = loadPlugin("input", inputName);
-    } else if (Firmir::detail::librarySymbol(displayHandle, FIRMIR_GUI_CREATE_INPUT)) {
-        inputHandle = displayHandle;
-    } else if (display != "headless") {
-#ifndef _WIN32
-        inputHandle = loadPlugin("input", "evdev");
+    const std::string pinnedInput = inputName ? inputName : "";
+    const bool displayProvidesInput =
+        Firmir::detail::librarySymbol(displayHandle, FIRMIR_GUI_CREATE_INPUT) != nullptr;
+    std::string input;
+    for (const std::string& candidate : detail::inputBackendCandidates(
+             pinnedInput, requested, display, displayProvidesInput)) {
+        if (candidate == display && displayProvidesInput) {
+            inputHandle = displayHandle;
+            input = candidate;
+            break;
+        }
+#ifdef _WIN32
+        if (candidate == "evdev")
+            continue; // evdev is a Linux input backend
 #endif
-        if (!inputHandle)
-            inputHandle = loadPlugin("input", "headless");
+        inputHandle = loadPlugin("input", candidate);
+        if (inputHandle) {
+            input = candidate;
+            break;
+        }
+        cLogWarning(lcGui()) << "input backend unavailable:" << candidate;
     }
     if (inputHandle) {
         auto createInput = reinterpret_cast<CreateInputFunc>(
             Firmir::detail::librarySymbol(inputHandle, FIRMIR_GUI_CREATE_INPUT));
-        if (createInput) {
-            input = createInput();
-            input->eventCallback = [q](const InputEvent& event) {
+        if (!createInput) {
+            cLogWarning(lcGui()) << "no " FIRMIR_GUI_CREATE_INPUT " in backend:" << input;
+            inputHandle = nullptr;
+        } else {
+            this->input = createInput();
+            this->input->eventCallback = [q](const InputEvent& event) {
                 if (Thread::currentThread() == q->thread())
                     q->d->routeInput(q, event);
                 else

@@ -4,9 +4,18 @@
 // backends: they are discovered as `firmir-gui-<name>.so` modules in the
 // directories listed in the FIRMIR_GUI_PLUGIN_PATH environment variable
 // (colon-separated) and selected with:
-//   FIRMIR_GUI_DISPLAY — display backend name (default: "headless")
-//   FIRMIR_GUI_INPUT   — input backend name (default: the display plugin's
-//                        input factory when present, else "headless")
+//   FIRMIR_GUI_BACKENDS — ordered, comma-separated list of backends to try,
+//                        e.g. "drm,eglfs"; defaults to
+//                        "wayland,eglfs,drm,evdev,headless". The first display-
+//                        capable name whose plugin loads provides the display
+//                        (headless, wayland, drm, eglfs), the first
+//                        input-capable one provides input (headless, wayland,
+//                        evdev); names whose device is missing are skipped.
+//                        evdev is always tried for the hardware backends
+//                        drm/eglfs — it works alongside them, never instead;
+//   FIRMIR_GUI_DISPLAY — pins one display backend (no fallback, wins over
+//                        FIRMIR_GUI_BACKENDS);
+//   FIRMIR_GUI_INPUT   — pins one input backend.
 // A single .so may export both factory functions (e.g. a Wayland plugin
 // providing display and input together).
 

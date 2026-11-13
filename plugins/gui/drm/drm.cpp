@@ -7,6 +7,7 @@
 // Device node: FIRMIR_DRM_DEVICE (default /dev/dri/card0).
 
 #include <firmir/gui/backend.hpp>
+#include <firmir/gui/detail/drmuapi.hpp>
 
 #include <algorithm>
 #include <cerrno>
@@ -14,8 +15,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <drm/drm.h>
-#include <drm/drm_mode.h>
 #include <fcntl.h>
 #include <memory>
 #include <mutex>

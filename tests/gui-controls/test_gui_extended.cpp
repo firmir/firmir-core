@@ -8,11 +8,101 @@
 #include <firmir/gui/shadereffect.hpp>
 #include <firmir/gui/text.hpp>
 
+#include <algorithm>
 #include <cstdlib>
+#include <filesystem>
 #include <string>
+#include <system_error>
+#include <vector>
 
 using namespace Firmir;
 using namespace Firmir::Gui;
+
+namespace {
+
+bool fileExists(const std::string& path) {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(path, ec) && !ec;
+}
+
+/// Locates a font file usable with FontDatabase::addApplicationFont().
+/// FIRMIR_TEST_FONT overrides the search; otherwise the paths used by the common
+/// distributions are probed and, failing that, the font roots are scanned for
+/// any *.ttf/*.otf, so the test does not depend on one distribution's naming
+/// (deb/rpm/arch layouts, minimal build roots, macOS, Windows).
+std::string findFontFile() {
+    if (const char* env = std::getenv("FIRMIR_TEST_FONT")) {
+        if (*env && fileExists(env))
+            return env;
+        std::fprintf(stderr, "[ WARN ] FIRMIR_TEST_FONT=%s is not a readable file\n", env);
+    }
+
+    std::vector<std::string> candidates;
+#ifdef _WIN32
+    // Windows has no DejaVu by default; Arial ships with every installation.
+    const char* winDir = std::getenv("WINDIR");
+    const std::string fontDir =
+        (winDir && *winDir ? std::string(winDir) : std::string("C:/Windows")) + "/Fonts";
+    for (const char* name : {"arial.ttf", "segoeui.ttf", "tahoma.ttf", "verdana.ttf"})
+        candidates.push_back(fontDir + "/" + name);
+#elif defined(__APPLE__)
+    for (const char* path : {"/System/Library/Fonts/Supplemental/Arial.ttf",
+                             "/Library/Fonts/Arial.ttf",
+                             "/System/Library/Fonts/Supplemental/Verdana.ttf"})
+        candidates.emplace_back(path);
+#else
+    for (const char* path : {
+             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",       // Debian, Ubuntu
+             "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",     // Fedora, RHEL, openSUSE
+             "/usr/share/fonts/dejavu/DejaVuSans.ttf",                // Alpine, Arch
+             "/usr/share/fonts/TTF/DejaVuSans.ttf",
+             "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+             "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",
+             "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"})
+        candidates.emplace_back(path);
+#endif
+    for (const std::string& path : candidates)
+        if (fileExists(path))
+            return path;
+
+    std::vector<std::string> roots;
+#ifdef _WIN32
+    roots.push_back(fontDir);
+#elif defined(__APPLE__)
+    roots.insert(roots.end(), {"/System/Library/Fonts", "/Library/Fonts"});
+#else
+    roots.insert(roots.end(),
+                 {"/usr/share/fonts", "/usr/local/share/fonts", "/run/host/fonts"});
+#endif
+    for (const std::string& root : roots) {
+        std::error_code ec;
+        if (!std::filesystem::is_directory(root, ec) || ec)
+            continue;
+        std::vector<std::string> found;
+        std::error_code iterError;
+        std::filesystem::recursive_directory_iterator it(
+            root, std::filesystem::directory_options::skip_permission_denied, iterError);
+        const std::filesystem::recursive_directory_iterator end;
+        while (!iterError && it != end) {
+            std::error_code entryError;
+            if (it->is_regular_file(entryError) && !entryError) {
+                const std::string extension = it->path().extension().string();
+                if (extension == ".ttf" || extension == ".otf")
+                    found.push_back(it->path().string());
+            }
+            if (found.size() >= 64)
+                break;
+            it.increment(iterError);
+        }
+        if (!found.empty()) {
+            std::sort(found.begin(), found.end());
+            return found.front();
+        }
+    }
+    return {};
+}
+
+} // namespace
 
 TEST_CASE(gui_native_font_and_database) {
     Font font("DejaVu Sans", 24);
@@ -21,8 +111,6 @@ TEST_CASE(gui_native_font_and_database) {
     Text text;
     text.setFont(font);
     text.setText("Привет, Firmir");
-    CHECK(text.width() > 20);
-    CHECK(text.height() >= 20);
     CHECK_EQ(text.fontPixelSize(), 24);
     CHECK(text.fontBold());
     CHECK(text.fontUnderline());
@@ -30,17 +118,21 @@ TEST_CASE(gui_native_font_and_database) {
     CHECK_EQ(text.fontFamily().toStdString(), "DejaVu Serif");
     text.setProperty("font.italic", true);
     CHECK(text.fontItalic());
-#ifdef _WIN32
-    // Windows has no DejaVu by default; Arial ships with every installation.
-    const char* winDir = std::getenv("WINDIR");
-    const std::string fontPath =
-        (winDir && *winDir ? std::string(winDir) : std::string("C:/Windows")) +
-        "/Fonts/arial.ttf";
+    // Metrics need a font the platform can resolve: minimal build roots
+    // (rpmbuild/scratchbox/debootstrapped containers) may ship none at all.
+    if (FontDatabase::families().empty())
+        std::fprintf(stderr, "[ SKIP ] no system fonts installed, text metrics not checked\n");
+    else {
+        CHECK(text.width() > 20);
+        CHECK(text.height() >= 20);
+    }
+    const std::string fontPath = findFontFile();
+    if (fontPath.empty()) {
+        std::fprintf(stderr, "[ SKIP ] no font file found, application fonts not checked\n");
+        return;
+    }
+    std::fprintf(stderr, "[ INFO ] application font: %s\n", fontPath.c_str());
     const int id = FontDatabase::addApplicationFont(fontPath);
-#else
-    const int id = FontDatabase::addApplicationFont(
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
-#endif
     CHECK(id >= 0);
     CHECK(!FontDatabase::applicationFontFamilies(id).empty());
     CHECK(FontDatabase::removeApplicationFont(id));

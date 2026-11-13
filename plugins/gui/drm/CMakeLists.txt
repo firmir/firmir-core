@@ -1,4 +1,5 @@
 add_library(firmir-gui-drm SHARED drm.cpp)
+firmir_use_headers(firmir-gui-drm "${FIRMIR_DRM_INCLUDE_DIR}")
 set_target_properties(firmir-gui-drm PROPERTIES
     PREFIX ""
     LIBRARY_OUTPUT_DIRECTORY ${FIRMIR_GUI_PLUGIN_DIR})

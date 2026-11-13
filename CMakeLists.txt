@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(firmir VERSION 1.0.0 LANGUAGES CXX)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/FirmirInstall.cmake)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/FirmirTestEnv.cmake)
 
 option(FIRMIR_BUILD_TESTS "Build the test suite" ON)
 option(FIRMIR_BUILD_EXAMPLES "Build examples" ON)
@@ -189,6 +190,21 @@ if(FIRMIR_BUILD_LIB_RENDER)
         add_subdirectory(plugins/render)
     endif()
 endif()
+
+# Targets a test run may load at runtime: linked libraries plus the plugins
+# that are dlopen()ed by them (a plugin's own dependencies must be findable
+# too). firmir_test_environment() ignores the targets that were not built.
+set(FIRMIR_TEST_RUNTIME_TARGETS
+    firmir-core firmir-dbus firmir-networking
+    firmir-render firmir-multimedia firmir-gui firmir-gui-controls
+    firmir-wayland-protocols firmir-wayland-client firmir-wayland-server
+    firmir-wayland-compositor
+    firmir-gui-drm firmir-gui-eglfs firmir-gui-eglfs-kms firmir-gui-evdev
+    firmir-gui-headless firmir-gui-wayland
+    firmir-render-null firmir-render-soft firmir-render-opengl
+    firmir-render-vulkan
+    firmir-mm-gstreamer firmir-mm-ffmpeg)
+
 if(FIRMIR_BUILD_DOC_TOOL)
     add_subdirectory(tools/doc)
 endif()
