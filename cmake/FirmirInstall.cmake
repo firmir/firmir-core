@@ -62,9 +62,14 @@ function(firmir_install_example target)
     install(TARGETS ${target} RUNTIME DESTINATION ${FIRMIR_INSTALL_BINDIR})
 endfunction()
 
-# firmir_install_plugin(<target> <gui|render>): backend plugins install into
-# lib/firmir/plugins/<kind>/.
+# firmir_install_plugin(<target> <gui|render> [SUBDIR <name>]): backend
+# plugins install into lib/firmir/plugins/<kind>/[<name>/].
 function(firmir_install_plugin target kind)
+    cmake_parse_arguments(ARG "" "SUBDIR" "" ${ARGN})
+    set(destination ${FIRMIR_INSTALL_LIBDIR}/firmir/plugins/${kind})
+    if(ARG_SUBDIR)
+        set(destination ${destination}/${ARG_SUBDIR})
+    endif()
     install(TARGETS ${target}
-            LIBRARY DESTINATION ${FIRMIR_INSTALL_LIBDIR}/firmir/plugins/${kind})
+            LIBRARY DESTINATION ${destination})
 endfunction()

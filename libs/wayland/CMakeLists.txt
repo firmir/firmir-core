@@ -22,12 +22,16 @@ separate_arguments(FIRML_TOOL_WRAPPER_LIST UNIX_COMMAND "${FIRML_TOOL_WRAPPER}")
 add_custom_command(
     OUTPUT ${CORE_CLIENT_HPP} ${XDG_CLIENT_HPP} ${XDG_CLIENT_H} ${XDG_PROTOCOL_C}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${GENERATED_DIR}
-    COMMAND ${FIRML_TOOL_WRAPPER_LIST} $<TARGET_FILE:firmir-wayland-generator>
+    COMMAND ${CMAKE_COMMAND} -E env
+            LD_LIBRARY_PATH=$<TARGET_FILE_DIR:firmir-core>:$ENV{LD_LIBRARY_PATH}
+            ${FIRML_TOOL_WRAPPER_LIST} $<TARGET_FILE:firmir-wayland-generator>
             --mode client
             --protocol-header wayland-client-protocol.h ${WAYLAND_XML} ${CORE_CLIENT_HPP}
     COMMAND ${WAYLAND_SCANNER} client-header ${XDG_SHELL_XML} ${XDG_CLIENT_H}
     COMMAND ${WAYLAND_SCANNER} public-code ${XDG_SHELL_XML} ${XDG_PROTOCOL_C}
-    COMMAND ${FIRML_TOOL_WRAPPER_LIST} $<TARGET_FILE:firmir-wayland-generator>
+    COMMAND ${CMAKE_COMMAND} -E env
+            LD_LIBRARY_PATH=$<TARGET_FILE_DIR:firmir-core>:$ENV{LD_LIBRARY_PATH}
+            ${FIRML_TOOL_WRAPPER_LIST} $<TARGET_FILE:firmir-wayland-generator>
             --mode client
             --protocol-header xdg-shell-client-protocol.h ${XDG_SHELL_XML} ${XDG_CLIENT_HPP}
     DEPENDS firmir-wayland-generator ${WAYLAND_XML} ${XDG_SHELL_XML}

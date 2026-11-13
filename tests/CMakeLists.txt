@@ -37,6 +37,9 @@ if(FIRMIR_BUILD_LIB_GUI AND TARGET firmir-gui-headless)
 elseif(FIRMIR_BUILD_LIB_GUI)
     message(STATUS "firmir-gui tests require the headless plugin; skipping them")
 endif()
+if(TARGET firmir-gui-eglfs)
+    list(APPEND TEST_SOURCES gui/test_eglfs.cpp)
+endif()
 if(FIRMIR_BUILD_LIB_RENDER AND TARGET firmir-render-null)
     list(APPEND TEST_SOURCES render/test_render.cpp)
     list(APPEND TEST_LIBS firmir-render firmir-render-null)
@@ -94,6 +97,16 @@ endif()
 if(TARGET firmir-render-vulkan)
     add_dependencies(tests firmir-render-vulkan)
 endif()
+if(TARGET firmir-gui-eglfs)
+    # gui/test_eglfs.cpp dlopen()s the backend and its kms integration.
+    target_compile_definitions(tests PRIVATE
+        FIRMIR_EGLFS_TEST_PLUGIN_DIR="$<TARGET_FILE_DIR:firmir-gui-eglfs>")
+    add_dependencies(tests firmir-gui-eglfs)
+    if(TARGET firmir-gui-eglfs-kms)
+        target_compile_definitions(tests PRIVATE FIRMIR_EGLFS_TEST_KMS_PLUGIN)
+        add_dependencies(tests firmir-gui-eglfs-kms)
+    endif()
+endif()
 target_link_libraries(tests PRIVATE ${TEST_LIBS})
 if(WIN32)
     target_link_libraries(tests PRIVATE ws2_32)
@@ -143,15 +156,23 @@ if(FIRMIR_BUILD_LIB_DBUS)
     else()
         set(DBUS_TOOL_WRAPPER)
     endif()
+    # firmir-dbus-tool needs libfirmir-dbus.so, which in turn needs
+    # libfirmir-core.so. The absolute RUNPATH baked in at link time is not
+    # usable in sandboxed build environments (scratchbox2 rewrites paths), so
+    # both library directories are exported explicitly.
+    set(DBUS_TOOL_ENV
+        LD_LIBRARY_PATH=$<TARGET_FILE_DIR:firmir-dbus>:$<TARGET_FILE_DIR:firmir-core>:$ENV{LD_LIBRARY_PATH})
     set(DBUS_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
     file(MAKE_DIRECTORY ${DBUS_GENERATED_DIR})
     add_custom_command(
         OUTPUT ${DBUS_GENERATED_DIR}/calculator_proxy.hpp
                ${DBUS_GENERATED_DIR}/calculator_adaptor.hpp
-        COMMAND ${DBUS_TOOL_WRAPPER} $<TARGET_FILE:firmir-dbus-tool> --proxy
+        COMMAND ${CMAKE_COMMAND} -E env ${DBUS_TOOL_ENV}
+                ${DBUS_TOOL_WRAPPER} $<TARGET_FILE:firmir-dbus-tool> --proxy
                 ${CMAKE_CURRENT_SOURCE_DIR}/dbus/org.firmir.Calculator.xml
                 -o ${DBUS_GENERATED_DIR}/calculator_proxy.hpp
-        COMMAND ${DBUS_TOOL_WRAPPER} $<TARGET_FILE:firmir-dbus-tool> --adaptor
+        COMMAND ${CMAKE_COMMAND} -E env ${DBUS_TOOL_ENV}
+                ${DBUS_TOOL_WRAPPER} $<TARGET_FILE:firmir-dbus-tool> --adaptor
                 ${CMAKE_CURRENT_SOURCE_DIR}/dbus/org.firmir.Calculator.xml
                 -o ${DBUS_GENERATED_DIR}/calculator_adaptor.hpp
         DEPENDS firmir-dbus-tool

@@ -41,7 +41,7 @@ int main() {
     const JsonDocument broken =
         JsonDocument::fromJson(ByteArray("{\"a\": }"), &error);
     cLogInfo(lcApp()) << "broken document is null: " << broken.isNull()
-                      << ", error: " << error.errorString() << " at offset "
+                      << "error:" << error.errorString() << "at offset"
                       << error.offset;
 
     return reparsed.object() == object && broken.isNull() ? 0 : 1;

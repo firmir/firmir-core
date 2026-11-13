@@ -37,13 +37,15 @@ int main() {
     // (XmlElement is a handle: mutating a copy mutates the
     // document, so the handle itself does not need to be const here.)
     XmlElement root = doc.rootElement();
-    cLogInfo(lcApp()) << "root: <" << root.tagName() << ">";
+    cLogInfo(lcApp()) << ("root: <" + root.tagName() + ">");
     for (const XmlElement& book : root.childElements("book")) {
         const String title = book.firstChildElement("title").text();
         const String author = book.firstChildElement("author").text();
-        cLogInfo(lcApp()) << "book #" << book.attribute("id") << ": '" << title
-                          << "'" << (author.isEmpty() ? " (no author)"
-                                                      : " by " + author);
+        cLogInfo(lcApp()) << "book"
+                          << ("#" + book.attribute("id") + ": '" + title +
+                              "'")
+                          << (author.isEmpty() ? " (no author)"
+                                              : " by " + author);
     }
 
     // Modify: append a new element built with createElement().

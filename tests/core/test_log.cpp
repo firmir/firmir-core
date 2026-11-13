@@ -2,6 +2,7 @@
 
 #include <firmir/log.hpp>
 
+#include <iostream>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -47,7 +48,7 @@ TEST_CASE(log_basic_streaming) {
 
     logDebug() << "value:" << 42 << " ok";
     CHECK_EQ(sink.messages.size(), 1u);
-    CHECK_EQ(sink.text(0), "value:42 ok");
+    CHECK_EQ(sink.text(0), "value: 42 ok");
     CHECK(sink.level(0) == LogLevel::Debug);
     CHECK_EQ(sink.category(0), "default");
 
@@ -55,6 +56,31 @@ TEST_CASE(log_basic_streaming) {
     CHECK_EQ(sink.messages.size(), 2u);
     CHECK_EQ(sink.text(1), "explicit 3.5");
     CHECK(sink.level(1) == LogLevel::Info);
+}
+
+TEST_CASE(log_auto_spacing) {
+    SinkGuard sink;
+
+    // Adjacent values are separated by one space automatically.
+    logInfo() << "loaded" << "display" << "backend" << "/tmp/x";
+    CHECK_EQ(sink.messages.size(), 1u);
+    CHECK_EQ(sink.text(0), "loaded display backend /tmp/x");
+
+    // Numbers and empty chunks: empty chunks do not produce a separator.
+    logInfo() << "items" << 3 << "" << "left";
+    CHECK_EQ(sink.text(1), "items 3 left");
+
+    // Whitespace already present on either side is never duplicated.
+    logInfo() << "trailing " << 1;
+    logInfo() << "leading" << " 2";
+    logInfo() << "tab" << "\t" << "x";
+    CHECK_EQ(sink.text(2), "trailing 1");
+    CHECK_EQ(sink.text(3), "leading 2");
+    CHECK_EQ(sink.text(4), "tab\tx");
+
+    // std::endl is a chunk starting with a newline: no space is inserted.
+    logInfo() << "line" << std::endl;
+    CHECK_EQ(sink.text(5), "line\n");
 }
 
 TEST_CASE(log_global_minimum_level) {
@@ -83,7 +109,7 @@ TEST_CASE(log_categories) {
     cLog(net, LogLevel::Info) << "bytes:" << 128;
     CHECK_EQ(sink.messages.size(), 2u);
     CHECK_EQ(sink.category(0), "net");
-    CHECK_EQ(sink.text(1), "bytes:128");
+    CHECK_EQ(sink.text(1), "bytes: 128");
 
     LoggingCategory noisy("noisy");
     noisy.setMinimumLevel(LogLevel::Error);

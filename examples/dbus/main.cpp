@@ -109,7 +109,7 @@ int main() {
         const String echoed = reply.arguments().empty()
                                   ? String()
                                   : reply.arguments().front().toString();
-        cLogInfo(lcApp()) << "Echo replied: '" << echoed << "'";
+        cLogInfo(lcApp()) << ("Echo replied: '" + echoed + "'");
 
         // Introspection is answered automatically for registered objects.
         const DBusMessage xml = client.call(

@@ -24,7 +24,9 @@ add_custom_command(
     COMMAND ${WAYLAND_SCANNER} private-code ${DECORATION_XML} ${DECORATION_C}
     COMMAND ${WAYLAND_SCANNER} server-header ${XDG_OUTPUT_XML} ${XDG_OUTPUT_H}
     COMMAND ${WAYLAND_SCANNER} private-code ${XDG_OUTPUT_XML} ${XDG_OUTPUT_C}
-    COMMAND ${FIRML_TOOL_WRAPPER_LIST} $<TARGET_FILE:firmir-wayland-generator>
+    COMMAND ${CMAKE_COMMAND} -E env
+            LD_LIBRARY_PATH=$<TARGET_FILE_DIR:firmir-core>:$ENV{LD_LIBRARY_PATH}
+            ${FIRML_TOOL_WRAPPER_LIST} $<TARGET_FILE:firmir-wayland-generator>
             --mode server
             --protocol-header xdg-shell-server-protocol.h ${XDG_SHELL_XML} ${XDG_SERVER_HPP}
     DEPENDS firmir-wayland-generator ${XDG_SHELL_XML} ${VIEWPORTER_XML} ${DECORATION_XML} ${XDG_OUTPUT_XML}

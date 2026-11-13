@@ -143,12 +143,11 @@ void Window::Impl::renderFrame() {
             backendName && *backendName ? backendName : "");
         if (!renderDevice) {
             if (!renderErrorLogged) {
+                const std::string backend =
+                    backendName && *backendName ? backendName : "soft";
                 cLogWarning(lcGuiWindow())
                     << "no render backend (tried"
-                                   << (backendName && *backendName
-                                           ? backendName
-                                           : "soft")
-                                   << "); window content is not rendered";
+                    << (backend + "); window content is not rendered");
                 renderErrorLogged = true;
             }
             return;

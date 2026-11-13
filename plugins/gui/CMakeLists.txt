@@ -24,6 +24,9 @@ if(FIRMIR_BUILD_PLUGIN_GUI_DRM)
         message(STATUS "drm/drm.h not found, skipping the drm backend")
     endif()
 endif()
+if(FIRMIR_BUILD_PLUGIN_GUI_EGLFS)
+    add_subdirectory(eglfs)
+endif()
 if(FIRMIR_BUILD_PLUGIN_GUI_WAYLAND)
     if(TARGET firmir-wayland-client)
         add_subdirectory(wayland)
@@ -33,8 +36,14 @@ if(FIRMIR_BUILD_PLUGIN_GUI_WAYLAND)
 endif()
 
 # Installed GUI backends live in lib/firmir/plugins/gui/.
-foreach(backend headless evdev drm wayland)
+foreach(backend headless evdev drm wayland eglfs)
     if(TARGET firmir-gui-${backend})
         firmir_install_plugin(firmir-gui-${backend} gui)
     endif()
 endforeach()
+
+# eglfs device integrations (sub-plugins) live one level deeper, in
+# lib/firmir/plugins/gui/eglfs/.
+if(TARGET firmir-gui-eglfs-kms)
+    firmir_install_plugin(firmir-gui-eglfs-kms gui SUBDIR eglfs)
+endif()

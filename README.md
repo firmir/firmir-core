@@ -42,7 +42,8 @@ libs/
   gui-controls/ firmir-gui-controls — Button, selection controls, views, indicators
   wayland/      firmir-wayland-client/server/compositor + C++ protocol generator
   render/       firmir-render   — абстракция примитивного рендеринга поверх GPU API
-plugins/gui/    подгружаемые бэкенды firmir-gui-<имя>.so (headless, evdev, drm, wayland)
+plugins/gui/    подгружаемые бэкенды firmir-gui-<имя>.so (headless, evdev, drm, wayland,
+                eglfs + его device-интеграции в plugins/gui/eglfs/<имя>/)
 plugins/render/ подгружаемые рендер-бэкенды firmir-render-<имя>.so
                 (null, soft, opengl, vulkan)
 plugins/core/   бэкенды сервисов firmir-core (locale/test: системный язык)
@@ -161,6 +162,7 @@ cmake --install build --prefix /opt/firmir
 | примеры `firmir-example-*` | `bin/` |
 | заголовки | `include/firmir/<модуль>/` |
 | GUI-бэкенды `firmir-gui-*.so` | `lib/firmir/plugins/gui/` |
+| device-интеграции eglfs | `lib/firmir/plugins/gui/eglfs/` |
 | render-бэкенды `firmir-render-*.so` | `lib/firmir/plugins/render/` |
 | core-бэкенды `firmir-<сервис>-*.so` | `lib/firmir/plugins/core/` |
 | pkg-config `firmir-<модуль>.pc` | `lib/pkgconfig/` |
@@ -237,7 +239,32 @@ FIRMIR_GUI_INPUT=evdev \                # input-бэкенд (default: из disp
 ./build/examples/gui/firmir-example-gui-animation
 ```
 
-Рендер-бэкенды ищутся аналогично: `firmir-render-<имя>.so` в
+### eglfs
+
+`eglfs` — полноэкранный бэкенд без композитора: сам плагин
+(`firmir-gui-eglfs.so`) только маршрутизирует экраны и окна, а с устройством
+работает device-интеграция `firmir-gui-eglfs-<имя>.so`. Интеграция выбирается
+переменной `FIRMIR_EGLFS_INTEGRATION` (по умолчанию `kms`); имя нормализуется,
+поэтому `kms`, `eglfs_kms` и `EGLFS-KMS` равнозначны. Сейчас есть `kms`
+(KMS через raw DRM ioctl + GBM/EGL/GLES2), в планах — `kms-egldevice` и `emu`.
+Ищутся интеграции в `FIRMIR_EGLFS_PLUGIN_PATH`, а по умолчанию — в подкаталоге
+`eglfs/` каталогов `FIRMIR_GUI_PLUGIN_PATH` (build tree: `build/plugins/eglfs`).
+Input-бэкенд — `evdev`, Platform подхватывает его автоматически.
+
+```sh
+FIRMIR_GUI_DISPLAY=eglfs \
+FIRMIR_EGLFS_INTEGRATION=kms \                  # default (eglfs_kms == kms)
+FIRMIR_EGLFS_PLUGIN_PATH=build/plugins/eglfs \  # поиск firmir-gui-eglfs-<имя>.so, через ':'
+FIRMIR_EGLFS_KMS_DEVICE=/dev/dri/card0 \        # default; альтернатива — FIRMIR_DRM_DEVICE
+./build/examples/gui/firmir-example-gui-animation
+```
+
+Интеграция `kms` требует DRM master (свободная VT или CAP_SYS_ADMIN) и, как и
+бэкенд `drm`, поддерживает только полноэкранные окна размером с режим вывода.
+ABI подплагинов описан в `<firmir/gui/eglfsintegration.hpp>`: интеграция
+экспортирует `firmir_eglfs_create_integration()` и
+`firmir_eglfs_integration_abi()`.
+
 `FIRMIR_RENDER_PLUGIN_PATH` (по умолчанию `build/plugins/render`), выбор —
 `FIRMIR_RENDER_BACKEND` (по умолчанию первый загружаемый из `vulkan`,
 `opengl`, `soft`).

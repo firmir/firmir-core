@@ -22,6 +22,7 @@
 #include <firmir/variant.hpp>
 
 #include <chrono>
+#include <string>
 
 namespace {
 
@@ -45,7 +46,7 @@ void showcaseValueTypes() {
     // String: string API over UTF-8 bytes.
     const String greeting = String("%1, %2!").arg("hello").arg("firmir");
     cLogInfo(lcApp()) << "String: " << greeting
-                      << " (upper: " << greeting.toUpper() << ")";
+                      << (" (upper: " + greeting.toUpper() + ")");
 
     // ByteArray: binary-safe container with base64/hex helpers.
     const ByteArray binary(std::string("firmir\0data", 12));
@@ -68,8 +69,10 @@ void showcaseValueTypes() {
     String label;
     double ratio = 0.0;
     in >> number >> label >> ratio;
-    cLogInfo(lcApp()) << "DataStream: " << number << " '" << label << "' "
-                      << ratio << " (" << buffer.size() << " bytes on the wire)";
+    cLogInfo(lcApp()) << "DataStream: " << number << (" '" + label + "' ")
+                      << ratio
+                      << (" (" + std::to_string(buffer.size()) +
+                          " bytes on the wire)");
 
     // TextStream over a String: formatted text assembly and parsing.
     String textDoc;
@@ -82,8 +85,8 @@ void showcaseValueTypes() {
     TextStream ts(&textDoc);
     ts >> word >> numberWord;
     const int value = numberWord.toInt();
-    cLogInfo(lcApp()) << "TextStream: read '" << word << "' " << value
-                      << " from: " << textDoc;
+    cLogInfo(lcApp()) << "TextStream: read" << (" '" + word + "'") << value
+                      << " from:" << textDoc;
 
     // Future + Concurrent::run: QtConcurrent::run analogue.
     Future<int> future = Concurrent::run([] {

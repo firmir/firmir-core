@@ -210,8 +210,8 @@ bool Translator::addTranslationFile(String path) {
         if (!forms.empty())
             file.strings[key.toStdString()] = std::move(forms);
     }
-    logInfo() << "Translator: loaded" << path << "(language:" << language.c_str()
-              << ")";
+    logInfo() << "Translator: loaded" << path
+              << ("(language: " + language + ")");
     // New strings may change trId() results: refresh all bindings.
     d->notifyLanguageChanged();
     return true;

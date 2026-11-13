@@ -12,6 +12,15 @@
 //   Firmir::cLog(lcNet, Firmir::LogLevel::Debug) << "connected";
 //   Firmir::cLogError(lcNet) << "connection lost";
 //
+// Streamed values are joined with a single space, so no explicit separators
+// are needed:
+//
+//   cLogInfo(lcNet) << "loaded" << "backend" << path;  // "loaded backend /x"
+//
+// The space is only added between two adjacent chunks that do not already
+// start or end with whitespace, so `<< " ok"` / `<< "ok "` behave as before
+// and a newline chunk (std::endl) never gets a space in front of it.
+//
 // The global minimum level is controlled by Log::setMinimumLevel() and, at
 // startup, by the FIRMIR_LOG_LEVEL environment variable
 // (debug|info|warning|error); when set, it acts as a hard floor that logging

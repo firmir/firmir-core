@@ -225,7 +225,7 @@ struct Log::Impl {
     LogLevel level;
     std::string category;
     bool enabled;
-    std::ostringstream stream;
+    std::string message;
 };
 
 Log::Log(LogLevel level)
@@ -268,9 +268,9 @@ void Log::flush() {
         return;
     std::lock_guard<std::mutex> lock(g_mutex);
     if (g_sink)
-        g_sink(d->level, d->category, d->stream.str());
+        g_sink(d->level, d->category, d->message);
     else
-        defaultSink(d->level, d->category, d->stream.str());
+        defaultSink(d->level, d->category, d->message);
 }
 
 Log& Log::operator<<(std::ostream& (*manip)(std::ostream&)) {
@@ -284,7 +284,21 @@ Log& Log::operator<<(std::ostream& (*manip)(std::ostream&)) {
 
 bool Log::isEnabled() const noexcept { return d && d->enabled; }
 
-void Log::append(const std::string& text) { d->stream << text; }
+void Log::append(const std::string& text) {
+    if (text.empty())
+        return;
+    // Join streamed values with a single space by default, unless the message
+    // or the incoming chunk already carries whitespace on the touching side.
+    // That keeps `<< " ok"` / `<< "ok "` and std::endl unchanged.
+    std::string& message = d->message;
+    const auto isWhitespace = [](char c) {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    };
+    if (!message.empty() && !isWhitespace(message.back()) &&
+        !isWhitespace(text.front()))
+        message.push_back(' ');
+    message += text;
+}
 
 void Log::setSink(Sink sink) {
     std::lock_guard<std::mutex> lock(g_mutex);
