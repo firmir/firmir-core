@@ -4,6 +4,8 @@
 #include <firmir/gui/painter.hpp>
 #include <firmir/wayland/compositor/core.hpp>
 
+#include <cstdint>
+
 namespace Firmir {
 namespace Wayland {
 namespace Compositor {
@@ -36,6 +38,9 @@ public:
     void attach(wl_resource* buffer, int x = 0, int y = 0);
     void addDamage(const Gui::Rect& rect);
     void commit();
+    /// Bumped on every commit that attaches a buffer. Lets a client-side item
+    /// skip re-copying (and re-uploading) pixels the client did not change.
+    std::uint64_t commitSerial() const;
     static constexpr auto signalCommitted = "committed";
     static constexpr auto signalDamaged = "damaged";
     /// Emitted (no arguments) from the wl_surface resource destroy callback,

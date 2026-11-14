@@ -29,10 +29,12 @@
 #endif
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <functional>
 #include <headless_control.hpp>
 #include <thread>
 #include <vector>
@@ -74,6 +76,51 @@ private:
 std::atomic<bool> ColorItem::paintedOffMainThread{false};
 std::thread::id ColorItem::mainThreadId;
 
+/// Records the geometry each frame is actually painted with (the render thread
+/// runs paint() under the scene lock, so the pairs show what the frame shows,
+/// regardless of what happens on screen afterwards).
+class ProbeItem : public Item {
+public:
+    using Item::Item;
+
+    std::vector<std::pair<float, float>> painted() const {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_painted;
+    }
+
+protected:
+    void paint(Painter& painter) override {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_painted.push_back({x(), y()});
+        }
+        painter.fillRect(RectF{0, 0, width(), height()}, Color::rgb(0, 200, 0));
+    }
+
+private:
+    mutable std::mutex m_mutex;
+    std::vector<std::pair<float, float>> m_painted;
+};
+
+/// Paints slowly, like a compositor copying fullscreen client buffers does: a
+/// paint holds the scene lock for the whole duration, so it also measures how
+/// long anything that waits for the painter would wait.
+class SlowPaintItem : public Item {
+public:
+    using Item::Item;
+
+    std::atomic<int> paintMs{150};
+    std::atomic<bool> painting{false};
+
+protected:
+    void paint(Painter& painter) override {
+        painting = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(paintMs.load()));
+        painter.fillRect(RectF{0, 0, width(), height()}, Color::rgb(0, 0, 200));
+        painting = false;
+    }
+};
+
 class HandlerItem : public Item {
 public:
     using Item::Item;
@@ -84,7 +131,12 @@ public:
     int keys = 0;
     std::string lastText;
     int touches = 0;
+    int touchUpdates = 0;
+    Point lastTouchPos;
     TouchEvent::Action lastTouchAction = TouchEvent::Action::End;
+    bool touchOffMainThread = false;
+    /// Called after a touch Event was handled (tests quit their loop here).
+    std::function<void()> onTouchEnd;
     int focusIn = 0;
     int focusOut = 0;
     bool acceptInput = true;
@@ -111,8 +163,16 @@ protected:
     }
     void touchEvent(TouchEvent& event) override {
         ++touches;
+        if (event.action == TouchEvent::Action::Update)
+            ++touchUpdates;
+        if (!event.points.empty())
+            lastTouchPos = event.points.front().pos;
         lastTouchAction = event.action;
+        if (Thread::currentThread() != Thread::mainThread())
+            touchOffMainThread = true;
         event.accepted = true;
+        if (onTouchEnd && event.action == TouchEvent::Action::End)
+            onTouchEnd();
     }
     void focusInEvent() override { ++focusIn; }
     void focusOutEvent() override { ++focusOut; }
@@ -487,6 +547,88 @@ TEST_CASE(gui_input_touch) {
     CHECK(item->lastTouchAction == TouchEvent::Action::End);
 
     firmir_gui_headless_remove_screen("TOUCH-1");
+}
+
+TEST_CASE(gui_input_from_backend_thread_is_coalesced) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("THREAD-1", 200, 200);
+    Screen* screen = Platform::instance()->screen("THREAD-1");
+    Window window(screen);
+    window.setGeometry(Rect{0, 0, 200, 200});
+    window.show();
+    auto* item = window.createItem<HandlerItem>(window.contentItem());
+    item->setGeometry(0, 0, 200, 200);
+    item->onTouchEnd = [] { Thread::mainThread()->quit(); };
+
+    // A fast finger: the input backend (evdev reader or Wayland dispatch
+    // thread) reports a burst of contacts while the GUI thread is busy. Only
+    // the newest position of a drag is worth applying, and the burst must not
+    // block the backend thread: a queued backlog makes the window trail the
+    // finger for seconds.
+    std::thread backend([&] {
+        firmir_gui_headless_inject_touch(
+            static_cast<int>(TouchEvent::Action::Begin), 0, 10, 10);
+        for (int i = 1; i <= 40; ++i)
+            firmir_gui_headless_inject_touch(
+                static_cast<int>(TouchEvent::Action::Update), 0,
+                10.0f + static_cast<float>(i), 10);
+        firmir_gui_headless_inject_touch(
+            static_cast<int>(TouchEvent::Action::End), 0, 50, 10);
+    });
+    backend.join();
+
+    Object context;
+    Timer::singleShot(std::chrono::milliseconds(5000), &context,
+                      [] { Thread::mainThread()->quit(); }); // watchdog
+    Thread::mainThread()->exec();
+
+    // Delivered on the GUI thread, in order, with the drag folded into the
+    // last position carried by the End contact.
+    CHECK(!item->touchOffMainThread);
+    CHECK_EQ(item->touches, 2);
+    CHECK_EQ(item->touchUpdates, 0);
+    CHECK(item->lastTouchAction == TouchEvent::Action::End);
+    CHECK_EQ(item->lastTouchPos.x, 50.0f);
+    CHECK_EQ(item->lastTouchPos.y, 10.0f);
+
+    window.hide();
+    firmir_gui_headless_remove_screen("THREAD-1");
+}
+
+TEST_CASE(gui_window_slow_present_does_not_block_gui_thread) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("PRESENT-1", 200, 200);
+    Screen* screen = Platform::instance()->screen("PRESENT-1");
+    Window window(screen);
+    window.setGeometry(Rect{0, 0, 200, 200});
+    auto* item = window.createItem<ColorItem>(
+        window.contentItem(), Color::rgba(255, 0, 0, 255));
+    item->setGeometry(0, 0, 100, 100);
+    window.show();
+
+    const int index = firmir_gui_headless_window_count() - 1;
+    CHECK(index >= 0);
+    // The KMS backend waits for the display refresh inside present(); a frame
+    // must not make the GUI thread — input dispatch, animation ticks — wait
+    // for it, or every event costs a whole frame and a fast drag falls behind.
+    firmir_gui_headless_set_present_delay_ms(index, 400);
+    window.update();
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (firmir_gui_headless_present_count(index) == 0 &&
+           std::chrono::steady_clock::now() < deadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    CHECK(firmir_gui_headless_present_count(index) > 0);
+
+    const auto start = std::chrono::steady_clock::now();
+    item->setX(10);
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    CHECK(elapsed < std::chrono::milliseconds(150));
+
+    // Let the frame finish before the window goes away.
+    firmir_gui_headless_set_present_delay_ms(index, 0);
+    window.hide();
+    firmir_gui_headless_remove_screen("PRESENT-1");
 }
 
 TEST_CASE(gui_button_item_touch_drag_release_outside) {
@@ -1666,6 +1808,151 @@ TEST_CASE(gui_theme_config_file) {
 }
 
 
+// A tick writes both axes and only then asks for a frame, but the property
+// writes take and release the scene lock one by one: the render thread must not
+// paint between them, or it mirrors a frame with only x applied — the very
+// staircase the batching exists to prevent (this is what a slow device showed:
+// an animation that is on time still looks jerky). The render thread is kept
+// busy here (slow present) and the tick's batch is stretched by a slow property
+// handler, so the render thread is painting while the tick writes, like on a
+// slow tablet.
+TEST_CASE(gui_animation_tick_reaches_the_frame_as_a_whole) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("ANIM-ATOMIC", 400, 300);
+    Screen* screen = Platform::instance()->screen("ANIM-ATOMIC");
+    Window window(screen);
+    window.setGeometry(Rect{0, 0, 400, 300});
+    auto* rect = window.createItem<ProbeItem>(window.contentItem());
+    rect->setGeometry(10, 10, 200, 150);
+    window.show();
+
+    // A property handler that takes its time (a binding that recomputes
+    // something) keeps the tick's batch open for a millisecond: plenty of room
+    // for the render thread to slip a frame in between x and y.
+    rect->connect<std::string, std::any>(
+        rect, Object::signalPropertyChanged,
+        [](const std::string& name, const std::any&) {
+            if (name == "x")
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        },
+        ConnectionMode::Direct);
+
+    const int index = firmir_gui_headless_window_count() - 1;
+    CHECK(index >= 0);
+    firmir_gui_headless_set_present_delay_ms(index, 10);
+
+    auto* group = new ParallelAnimation(rect);
+    auto* ax = new PropertyAnimation(group);
+    ax->setTargetItem(rect);
+    ax->setTargetProperty("x");
+    ax->setFrom(10.0);
+    ax->setTo(300.0);
+    ax->setDuration(std::chrono::milliseconds(100));
+    auto* ay = new PropertyAnimation(group);
+    ay->setTargetItem(rect);
+    ay->setTargetProperty("y");
+    ay->setFrom(10.0);
+    ay->setTo(250.0);
+    ay->setDuration(std::chrono::milliseconds(100));
+    // One group, one batch: both axes are started and advanced together, which
+    // is what a frame must mirror as a whole.
+    group->start();
+
+    Timer stopTimer;
+    stopTimer.setSingleShot(true);
+    stopTimer.setInterval(std::chrono::milliseconds(250));
+    stopTimer.connect(&stopTimer, "timeout",
+                      [] { Thread::mainThread()->quit(); });
+    stopTimer.start();
+    Thread::mainThread()->exec();
+    group->stop();
+    window.hide();
+    firmir_gui_headless_set_present_delay_ms(index, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50)); // last frame
+    delete group;
+
+    const std::vector<std::pair<float, float>> painted = rect->painted();
+    // The rectangle moves along a diagonal, so x and y must stay at the same
+    // point of their paths. They may start a few milliseconds apart (two
+    // animations, two batches), which is a constant offset — what must never
+    // happen is that the *distance between them* jumps: that is a frame
+    // mirroring x from this tick and y from the previous one, the staircase
+    // this test exists for (and what the eye sees as judder even though the
+    // animation is on time).
+    const float xFrom = 10.0f, xTo = 300.0f;
+    const float yFrom = 10.0f, yTo = 250.0f;
+    float previousLag = 0.0f;
+    bool previousUsable = false;
+    float worstLagJump = 0.0f;
+    int midFlight = 0;
+    for (const auto& frame : painted) {
+        const float px = (frame.first - xFrom) / (xTo - xFrom);
+        const float py = (frame.second - yFrom) / (yTo - yFrom);
+        // Mid-flight frames only: the two animations finish a tick apart, which
+        // moves the lag once and is not a torn frame.
+        const bool usable = px > 0.02f && px < 0.98f && py > 0.02f && py < 0.98f;
+        const float lag = px - py;
+        if (usable) {
+            ++midFlight;
+            if (previousUsable)
+                worstLagJump =
+                    std::max(worstLagJump, std::fabs(lag - previousLag));
+        }
+        previousLag = lag;
+        previousUsable = usable;
+    }
+    CHECK(midFlight >= 4);
+    // A torn frame is a whole tick off (2 % of the path here); the noise of two
+    // animations sampling a few microseconds apart is far below 1 %.
+    CHECK(worstLagJump < 0.01f);
+
+    firmir_gui_headless_remove_screen("ANIM-ATOMIC");
+}
+
+// Regression: starting an animation must not wait for the painter. A frame
+// batch used to be a lock held across the tick, so opening one waited for the
+// paint in flight — and a paint copies every visible client buffer, so while
+// firmir-compositor1 animated a fullscreen window the GUI thread sat in that
+// wait instead of dispatching input: the compositor froze solid.
+TEST_CASE(gui_animation_start_does_not_wait_for_the_painter) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("ANIM-START-LOCK", 320, 240);
+    Screen* screen = Platform::instance()->screen("ANIM-START-LOCK");
+    Window window(screen);
+    window.setGeometry(Rect{0, 0, 320, 240});
+    auto* rect = window.createItem<SlowPaintItem>(window.contentItem());
+    rect->setGeometry(0, 0, 320, 240);
+    rect->paintMs = 0;
+    window.show();
+    // Let the render thread come up (it creates the render device on its first
+    // frame) so the timing below is about the paint only.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    // A paint that takes 150 ms, like a compositor copying a fullscreen client
+    // buffer.
+    rect->paintMs = 150;
+    window.update();
+    for (int i = 0; i < 400 && !rect->painting; ++i)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    CHECK(rect->painting);
+
+    // PauseAnimation writes no property, so it touches nothing but the batch
+    // machinery: its start() must not wait for the paint in flight.
+    const auto started = std::chrono::steady_clock::now();
+    PauseAnimation pause;
+    pause.setDuration(std::chrono::milliseconds(1000));
+    pause.start();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             std::chrono::steady_clock::now() - started)
+                             .count();
+    pause.stop();
+    CHECK(elapsed < 60);
+
+    rect->paintMs = 0;
+    window.hide();
+    firmir_gui_headless_remove_screen("ANIM-START-LOCK");
+}
+
 // Regression: a scene animated in two axes must change both axes in the same
 // frame. With one timer per animation the render thread received x and y in
 // alternating frames, so a diagonal move looked like a staircase (visibly
@@ -1676,20 +1963,13 @@ TEST_CASE(gui_animation_two_axes_stay_in_sync) {
     Screen* screen = Platform::instance()->screen("ANIM-SYNC");
     Window window(screen);
     window.setGeometry(Rect{0, 0, 400, 300});
-    auto* rect = window.createItem<Rectangle>(window.contentItem());
+    // Sampled inside paint(), not from a frameRendered handler: the handler runs
+    // after present(), by which time the GUI thread may already be half way
+    // through the next tick (x written, y not) — that would report a split
+    // frame that was never painted.
+    auto* rect = window.createItem<ProbeItem>(window.contentItem());
     rect->setGeometry(40, 40, 100, 75);
-    rect->setColor(Color::rgb(255, 0, 0));
     window.show();
-
-    struct Frame {
-        float x, y;
-    };
-    std::vector<Frame> frames;
-    window.connect<>(&window, Window::signalFrameRendered,
-                     [&frames, rect] {
-                         frames.push_back({rect->x(), rect->y()});
-                     },
-                     ConnectionMode::Direct);
 
     PropertyAnimation ax(rect, "x");
     ax.setTo(300);
@@ -1709,13 +1989,19 @@ TEST_CASE(gui_animation_two_axes_stay_in_sync) {
     Thread::mainThread()->exec();
     ax.stop();
     ay.stop();
+    window.hide();
+    std::this_thread::sleep_for(std::chrono::milliseconds(50)); // last frame
 
+    const std::vector<std::pair<float, float>> painted = rect->painted();
     int both = 0;
     int split = 0;
     int moved = 0;
-    for (std::size_t i = 1; i < frames.size(); ++i) {
-        const bool dx = frames[i].x != frames[i - 1].x;
-        const bool dy = frames[i].y != frames[i - 1].y;
+    for (std::size_t i = 1; i < painted.size(); ++i) {
+        // A change below a hundredth of a pixel is not a frame where an axis
+        // moved: the two animations sample "now" a few microseconds apart, so
+        // on the very first tick their tiny steps can round differently.
+        const bool dx = std::fabs(painted[i].first - painted[i - 1].first) > 0.01f;
+        const bool dy = std::fabs(painted[i].second - painted[i - 1].second) > 0.01f;
         if (dx || dy)
             ++moved;
         if (dx && dy)
@@ -1723,12 +2009,74 @@ TEST_CASE(gui_animation_two_axes_stay_in_sync) {
         else if (dx || dy)
             ++split;
     }
-    // ~15 frames in 250 ms at the ~60 Hz animation clock; a machine under
-    // load may render fewer. What matters: the axes never land in separate
-    // frames (one allowance for the very first frame of the run).
-    CHECK(both >= 5);
+    // Four frames per 250 ms is a very slow machine; what matters is that the
+    // axes never land in separate frames (one allowance for the very first
+    // frame of the run).
+    CHECK(moved >= 4);
+    CHECK(both >= 3);
     CHECK(split <= 1);
     CHECK(moved == both + split);
 
     firmir_gui_headless_remove_screen("ANIM-SYNC");
 }
+// Rendering on demand lets the CPU and the GPU drop to their idle clocks, and
+// the first frames of the next burst then run two to three times slower (tablet
+// panel: present 45 -> 16 ms, paint 0.6 -> 0.12 ms), so an animation that starts
+// after a pause steps in big chunks. FIRMIR_GUI_KEEP_WARM_MS keeps the window
+// presenting for a while after the last change, which is what keeps the
+// pipeline warm.
+TEST_CASE(gui_keep_warm_renders_after_the_last_update) {
+    ensurePlatform();
+    testing::setEnv("FIRMIR_GUI_KEEP_WARM_MS", "250");
+    firmir_gui_headless_add_screen("WARM-1", 80, 60);
+    Screen* screen = Platform::instance()->screen("WARM-1");
+    const int windowIndex = firmir_gui_headless_window_count();
+    {
+        Window window(screen);
+        window.setGeometry(Rect{0, 0, 80, 60});
+        window.createItem<ColorItem>(window.contentItem(), Color::rgb(255, 0, 0));
+        window.show();
+        // An application runs the event loop; with no update() after show() the
+        // window still requests frames by itself while the warm window lasts.
+        Object ctx;
+        Timer::singleShot(std::chrono::milliseconds(150), &ctx,
+                          [] { Thread::mainThread()->quit(); });
+        CHECK_EQ(Thread::mainThread()->exec(), 0);
+        CHECK(firmir_gui_headless_frame_count(windowIndex) >= 4);
+
+        // Once the warm window has elapsed nothing requests frames again, so an
+        // idle window really is idle (the point of rendering on demand).
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        const int settled = firmir_gui_headless_frame_count(windowIndex);
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        CHECK_EQ(firmir_gui_headless_frame_count(windowIndex), settled);
+        window.hide();
+    }
+    firmir_gui_headless_remove_screen("WARM-1");
+    testing::setEnv("FIRMIR_GUI_KEEP_WARM_MS", "0");
+}
+
+TEST_CASE(gui_keep_warm_is_off_by_default) {
+    ensurePlatform();
+    testing::setEnv("FIRMIR_GUI_KEEP_WARM_MS", "0");
+    firmir_gui_headless_add_screen("WARM-0", 80, 60);
+    Screen* screen = Platform::instance()->screen("WARM-0");
+    const int windowIndex = firmir_gui_headless_window_count();
+    {
+        Window window(screen);
+        window.setGeometry(Rect{0, 0, 80, 60});
+        window.createItem<ColorItem>(window.contentItem(), Color::rgb(0, 0, 255));
+        window.show();
+        CHECK(testing::waitFor([&] {
+            return firmir_gui_headless_frame_count(windowIndex) > 0;
+        }));
+        // Nothing changes, nothing is rendered: on-demand rendering stays.
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        const int frames = firmir_gui_headless_frame_count(windowIndex);
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+        CHECK_EQ(firmir_gui_headless_frame_count(windowIndex), frames);
+        window.hide();
+    }
+    firmir_gui_headless_remove_screen("WARM-0");
+}
+

@@ -2,6 +2,8 @@
 
 #include "detail/window_internal.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <firmir/gui/backend.hpp>
@@ -13,6 +15,8 @@
 #include <firmir/log.hpp>
 #include <firmir/render/render.hpp>
 #include <firmir/thread.hpp>
+#include <firmir/timer.hpp>
+#include <memory>
 #include <mutex>
 
 namespace Firmir {
@@ -23,6 +27,18 @@ namespace {
 const Firmir::LoggingCategory& lcGuiWindow() {
     static const Firmir::LoggingCategory category("gui");
     return category;
+}
+
+/// FIRMIR_GUI_FRAME_TRACE=1 logs every frame's cadence (gap since the previous
+/// frame, paint and present cost). Diagnostic for jerky animation and input
+/// lag: an even gap with a paint time near the display refresh period is what
+/// a smooth animation needs.
+bool frameTraceEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("FIRMIR_GUI_FRAME_TRACE");
+        return value && *value && std::string(value) != "0";
+    }();
+    return enabled;
 }
 
 /// detail::sceneGuardFor implementation: locks the scene mutex of the window
@@ -38,6 +54,42 @@ std::unique_lock<std::recursive_mutex> sceneGuardForObject(
                 return std::unique_lock<std::recursive_mutex>(
                     detail::sceneMutex(w));
     return {};
+}
+
+/// Frame batching vs. the render threads (see detail::beginFrameBatch).
+///
+/// A batch writes every property of one tick — x and y of a rectangle, say — but
+/// each write takes and releases the scene mutex on its own. A frame painted in
+/// between mirrors a half-applied tick (x from this tick, y from the previous
+/// one): the staircase the batching exists to prevent.
+///
+/// So a batch only *counts as open*, and a render thread refuses to paint while
+/// the count is not zero. The counting mutex is never held across a batch and
+/// the GUI thread never waits here: it would otherwise wait for a whole paint
+/// on every tick, and a paint of a fullscreen client buffer (copied in
+/// WaylandGuiItem::paint) takes long enough to freeze the compositor — no
+/// input, no frames. The render thread drops the scene lock while it waits (a
+/// batch needs it for its writes) and re-reads the count after taking it back,
+/// so a tick that starts later can only write after this frame is done.
+std::mutex frameBatchMutex;
+std::condition_variable frameBatchCv;
+int openFrameBatches = 0;
+/// Upper bound for a render thread waiting for an open batch. Nothing paints
+/// half a tick while batches close in microseconds; the bound only keeps a
+/// leaked batch (a callback that never returned) from freezing the window.
+constexpr auto kFrameBatchWait = std::chrono::milliseconds(50);
+
+/// True while an animation tick is writing its properties.
+bool frameBatchOpen() {
+    std::lock_guard<std::mutex> lock(frameBatchMutex);
+    return openFrameBatches > 0;
+}
+
+/// Waits, bounded, for the open batches to close. Called without the scene lock.
+void waitForFrameBatches() {
+    std::unique_lock<std::mutex> lock(frameBatchMutex);
+    frameBatchCv.wait_for(lock, kFrameBatchWait,
+                          [] { return openFrameBatches == 0; });
 }
 
 /// Render worker: owns a dedicated OS thread; frames are rendered off the
@@ -68,7 +120,18 @@ protected:
     void run() override {
         std::unique_lock<std::mutex> lock(m_mutex);
         for (;;) {
+            const auto idleStart = std::chrono::steady_clock::now();
             m_cv.wait(lock, [&] { return m_stop || m_framePending; });
+            if (frameTraceEnabled()) {
+                // No request for a whole frame period means the GUI thread
+                // stalled (it ticks every 2 ms): report it here, since the
+                // frame trace can only show the resulting gap.
+                const std::chrono::duration<double, std::milli> idle =
+                    std::chrono::steady_clock::now() - idleStart;
+                if (idle > std::chrono::milliseconds(60))
+                    cLogWarning(lcGuiWindow()) << "render thread idle"
+                                               << idle.count() << "ms";
+            }
             if (m_stop)
                 break;
             m_framePending = false;
@@ -104,9 +167,14 @@ public:
 
 class Window::Impl {
 public:
-    Impl(Window* q, Screen* screen) : q(q), screen(screen) {}
+    Impl(Window* q, Screen* screen) : q(q), screen(screen) {
+        // FIRMIR_GUI_KEEP_WARM_MS: see keepWarmMs.
+        if (const char* value = std::getenv("FIRMIR_GUI_KEEP_WARM_MS"))
+            keepWarmMs = std::max(0, std::atoi(value));
+    }
 
     void renderFrame();
+    void keepWarmTick();
 
     Window* q;
     Screen* screen;
@@ -133,72 +201,148 @@ public:
     Item* mouseGrabber = nullptr; // item that accepted the current press
     Item* touchGrabber = nullptr; // item that accepted the current contact
     int touchGrabberId = 0;       // TouchPoint::id of that contact
+    /// FIRMIR_GUI_KEEP_WARM_MS (0 = off): after the last change, keep requesting
+    /// frames for this long. Rendering on demand lets the CPU and the GPU drop
+    /// to their idle clocks, and the first frames of the next burst then run
+    /// 2-3x slower (tablet panel: present 45 -> 16 ms, paint 0.6 -> 0.12 ms), so
+    /// an animation that starts after a pause steps in big chunks. Presenting the
+    /// unchanged scene for a moment after the last change keeps the pipeline and
+    /// the clocks up; it costs a few frames of idle work.
+    int keepWarmMs = 0;
+    std::unique_ptr<Timer> keepWarmTimer;
+    std::chrono::steady_clock::time_point lastUpdate{};
 };
 
 void Window::Impl::renderFrame() {
-    std::lock_guard<std::recursive_mutex> lock(sceneMutex);
-    if (!visible || geometry.width <= 0 || geometry.height <= 0)
-        return;
-    if (!renderDevice) {
-        const char* backendName = std::getenv("FIRMIR_RENDER_BACKEND");
-        renderDevice = Render::Render::createDevice(
-            backendName && *backendName ? backendName : "");
+    const auto frameStart = std::chrono::steady_clock::now();
+    // Only painting takes the scene lock (the tree must not change while it is
+    // walked). present() — texture upload, page flip and the vsync wait of the
+    // KMS backend — touches no scene state and is the slowest part of a frame,
+    // so it runs unlocked: holding the lock across it made the GUI thread
+    // (input dispatch, animation ticks) wait for a whole display refresh per
+    // event, which starved input and bunched the animation samples.
+    Render::CpuRenderTarget* target = nullptr;
+    PlatformWindow* native = nullptr;
+    Size targetSize;
+    std::chrono::steady_clock::time_point sceneAcquired = frameStart;
+    {
+        std::unique_lock<std::recursive_mutex> lock(sceneMutex);
+        // Do not paint a scene an animation tick is still writing (see
+        // frameBatchOpen). The scene lock is dropped while waiting — the batch
+        // needs it for its writes — and the count is re-read after taking it
+        // back, so a tick that starts later can only write after this frame.
+        // Bounded, but generous: a real tick closes in microseconds, so the
+        // wait ends on the first attempt; only a leaked batch (a callback that
+        // never returned) burns the budget, and even then the window paints.
+        for (int attempt = 0; attempt < 16 && frameBatchOpen(); ++attempt) {
+            lock.unlock();
+            waitForFrameBatches();
+            lock.lock();
+        }
+        sceneAcquired = std::chrono::steady_clock::now();
+        if (!visible || geometry.width <= 0 || geometry.height <= 0)
+            return;
+        native = platformWindow;
         if (!renderDevice) {
+            const char* backendName = std::getenv("FIRMIR_RENDER_BACKEND");
+            renderDevice = Render::Render::createDevice(
+                backendName && *backendName ? backendName : "");
+            if (!renderDevice) {
+                if (!renderErrorLogged) {
+                    const std::string requested =
+                        backendName && *backendName ? backendName : "default";
+                    cLogWarning(lcGuiWindow())
+                        << ("no render backend available (" + requested +
+                            "); window content is not rendered");
+                    renderErrorLogged = true;
+                }
+                return;
+            }
+            renderResources =
+                std::make_unique<RenderResources>(renderDevice.get());
+            renderCommands.reset(renderDevice->createCommandBuffer());
+        }
+        if (!renderCommands) {
             if (!renderErrorLogged) {
-                const std::string requested =
-                    backendName && *backendName ? backendName : "default";
                 cLogWarning(lcGuiWindow())
-                    << ("no render backend available (" + requested +
-                        "); window content is not rendered");
+                    << "render backend" << renderDevice->backendName()
+                    << "cannot create a command buffer; window content is not "
+                       "rendered";
                 renderErrorLogged = true;
             }
             return;
         }
-        renderResources = std::make_unique<RenderResources>(renderDevice.get());
-        renderCommands.reset(renderDevice->createCommandBuffer());
-    }
-    if (!renderCommands)
-        return;
-    if (!renderTarget || renderTarget->size().width != geometry.width ||
-        renderTarget->size().height != geometry.height) {
-        Render::RenderTargetDesc desc;
-        desc.width = geometry.width;
-        desc.height = geometry.height;
-        desc.colorFormat = Render::TextureFormat::Rgba8;
-        renderTarget.reset(renderDevice->createRenderTarget(desc));
-        if (!renderTarget)
-            return;
-    }
-    auto* cpuTarget =
-        dynamic_cast<Render::CpuRenderTarget*>(renderTarget.get());
-    if (!cpuTarget) {
-        if (!renderErrorLogged) {
-            cLogWarning(lcGuiWindow())
-                << "render backend" << renderDevice->backendName()
-                << "has no CPU-readable targets; window content is not "
-                   "rendered";
-            renderErrorLogged = true;
+        if (!renderTarget || renderTarget->size().width != geometry.width ||
+            renderTarget->size().height != geometry.height) {
+            Render::RenderTargetDesc desc;
+            desc.width = geometry.width;
+            desc.height = geometry.height;
+            desc.colorFormat = Render::TextureFormat::Rgba8;
+            renderTarget.reset(renderDevice->createRenderTarget(desc));
+            if (!renderTarget) {
+                if (!renderErrorLogged) {
+                    cLogWarning(lcGuiWindow())
+                        << "render backend" << renderDevice->backendName()
+                        << "cannot create a" << desc.width << "x" << desc.height
+                        << "render target; window content is not rendered";
+                    renderErrorLogged = true;
+                }
+                return;
+            }
         }
-        return;
-    }
+        auto* cpuTarget =
+            dynamic_cast<Render::CpuRenderTarget*>(renderTarget.get());
+        if (!cpuTarget) {
+            if (!renderErrorLogged) {
+                cLogWarning(lcGuiWindow())
+                    << "render backend" << renderDevice->backendName()
+                    << "has no CPU-readable targets; window content is not "
+                       "rendered";
+                renderErrorLogged = true;
+            }
+            return;
+        }
 
-    renderCommands->begin();
-    Render::ClearValue clear; // opaque black
-    clear.r = clear.g = clear.b = 0;
-    clear.a = 1;
-    renderCommands->beginRenderPass(renderTarget.get(), clear);
-    {
-        Painter painter(*renderResources, renderCommands.get(),
-                        renderTarget.get());
-        if (content)
-            content->render(painter);
+        renderCommands->begin();
+        Render::ClearValue clear; // opaque black
+        clear.r = clear.g = clear.b = 0;
+        clear.a = 1;
+        renderCommands->beginRenderPass(renderTarget.get(), clear);
+        {
+            Painter painter(*renderResources, renderCommands.get(),
+                            renderTarget.get());
+            if (content)
+                content->render(painter);
+        }
+        renderCommands->endRenderPass();
+        renderCommands->end();
+        renderDevice->submit(renderCommands.get());
+        target = cpuTarget;
+        targetSize = Size{geometry.width, geometry.height};
     }
-    renderCommands->endRenderPass();
-    renderCommands->end();
-    renderDevice->submit(renderCommands.get());
-    platformWindow->present(cpuTarget->pixels(),
-                            Size{geometry.width, geometry.height});
-    q->emitSignal(Window::signalFrameRendered);
+    const auto painted = std::chrono::steady_clock::now();
+    if (native && target)
+        native->present(target->pixels(), targetSize);
+    const auto presented = std::chrono::steady_clock::now();
+    {
+        // Emitted under the lock, as before: handlers are Direct and may read
+        // the scene (tests sample the animated geometry here).
+        std::lock_guard<std::recursive_mutex> lock(sceneMutex);
+        q->emitSignal(Window::signalFrameRendered);
+    }
+    if (frameTraceEnabled()) {
+        static thread_local auto previousStart = frameStart;
+        const auto span = [](auto from, auto to) {
+            return std::chrono::duration<double, std::milli>(to - from).count();
+        };
+        cLogInfo(lcGuiWindow())
+            << "frame gap" << span(previousStart, frameStart) << "wait"
+            << span(frameStart, sceneAcquired) << "paint"
+            << span(sceneAcquired, painted) << "present"
+            << span(painted, presented) << "(" << targetSize.width << "x"
+            << targetSize.height << ")";
+        previousStart = frameStart;
+    }
 }
 
 Window::Window(Screen* screen, Object* parent)
@@ -342,6 +486,8 @@ void Window::show() {
 void Window::hide() {
     if (!d->visible)
         return;
+    if (d->keepWarmTimer)
+        d->keepWarmTimer->stop();
     {
         std::lock_guard<std::recursive_mutex> lock(d->sceneMutex);
         d->visible = false;
@@ -380,7 +526,34 @@ void Window::destroyItem(Item* item) {
     delete item;
 }
 
-void Window::update() { detail::scheduleRender(this); }
+void Window::update() {
+    if (d->keepWarmMs > 0) {
+        d->lastUpdate = std::chrono::steady_clock::now();
+        if (!d->keepWarmTimer) {
+            // No parent: the Impl owns it, so it dies with the window and never
+            // outlives the render thread it wakes.
+            d->keepWarmTimer = std::make_unique<Timer>();
+            d->keepWarmTimer->setInterval(std::chrono::milliseconds(16));
+            d->keepWarmTimer->connect(d->keepWarmTimer.get(), "timeout",
+                                      [impl = d.get()] { impl->keepWarmTick(); },
+                                      ConnectionMode::Direct);
+        }
+        if (!d->keepWarmTimer->isActive())
+            d->keepWarmTimer->start();
+    }
+    detail::scheduleRender(this);
+}
+
+void Window::Impl::keepWarmTick() {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - lastUpdate >= std::chrono::milliseconds(keepWarmMs)) {
+        if (keepWarmTimer)
+            keepWarmTimer->stop();
+        return;
+    }
+    if (renderThread)
+        renderThread->requestFrame();
+}
 
 Item* Window::focusItem() const { return d->focusItem; }
 
@@ -570,11 +743,23 @@ thread_local std::vector<Window*> frameBatchWindows;
 
 } // namespace
 
-void beginFrameBatch() { ++frameBatchDepth; }
+void beginFrameBatch() {
+    // Only counted, never locked across the batch: the GUI thread must not wait
+    // for a render thread (see frameBatchOpen).
+    if (frameBatchDepth++ == 0) {
+        std::lock_guard<std::mutex> lock(frameBatchMutex);
+        ++openFrameBatches;
+    }
+}
 
 void endFrameBatch() {
     if (frameBatchDepth == 0 || --frameBatchDepth > 0)
         return;
+    {
+        std::lock_guard<std::mutex> lock(frameBatchMutex);
+        --openFrameBatches;
+    }
+    frameBatchCv.notify_all();
     std::vector<Window*> windows;
     windows.swap(frameBatchWindows);
     for (Window* window : windows)

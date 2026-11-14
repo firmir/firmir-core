@@ -121,7 +121,21 @@ private:
     std::uint32_t addFramebuffer(gbm_bo* bo);
     void removeFramebuffer(std::uint32_t fbId);
     bool setCrtc(std::uint32_t fbId);
-    bool pageFlip(std::uint32_t fbId);
+    /// Queues the page flip of @p fbId and returns at once (see collectFlip).
+    bool queuePageFlip(std::uint32_t fbId);
+    /// Collects the completion event of the flip queued by the previous
+    /// present() and frees the buffer that was on screen before it. Called at
+    /// the start of present(), i.e. a whole frame later, so it normally costs
+    /// nothing: waiting for a flip inside present() burns the refresh period
+    /// that just started and halved the frame rate (33 ms frames on a 60 Hz
+    /// panel instead of 17).
+    bool collectFlip();
+    /// Throws away queued flip events after a mode set, whose CRTC state no
+    /// longer matches them.
+    void drainFlipEvents();
+    /// Frees the buffer of a flip whose completion event never arrived, after a
+    /// mode set made it irrelevant.
+    void dropStaleQueuedFlip();
     void releaseDisplayedBuffer();
 
     int m_fd = -1;
@@ -138,9 +152,14 @@ private:
     Size m_size;
     /// Size of the frame currently stored in m_texture.
     Size m_textureSize;
-    /// Buffer being scanned out: released after the next successful flip.
+    /// Buffer being scanned out (freed when a later flip completes).
     gbm_bo* m_displayedBo = nullptr;
     std::uint32_t m_displayedFb = 0;
+    /// Buffer queued by the last page flip: on screen once its event arrives
+    /// (see collectFlip).
+    gbm_bo* m_queuedBo = nullptr;
+    std::uint32_t m_queuedFb = 0;
+    bool m_flipPending = false;
     bool m_modesetDone = false;
     bool m_presentFailedLogged = false;
     /// Size the window asked for through setGeometry() (GUI thread).
@@ -306,6 +325,9 @@ KmsWindow::~KmsWindow() {
         m_vertexBuffer = 0;
     }
     releaseCurrent();
+    // A queued flip still owns the buffer it will put on screen: collect it
+    // before the buffers and the surface go away.
+    collectFlip();
     releaseDisplayedBuffer();
     releaseRetiredSurface();
     if (m_eglSurface != EGL_NO_SURFACE)
@@ -444,22 +466,80 @@ bool KmsWindow::setCrtc(std::uint32_t fbId) {
     return true;
 }
 
-bool KmsWindow::pageFlip(std::uint32_t fbId) {
+bool KmsWindow::queuePageFlip(std::uint32_t fbId) {
     drm_mode_crtc_page_flip flip{};
     flip.crtc_id = m_output.crtcId;
     flip.fb_id = fbId;
     flip.flags = DRM_MODE_PAGE_FLIP_EVENT;
-    if (drmIoctl(m_fd, DRM_IOCTL_MODE_PAGE_FLIP, &flip) != 0)
+    if (drmIoctl(m_fd, DRM_IOCTL_MODE_PAGE_FLIP, &flip) != 0) {
+        if (!m_presentFailedLogged) {
+            cLogWarning(lcKms()) << "PAGE_FLIP failed:" << std::strerror(errno);
+            m_presentFailedLogged = true;
+        }
         return false;
-    // Wait for the completion event: it frees the previous buffer and
-    // throttles rendering to the refresh rate.
-    pollfd pfd{m_fd, POLLIN, 0};
-    if (::poll(&pfd, 1, 100) <= 0)
-        return false;
+    }
+    m_flipPending = true;
+    return true;
+}
+
+bool KmsWindow::collectFlip() {
+    if (!m_flipPending)
+        return true;
     drm_event_vblank event{};
-    const ssize_t n = ::read(m_fd, &event, sizeof(event));
-    return n >= static_cast<ssize_t>(sizeof(drm_event)) &&
-        event.base.type == DRM_EVENT_FLIP_COMPLETE;
+    bool done = false;
+    pollfd pfd{m_fd, POLLIN, 0};
+    if (::poll(&pfd, 1, 100) > 0) {
+        const ssize_t n = ::read(m_fd, &event, sizeof(event));
+        done = n >= static_cast<ssize_t>(sizeof(drm_event)) &&
+            event.base.type == DRM_EVENT_FLIP_COMPLETE;
+    }
+    if (!done) {
+        // A lost event would make the next flip fail with EBUSY, so it is
+        // reported once instead of silently capping the frame rate.
+        if (!m_presentFailedLogged) {
+            cLogWarning(lcKms()) << "page flip event not received";
+            m_presentFailedLogged = true;
+        }
+        return false;
+    }
+    m_flipPending = false;
+    // The buffer that was on screen until now is off screen: the queued one
+    // replaced it.
+    releaseDisplayedBuffer();
+    m_displayedBo = m_queuedBo;
+    m_displayedFb = m_queuedFb;
+    m_queuedBo = nullptr;
+    m_queuedFb = 0;
+    return true;
+}
+
+void KmsWindow::drainFlipEvents() {
+    const bool wasPending = m_flipPending;
+    m_flipPending = false;
+    drm_event_vblank event{};
+    pollfd pfd{m_fd, POLLIN, 0};
+    // Give an in-flight event a moment to arrive; a mode set is rare, so the
+    // short wait is cheaper than misreading a stale event later.
+    if (wasPending)
+        ::poll(&pfd, 1, 20);
+    while (::poll(&pfd, 1, 0) > 0) {
+        if (::read(m_fd, &event, sizeof(event)) <
+            static_cast<ssize_t>(sizeof(drm_event)))
+            break;
+    }
+}
+
+void KmsWindow::dropStaleQueuedFlip() {
+    if (!m_queuedBo)
+        return;
+    // The mode set put another framebuffer on the CRTC, so the queued one can
+    // be dropped even though its flip never reported completion.
+    removeFramebuffer(m_queuedFb);
+    gbm_surface_release_buffer(m_retiredSurface ? m_retiredSurface : m_gbmSurface,
+                               m_queuedBo);
+    m_queuedBo = nullptr;
+    m_queuedFb = 0;
+    m_flipPending = false;
 }
 
 void KmsWindow::releaseDisplayedBuffer() {
@@ -509,6 +589,10 @@ void KmsWindow::applyRequestedSize() {
 bool KmsWindow::switchMode(const drm_mode_modeinfo& mode) {
     if (!m_gbmDevice)
         return false;
+    // A flip queued for the current surface must complete before that surface
+    // is retired: its buffer is still scanned out and its event would otherwise
+    // be attributed to the new surface.
+    collectFlip();
     gbm_surface* surface = gbm_surface_create(
         m_gbmDevice, mode.hdisplay, mode.vdisplay, GBM_FORMAT_XRGB8888,
         GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
@@ -541,6 +625,10 @@ bool KmsWindow::switchMode(const drm_mode_modeinfo& mode) {
     m_displayedBo = nullptr;
     m_displayedFb = 0;
     m_gbmSurface = surface;
+    // A flip of the old surface may still be queued; its event says nothing
+    // about the CRTC after the mode set, so it must not be mistaken for the
+    // completion of a later one.
+    drainFlipEvents();
     m_output.mode = mode;
     m_size = {mode.hdisplay, mode.vdisplay};
     // The frame may be larger than the texture: let present() reallocate it.
@@ -607,13 +695,28 @@ void KmsWindow::rollbackModeSwitch() {
 
 void KmsWindow::present(const std::uint32_t* pixels, const Size& size) {
     if (!m_visible || !m_gbmSurface || m_eglSurface == EGL_NO_SURFACE ||
-        !m_program || !m_texture || !m_vertexBuffer)
+        !m_program || !m_texture || !m_vertexBuffer) {
+        // A silent early return here leaves the screen black with no clue why.
+        if (!m_presentFailedLogged) {
+            m_presentFailedLogged = true;
+            cLogWarning(lcKms()) << "present() skipped:" << "visible" << m_visible
+                                 << "gbm surface" << (m_gbmSurface != nullptr)
+                                 << "egl surface"
+                                 << (m_eglSurface != EGL_NO_SURFACE) << "gl"
+                                 << (m_program != 0 && m_texture != 0 &&
+                                     m_vertexBuffer != 0);
+        }
         return;
+    }
     if (size.width <= 0 || size.height <= 0)
         return;
     // A surface replaced by the previous switchMode() is off screen now.
     if (m_displayedFb)
         releaseRetiredSurface();
+    // The flip of the previous frame has completed by now (a whole frame
+    // passed): collecting it frees the buffer that was on screen before it.
+    // This is *not* a wait for the flip of this frame — see collectFlip.
+    collectFlip();
     // A window may ask for another size at any time; follow it (mode set, or
     // 1:1 placement, see kmslayout.hpp) before touching the surface.
     applyRequestedSize();
@@ -692,15 +795,29 @@ void KmsWindow::present(const std::uint32_t* pixels, const Size& size) {
     }
 
     bool presented = false;
-    if (!m_modesetDone)
+    if (!m_modesetDone) {
+        // SETCRTC programs mode and buffer synchronously and generates no flip
+        // event, so everything queued before it is stale.
         presented = setCrtc(fbId);
-    if (!presented)
-        presented = pageFlip(fbId);
-    if (presented) {
-        releaseDisplayedBuffer();
-        m_displayedBo = bo;
-        m_displayedFb = fbId;
+        if (presented) {
+            // A flip whose event never arrived is moot now: the CRTC takes the
+            // new framebuffer.
+            dropStaleQueuedFlip();
+            releaseDisplayedBuffer();
+            m_displayedBo = bo;
+            m_displayedFb = fbId;
+            drainFlipEvents();
+        }
     } else {
+        // Queued, not waited for: the wait would eat the refresh period that
+        // starts now and halve the frame rate (33 ms frames on 60 Hz).
+        presented = queuePageFlip(fbId);
+        if (presented) {
+            m_queuedBo = bo;
+            m_queuedFb = fbId;
+        }
+    }
+    if (!presented) {
         removeFramebuffer(fbId);
         gbm_surface_release_buffer(m_gbmSurface, bo);
         // A mode set for the window's size did not take: the previous buffer is
@@ -742,6 +859,8 @@ private:
     std::vector<std::unique_ptr<KmsWindow>> m_windows;
     std::thread m_pollThread;
     bool m_stop = false;
+    /// Base hotplug poll interval (FIRMIR_EGLFS_HOTPLUG_INTERVAL_MS, 0 = off).
+    int m_hotplugBaseMs = 1000;
     // One-shot diagnostics: the hotplug thread retries every second, so an
     // unavailable device would otherwise flood the log.
     bool m_enumerateErrorLogged = false;
@@ -786,6 +905,12 @@ KmsIntegration::KmsIntegration() {
         return;
     }
     refreshScreens();
+    const char* hotplug = std::getenv("FIRMIR_EGLFS_HOTPLUG_INTERVAL_MS");
+    if (hotplug && *hotplug) {
+        m_hotplugBaseMs = std::atoi(hotplug);
+        if (m_hotplugBaseMs < 0)
+            m_hotplugBaseMs = 0;
+    }
     m_pollThread = std::thread([this] { pollHotplug(); });
 }
 
@@ -969,10 +1094,28 @@ void KmsIntegration::refreshScreens() {
 }
 
 void KmsIntegration::pollHotplug() {
+    // Hotplug polling is not free: enumerating probes every connector (an EDID
+    // read on a real panel) while holding the DRM lock, so it also stalls the
+    // page flips of the render thread. On a tablet panel one enumeration takes
+    // ~450 ms — a visible hitch once a second. The interval therefore
+    // backs off as soon as an enumeration turns out to be expensive, and
+    // FIRMIR_EGLFS_HOTPLUG_INTERVAL_MS=0 disables polling completely (no
+    // external display on a fixed panel).
+    std::chrono::milliseconds interval(m_hotplugBaseMs > 0 ? m_hotplugBaseMs : 1000);
     while (!m_stop) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        if (!m_stop)
-            refreshScreens();
+        std::this_thread::sleep_for(interval);
+        if (m_stop)
+            break;
+        if (m_hotplugBaseMs <= 0)
+            continue; // disabled: keep the thread idle instead of busy-looping
+        const auto started = std::chrono::steady_clock::now();
+        refreshScreens();
+        const auto cost = std::chrono::steady_clock::now() - started;
+        const auto base = std::chrono::milliseconds(m_hotplugBaseMs);
+        const auto cap = std::chrono::milliseconds(10000);
+        interval = cost > std::chrono::milliseconds(50)
+            ? std::min(base * 10, cap)
+            : base;
     }
 }
 

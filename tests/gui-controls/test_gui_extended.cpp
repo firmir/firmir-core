@@ -51,10 +51,11 @@ std::string findFontFile() {
                              "/System/Library/Fonts/Supplemental/Verdana.ttf"})
         candidates.emplace_back(path);
 #else
+    // Common Linux font locations (distributions differ in the layout).
     for (const char* path : {
-             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",       // Debian, Ubuntu
-             "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",     // Fedora, RHEL, openSUSE
-             "/usr/share/fonts/dejavu/DejaVuSans.ttf",                // Alpine, Arch
+             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+             "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+             "/usr/share/fonts/dejavu/DejaVuSans.ttf",
              "/usr/share/fonts/TTF/DejaVuSans.ttf",
              "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
              "/usr/share/fonts/liberation-sans-fonts/LiberationSans-Regular.ttf",

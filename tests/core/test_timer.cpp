@@ -1,12 +1,15 @@
 #include "test_framework.hpp"
 
+#include <firmir/log.hpp>
 #include <firmir/object.hpp>
 #include <firmir/thread.hpp>
 #include <firmir/timer.hpp>
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <stdexcept>
+#include <string>
 #include <thread>
 
 using namespace Firmir;
@@ -112,4 +115,45 @@ TEST_CASE(timer_invalid_interval) {
     Timer timer;
     CHECK_THROWS_AS(timer.setInterval(0ms), std::invalid_argument);
     CHECK_THROWS_AS(timer.start(-5ms), std::invalid_argument);
+}
+
+TEST_CASE(thread_eventloop_trace_reports_slow_handler) {
+    // FIRMIR_EVENTLOOP_TRACE=1 names the handler that blocked the event loop: a
+    // stalled loop delays every frame request of the thread, and a frame trace
+    // alone only shows the resulting gap, not what caused it.
+    testing::setEnv("FIRMIR_EVENTLOOP_TRACE", "1");
+
+    std::mutex messageMutex;
+    std::string message;
+    Log::setSink([&](LogLevel level, const std::string& category,
+                     const std::string& text) {
+        if (level != LogLevel::Warning || category != "thread")
+            return;
+        std::lock_guard<std::mutex> lock(messageMutex);
+        message = text;
+    });
+
+    Object ctx;
+    Timer timer;
+    timer.setInterval(10ms);
+    int ticks = 0;
+    timer.connect(&ctx, "timeout",
+                  [&] {
+                      if (++ticks == 1)
+                          std::this_thread::sleep_for(30ms); // slow handler
+                      else
+                          Thread::mainThread()->quit();
+                  },
+                  ConnectionMode::Direct);
+    Timer::singleShot(2s, &ctx, [] { Thread::mainThread()->exit(9); });
+    timer.start();
+    CHECK_EQ(Thread::mainThread()->exec(), 0);
+    timer.stop();
+    Log::setSink(nullptr);
+    testing::setEnv("FIRMIR_EVENTLOOP_TRACE", "");
+
+    std::lock_guard<std::mutex> lock(messageMutex);
+    CHECK(message.find("event loop busy") != std::string::npos);
+    // The interval identifies which timer it was.
+    CHECK(message.find("timer 10 ms") != std::string::npos);
 }

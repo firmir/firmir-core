@@ -6,9 +6,11 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 using namespace Firmir::Gui;
@@ -33,6 +35,13 @@ public:
     void setGeometry(const Rect& geometry) override { m_geometry = geometry; }
     void setVisible(bool visible) override { m_visible = visible; }
     void present(const std::uint32_t* pixels, const Size& size) override {
+        m_presented.fetch_add(1, std::memory_order_relaxed);
+        // Test hook: a slow present emulates a backend that waits for the
+        // display refresh (KMS page flip), which is how the GUI thread used to
+        // be blocked for a whole frame.
+        const int delay = m_presentDelayMs.load(std::memory_order_relaxed);
+        if (delay > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay));
         std::lock_guard<std::mutex> lock(m_frameMutex);
         m_frame.assign(pixels,
                        pixels +
@@ -49,6 +58,9 @@ public:
     std::vector<std::uint32_t> m_frame;
     Size m_frameSize;
     std::atomic<int> m_frameCount{0};
+    /// Frames whose present() was entered (incremented before the delay).
+    std::atomic<int> m_presented{0};
+    std::atomic<int> m_presentDelayMs{0};
 };
 
 class HeadlessBackend : public DisplayBackend, public InputBackend {
@@ -195,6 +207,18 @@ void firmir_gui_headless_inject_touch(int action, int id, float x, float y) {
 
 int firmir_gui_headless_window_count() {
     return HeadlessBackend::instance().windowCount();
+}
+
+int firmir_gui_headless_present_count(int index) {
+    HeadlessWindow* window = HeadlessBackend::instance().windowAt(index);
+    return window ? window->m_presented.load(std::memory_order_relaxed) : 0;
+}
+
+void firmir_gui_headless_set_present_delay_ms(int index, int milliseconds) {
+    HeadlessWindow* window = HeadlessBackend::instance().windowAt(index);
+    if (window)
+        window->m_presentDelayMs.store(milliseconds,
+                                       std::memory_order_relaxed);
 }
 
 bool firmir_gui_headless_last_frame(int index, std::uint32_t* outPixels,

@@ -12,7 +12,7 @@
 #
 # The headers are looked up on disk instead, so the result is re-evaluated on
 # every configure. The usual layouts are covered:
-#   <prefix>/include/drm/drm.h         kernel uapi (Ubuntu, Sailfish, ...)
+#   <prefix>/include/drm/drm.h         kernel uapi (Linux)
 #   <prefix>/include/libdrm/drm/drm.h  libdrm includedir with a drm/ subdir
 # pkg-config (libdrm.pc) include dirs are searched first, then the include
 # prefixes of the build environment (including CMAKE_SYSROOT for cross
