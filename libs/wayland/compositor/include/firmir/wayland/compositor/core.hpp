@@ -137,6 +137,13 @@ public:
     void setCurrentMode(WaylandOutputMode mode);
     const std::vector<WaylandOutputMode>& modes() const;
     void addMode(WaylandOutputMode mode);
+    /// wl_surface.enter / wl_surface.leave for a client's surface, sent only
+    /// if that client bound this output. A client learns from enter which
+    /// screen, scale and refresh rate its surface landed on; a surface that
+    /// never enters an output is not mapped by some toolkits, which then
+    /// leaves the window blank.
+    void sendEnter(wl_resource* surfaceResource) const;
+    void sendLeave(wl_resource* surfaceResource) const;
 private:
     class Impl;
     std::unique_ptr<Impl> d;

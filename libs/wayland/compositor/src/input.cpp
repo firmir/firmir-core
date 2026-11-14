@@ -4,6 +4,7 @@
 #include <xkbcommon/xkbcommon.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -19,6 +20,14 @@ namespace {
 std::uint32_t serial(wl_resource* resource) {
     if (!resource) return 0;
     return wl_display_next_serial(wl_client_get_display(wl_resource_get_client(resource)));
+}
+
+/// Pointer tracing, off unless FIRMIR_WAYLAND_DEBUG is set. A click that never
+/// reaches the client leaves no trace anywhere else: the compositor thinks it
+/// forwarded the event and the client simply never reacts.
+bool debugEnabled() {
+    static const bool enabled = std::getenv("FIRMIR_WAYLAND_DEBUG") != nullptr;
+    return enabled;
 }
 void releaseResource(wl_client*, wl_resource* resource) { wl_resource_destroy(resource); }
 void setCursor(wl_client*, wl_resource*, std::uint32_t, wl_resource*, std::int32_t, std::int32_t) {}
@@ -121,6 +130,20 @@ inline wl_resource* resourceForSurface(const std::vector<WaylandResource>& resou
                                        WaylandSurface* surface) {
     if (!surface || !surface->resource().handle()) return nullptr;
     return resourceForClient(resources, wl_resource_get_client(surface->resource().handle()));
+}
+
+/// wl_pointer groups its events into frames since version 5: a client may hold
+/// a batch back until the frame arrives, so every group (enter, motion, button,
+/// axis, leave) ends with one. A pointer bound below 5 has no frame event.
+inline void sendPointerFrame(wl_resource* target) {
+    if (target && wl_resource_get_version(target) >= WL_POINTER_FRAME_SINCE_VERSION)
+        wl_pointer_send_frame(target);
+}
+
+/// wl_touch has carried a frame marker since version 1; without it a client
+/// that batches contacts (toolkits do) never applies them.
+inline void sendTouchFrame(wl_resource* target) {
+    if (target) wl_touch_send_frame(target);
 }
 
 } // namespace
@@ -329,28 +352,44 @@ void WaylandPointer::enter(WaylandSurface* surface, float x, float y) {
     d->focusClient = wl_resource_get_client(target);
     wl_pointer_send_enter(target, serial(target), surface->resource().handle(),
                           wl_fixed_from_double(x), wl_fixed_from_double(y));
+    sendPointerFrame(target);
 }
 void WaylandPointer::leave(WaylandSurface* surface) {
     wl_resource* target = resourceForSurface(d->resources, surface);
     if (!target) return;
     wl_pointer_send_leave(target, serial(target), surface->resource().handle());
+    sendPointerFrame(target);
     if (d->focusClient == wl_resource_get_client(target)) d->focusClient = nullptr;
 }
 void WaylandPointer::motion(std::uint32_t time, float x, float y) {
     wl_resource* target = resourceForClient(d->resources, d->focusClient);
-    if (target)
-        wl_pointer_send_motion(target, time, wl_fixed_from_double(x), wl_fixed_from_double(y));
+    if (!target) return;
+    wl_pointer_send_motion(target, time, wl_fixed_from_double(x), wl_fixed_from_double(y));
+    sendPointerFrame(target);
 }
 void WaylandPointer::button(std::uint32_t time, std::uint32_t buttonCode, bool pressed) {
     wl_resource* target = resourceForClient(d->resources, d->focusClient);
-    if (target)
-        wl_pointer_send_button(target, serial(target), time, buttonCode,
-            pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
+    if (!target) {
+        if (debugEnabled())
+            std::fprintf(stderr,
+                         "firmir-wayland-pointer: button 0x%x %s dropped: no pointer "
+                         "resource for the focused client (%zu bound)\n",
+                         buttonCode, pressed ? "press" : "release", d->resources.size());
+        return;
+    }
+    wl_pointer_send_button(target, serial(target), time, buttonCode,
+        pressed ? WL_POINTER_BUTTON_STATE_PRESSED : WL_POINTER_BUTTON_STATE_RELEASED);
+    sendPointerFrame(target);
+    if (debugEnabled())
+        std::fprintf(stderr, "firmir-wayland-pointer: button 0x%x %s sent (v%d)\n",
+                     buttonCode, pressed ? "press" : "release",
+                     wl_resource_get_version(target));
 }
 void WaylandPointer::axis(std::uint32_t time, std::uint32_t axisValue, float value) {
     wl_resource* target = resourceForClient(d->resources, d->focusClient);
-    if (target)
-        wl_pointer_send_axis(target, time, axisValue, wl_fixed_from_double(value));
+    if (!target) return;
+    wl_pointer_send_axis(target, time, axisValue, wl_fixed_from_double(value));
+    sendPointerFrame(target);
 }
 
 void WaylandTouch::down(WaylandSurface* surface, std::uint32_t time, int id, float x, float y) {
@@ -359,15 +398,19 @@ void WaylandTouch::down(WaylandSurface* surface, std::uint32_t time, int id, flo
     d->focusClient = wl_resource_get_client(target);
     wl_touch_send_down(target, serial(target), time, surface->resource().handle(), id,
                        wl_fixed_from_double(x), wl_fixed_from_double(y));
+    sendTouchFrame(target);
 }
 void WaylandTouch::up(std::uint32_t time, int id) {
     wl_resource* target = resourceForClient(d->resources, d->focusClient);
-    if (target) wl_touch_send_up(target, serial(target), time, id);
+    if (!target) return;
+    wl_touch_send_up(target, serial(target), time, id);
+    sendTouchFrame(target);
 }
 void WaylandTouch::motion(std::uint32_t time, int id, float x, float y) {
     wl_resource* target = resourceForClient(d->resources, d->focusClient);
-    if (target)
-        wl_touch_send_motion(target, time, id, wl_fixed_from_double(x), wl_fixed_from_double(y));
+    if (!target) return;
+    wl_touch_send_motion(target, time, id, wl_fixed_from_double(x), wl_fixed_from_double(y));
+    sendTouchFrame(target);
 }
 void WaylandTextInputManager::commitString(WaylandSurface* surface, const std::string& text) {
     if (surface) surface->emitSignal("textInput", text);

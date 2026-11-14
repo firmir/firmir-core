@@ -43,7 +43,7 @@ target_include_directories(firmir-wayland-protocols PUBLIC ${GENERATED_DIR}
     ${WAYLAND_CLIENT_INCLUDE_DIRS})
 target_link_libraries(firmir-wayland-protocols PUBLIC ${WAYLAND_CLIENT_LIBRARIES})
 
-add_library(firmir-wayland-client SHARED client/src/client.cpp
+add_library(firmir-wayland-client SHARED client/src/client.cpp client/src/backend.cpp
     ${CORE_CLIENT_HPP} ${XDG_CLIENT_HPP} ${XDG_CLIENT_H})
 add_custom_target(firmir-wayland-client-protocols
     DEPENDS ${CORE_CLIENT_HPP} ${XDG_CLIENT_HPP} ${XDG_CLIENT_H} ${XDG_PROTOCOL_C})
@@ -53,6 +53,13 @@ target_include_directories(firmir-wayland-client PUBLIC client/include ${GENERAT
 target_link_directories(firmir-wayland-client PUBLIC ${WAYLAND_CLIENT_LIBRARY_DIRS})
 target_link_libraries(firmir-wayland-client PUBLIC ${WAYLAND_CLIENT_LIBRARIES}
     firmir-wayland-protocols)
+# The buffer backend loader needs firmir/detail/dynload.hpp, and installed
+# binaries fall back to the system plugin directory when neither
+# FIRMIR_WAYLAND_CLIENT_PLUGIN_PATH nor a build-tree layout provides them
+# (the loader appends "/wayland/client" itself).
+target_link_libraries(firmir-wayland-client PRIVATE firmir-core ${CMAKE_DL_LIBS})
+target_compile_definitions(firmir-wayland-client PRIVATE
+    FIRMIR_SYSTEM_PLUGIN_DIR="${FIRMIR_SYSTEM_PLUGIN_DIR}")
 
 add_library(firmir-wayland-server SHARED server/src/server.cpp)
 target_include_directories(firmir-wayland-server PUBLIC server/include

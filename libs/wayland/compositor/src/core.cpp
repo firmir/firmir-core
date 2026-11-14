@@ -1,3 +1,4 @@
+#include <firmir/wayland/compositor/bufferbackend.hpp>
 #include <firmir/wayland/compositor/core.hpp>
 #include <firmir/wayland/compositor/surface.hpp>
 #include <wayland-server.h>
@@ -143,6 +144,35 @@ void bindOutput(wl_client* client, void* data, std::uint32_t version, std::uint3
 
 } // namespace
 
+namespace {
+
+/// Finds the wl_output resource this client bound for a given output.
+struct OutputBinding {
+    const void* output;
+    wl_resource* resource;
+};
+
+wl_iterator_result findOutputBinding(wl_resource* resource, void* data) {
+    auto* binding = static_cast<OutputBinding*>(data);
+    if (!wl_resource_instance_of(resource, &wl_output_interface, &outputImplementation))
+        return WL_ITERATOR_CONTINUE;
+    if (wl_resource_get_user_data(resource) != binding->output)
+        return WL_ITERATOR_CONTINUE;
+    binding->resource = resource;
+    return WL_ITERATOR_STOP;
+}
+
+wl_resource* outputResourceFor(wl_resource* surfaceResource, const void* output) {
+    if (!surfaceResource || !output)
+        return nullptr;
+    OutputBinding binding{output, nullptr};
+    wl_client_for_each_resource(wl_resource_get_client(surfaceResource),
+                                findOutputBinding, &binding);
+    return binding.resource;
+}
+
+} // namespace
+
 WaylandOutput::WaylandOutput(Object* parent)
     : WaylandObject(parent), d(std::make_unique<Impl>()) {}
 std::string WaylandOutput::manufacturer() const { return d->manufacturer; }
@@ -157,6 +187,14 @@ void WaylandOutput::setScale(int scale) { d->scale = scale; }
 WaylandOutputMode WaylandOutput::currentMode() const { return d->currentMode; }
 const std::vector<WaylandOutputMode>& WaylandOutput::modes() const { return d->modes; }
 void WaylandOutput::addMode(WaylandOutputMode mode) { d->modes.push_back(mode); }
+void WaylandOutput::sendEnter(wl_resource* surfaceResource) const {
+    if (wl_resource* output = outputResourceFor(surfaceResource, this))
+        wl_surface_send_enter(surfaceResource, output);
+}
+void WaylandOutput::sendLeave(wl_resource* surfaceResource) const {
+    if (wl_resource* output = outputResourceFor(surfaceResource, this))
+        wl_surface_send_leave(surfaceResource, output);
+}
 WaylandOutput::~WaylandOutput() { if (d->global) wl_global_destroy(d->global); }
 bool WaylandOutput::initialize(WaylandCompositor* compositor) {
     if (!compositor || !compositor->display()) return false;
@@ -281,6 +319,9 @@ bool WaylandCompositor::create() {
     d->compositorGlobal = d->display->createGlobal(&wl_compositor_interface, 4,
                                                  CompositorGlobal::bind, this);
     d->created = d->compositorGlobal != nullptr && wl_display_init_shm(d->display->handle()) == 0;
+    // Pick the buffer backend (drm_egl first, then shm). Failing to load one is
+    // not fatal: WaylandSurfaceGrabber::grab() reads wl_shm buffers itself.
+    BufferBackends::create(d->display->handle());
     return d->created;
 }
 bool WaylandCompositor::valid() const { return d->created && d->display && d->display->valid(); }

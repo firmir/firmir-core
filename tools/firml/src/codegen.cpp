@@ -1082,9 +1082,17 @@ private:
              << "                for (int _row_" << base << " = first; _row_" << base
              << " <= last && _row_" << base
              << " < static_cast<int>(_liveNow_" << base << ".size()); ++_row_" << base
-             << ")\n"
-             << "                    _removed_" << base << "->push_back(_liveNow_" << base
-             << "[_row_" << base << "]);\n"
+             << ") {\n"
+             // The delegate stays alive until the deferred flush runs; hiding
+             // it now keeps it out of the positioner layout and of the frame,
+             // so it cannot flash beside the fresh delegates for a frame.
+             << "                    Firmir::Gui::Item* _gone_" << base << " = "
+             << "_liveNow_" << base << "[_row_" << base << "];\n"
+             << "                    _gone_" << base
+             << "->setProperty(\"visible\", false);\n"
+             << "                    _removed_" << base << "->push_back(_gone_" << base
+             << ");\n"
+             << "                }\n"
              << "                if (!*_flushPending_" << base << ") {\n"
              << "                    *_flushPending_" << base << " = true;\n"
              << "                    Firmir::Timer::singleShot(\n"

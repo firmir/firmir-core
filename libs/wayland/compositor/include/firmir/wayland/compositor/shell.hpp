@@ -51,9 +51,23 @@ private:
 
 class WaylandWlShellSurface : public WaylandShellSurfaceTemplate<> {
 public:
-    explicit WaylandWlShellSurface(Object* parent = nullptr)
-        : WaylandShellSurfaceTemplate<>(parent) {}
+    explicit WaylandWlShellSurface(Object* parent = nullptr);
+    ~WaylandWlShellSurface() override;
     void sendConfigure(int width, int height) override;
+    /// True when the client asked for an override-redirect surface with
+    /// wl_shell_surface.set_popup(): a menu or tooltip, not a window. It
+    /// belongs to popupParent() and sits at (popupX(), popupY()) in that
+    /// surface's coordinates, so the compositor places it itself and keeps it
+    /// undecorated and out of its window list.
+    bool isPopup() const;
+    void setPopup(WaylandSurface* parent, int x, int y);
+    WaylandSurface* popupParent() const;
+    int popupX() const;
+    int popupY() const;
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> d;
 };
 
 class WaylandWlShell : public WaylandShell {

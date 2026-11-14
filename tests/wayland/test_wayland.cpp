@@ -2,12 +2,21 @@
 
 #include <core_client.hpp>
 #include <xdg_shell_client.hpp>
+#include <firmir/wayland/client/backend.hpp>
+#include <firmir/wayland/client/display.hpp>
+#include <firmir/wayland/client/registry.hpp>
+#include <firmir/wayland/compositor/bufferbackend.hpp>
 #include <firmir/wayland/compositor/compositor.hpp>
 
+#include <atomic>
 #include <cstdlib>
+#include <cstring>
+#include <memory>
 #include <string>
 #include <sys/stat.h>
+#include <thread>
 #include <unistd.h>
+#include <vector>
 
 using namespace Firmir;
 
@@ -193,3 +202,175 @@ TEST_CASE(wayland_gui_item_input_state) {
     item.detachSurface();
     CHECK_EQ(view.surface(), nullptr);
 }
+
+
+// WaylandBufferRef plus the compositor's buffer backend subsystem: the plugin
+// list is what selects drm_egl over shm, so pin its order and the file names.
+TEST_CASE(wayland_compositor_buffer_backend_selection) {
+    using namespace Wayland::Compositor;
+    ::unsetenv("FIRMIR_WAYLAND_COMPOSITOR_BACKENDS");
+    ::unsetenv("FIRMIR_WAYLAND_COMPOSITOR_BACKEND");
+    const std::vector<std::string> defaults = BufferBackends::candidates();
+    CHECK_EQ(defaults.size(), std::size_t(2));
+    CHECK_EQ(defaults[0], std::string("drm_egl")); // accelerated first
+    CHECK_EQ(defaults[1], std::string("shm"));
+
+    ::setenv("FIRMIR_WAYLAND_COMPOSITOR_BACKENDS", " shm , drm_egl ", 1);
+    const std::vector<std::string> listed = BufferBackends::candidates();
+    CHECK_EQ(listed.size(), std::size_t(2));
+    CHECK_EQ(listed[0], std::string("shm"));
+    CHECK_EQ(listed[1], std::string("drm_egl"));
+
+    ::setenv("FIRMIR_WAYLAND_COMPOSITOR_BACKEND", "shm", 1);
+    const std::vector<std::string> pinned = BufferBackends::candidates();
+    CHECK_EQ(pinned.size(), std::size_t(1));
+    CHECK_EQ(pinned[0], std::string("shm"));
+
+#ifdef _WIN32
+    const std::string suffix = ".dll";
+#else
+    const std::string suffix = ".so";
+#endif
+    CHECK_EQ(BufferBackends::pluginFileName("drm_egl"),
+             std::string("firmir-wayland-compositor-drm-egl") + suffix);
+    CHECK_EQ(BufferBackends::pluginFileName("shm"),
+             std::string("firmir-wayland-compositor-shm") + suffix);
+
+    ::unsetenv("FIRMIR_WAYLAND_COMPOSITOR_BACKEND");
+    ::unsetenv("FIRMIR_WAYLAND_COMPOSITOR_BACKENDS");
+    ::setenv("FIRMIR_WAYLAND_COMPOSITOR_PLUGIN_PATH", "/opt/firmir/wl", 1);
+    bool found = false;
+    for (const std::string& dir : BufferBackends::searchDirs())
+        if (dir == "/opt/firmir/wl")
+            found = true;
+    CHECK(found);
+    ::unsetenv("FIRMIR_WAYLAND_COMPOSITOR_PLUGIN_PATH");
+}
+
+// The client side of the same subsystem: drm_egl is probed first, shm is the
+// fallback, and the pin/list environment variables reorder them.
+TEST_CASE(wayland_client_buffer_backend_selection) {
+    using namespace Wayland::Client;
+    ::unsetenv("FIRMIR_WAYLAND_CLIENT_BACKENDS");
+    ::unsetenv("FIRMIR_WAYLAND_CLIENT_BACKEND");
+    const std::vector<std::string> defaults = Backends::candidates();
+    CHECK_EQ(defaults.size(), std::size_t(2));
+    CHECK_EQ(defaults[0], std::string("drm_egl")); // accelerated first
+    CHECK_EQ(defaults[1], std::string("shm"));
+
+    ::setenv("FIRMIR_WAYLAND_CLIENT_BACKENDS", "shm,drm_egl", 1);
+    const std::vector<std::string> listed = Backends::candidates();
+    CHECK_EQ(listed.size(), std::size_t(2));
+    CHECK_EQ(listed[0], std::string("shm"));
+    CHECK_EQ(listed[1], std::string("drm_egl"));
+
+    ::setenv("FIRMIR_WAYLAND_CLIENT_BACKEND", "shm", 1);
+    const std::vector<std::string> pinned = Backends::candidates();
+    CHECK_EQ(pinned.size(), std::size_t(1));
+    CHECK_EQ(pinned[0], std::string("shm"));
+
+#ifdef _WIN32
+    const std::string suffix = ".dll";
+#else
+    const std::string suffix = ".so";
+#endif
+    CHECK_EQ(Backends::pluginFileName("drm_egl"),
+             std::string("firmir-wayland-client-drm-egl") + suffix);
+
+    ::unsetenv("FIRMIR_WAYLAND_CLIENT_BACKEND");
+    ::unsetenv("FIRMIR_WAYLAND_CLIENT_BACKENDS");
+    ::setenv("FIRMIR_WAYLAND_CLIENT_PLUGIN_PATH", "/opt/firmir/wl", 1);
+    bool found = false;
+    for (const std::string& dir : Backends::searchDirs())
+        if (dir == "/opt/firmir/wl")
+            found = true;
+    CHECK(found);
+    ::unsetenv("FIRMIR_WAYLAND_CLIENT_PLUGIN_PATH");
+}
+
+// End to end: the loader dlopen()s the shm client backend, the plugin allocates
+// a wl_shm buffer over a real compositor connection, and the pixels it hands
+// out are the compositor's frame memory.
+TEST_CASE(wayland_client_shm_backend_buffers) {
+#ifdef FIRMIR_WAYLAND_TEST_CLIENT_PLUGIN_DIR
+    using namespace Wayland::Client;
+    ::setenv("FIRMIR_WAYLAND_CLIENT_PLUGIN_PATH",
+             FIRMIR_WAYLAND_TEST_CLIENT_PLUGIN_DIR, 1);
+    ::setenv("FIRMIR_WAYLAND_CLIENT_BACKEND", "shm", 1);
+    ::setenv("FIRMIR_WAYLAND_SOCKET_DIR", kTestSocketDir, 1);
+    resetSocketDir();
+
+    Wayland::Compositor::WaylandCompositor compositor;
+    CHECK(compositor.create());
+    const std::string socket = compositor.addSocketAuto();
+    CHECK(!socket.empty());
+    if (socket.empty()) {
+        ::unsetenv("FIRMIR_WAYLAND_CLIENT_PLUGIN_PATH");
+        ::unsetenv("FIRMIR_WAYLAND_CLIENT_BACKEND");
+        ::unsetenv("FIRMIR_WAYLAND_SOCKET_DIR");
+        return;
+    }
+    // Serve the connection from a thread: a client roundtrip needs the
+    // compositor to dispatch while the test thread waits.
+    std::atomic<bool> serving{true};
+    std::thread server([&] {
+        while (serving.load())
+            compositor.dispatch(10);
+    });
+
+    {
+        Wayland::Client::Display display(socket.c_str());
+        CHECK(display.valid());
+        if (display.valid()) {
+            auto registry = display.createRegistry();
+            wl_shm* shm = nullptr;
+            registry->setGlobalHandler(
+                [&](std::uint32_t name, const char* interface,
+                    std::uint32_t version) {
+                    (void)version;
+                    if (std::strcmp(interface, wl_shm_interface.name) == 0 && !shm)
+                        shm = static_cast<wl_shm*>(wl_registry_bind(
+                            registry->handle(), name, &wl_shm_interface, 1));
+                });
+            display.roundtrip();
+            CHECK(shm != nullptr);
+            if (shm) {
+                BackendParams params;
+                params.display = display.handle();
+                params.registry = registry->handle();
+                params.shm = shm;
+                std::unique_ptr<Backend> backend = Backends::create(params);
+                CHECK(backend != nullptr);
+                if (backend) {
+                    CHECK_EQ(std::string(backend->name()), std::string("shm"));
+                    std::unique_ptr<BackendBuffer> buffer =
+                        backend->createBuffer(32, 16);
+                    CHECK(buffer != nullptr);
+                    if (buffer) {
+                        CHECK_EQ(buffer->width(), 32);
+                        CHECK_EQ(buffer->height(), 16);
+                        CHECK_EQ(buffer->stride(), 32 * 4);
+                        CHECK_EQ(buffer->bytes(), std::size_t(32) * 16 * 4);
+                        CHECK(buffer->handle() != nullptr);
+                        CHECK(buffer->pixels() != nullptr);
+                        if (buffer->pixels()) {
+                            buffer->pixels()[0] = 0xff00ff00u;
+                            CHECK_EQ(buffer->pixels()[0], 0xff00ff00u);
+                        }
+                        CHECK(buffer->commitPixels());
+                    }
+                }
+                wl_shm_destroy(shm);
+            }
+        }
+    }
+
+    serving = false;
+    server.join();
+    ::unsetenv("FIRMIR_WAYLAND_CLIENT_PLUGIN_PATH");
+    ::unsetenv("FIRMIR_WAYLAND_CLIENT_BACKEND");
+    ::unsetenv("FIRMIR_WAYLAND_SOCKET_DIR");
+#endif
+}
+
+

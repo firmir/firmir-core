@@ -38,6 +38,11 @@ public:
     void attach(wl_resource* buffer, int x = 0, int y = 0);
     void addDamage(const Gui::Rect& rect);
     void commit();
+    /// Announces the surface on the compositor's outputs (wl_surface.enter),
+    /// once per output. commit() does it when the client first attaches a
+    /// buffer: from then on the window is shown and the client needs to know
+    /// its screen (scale, refresh rate).
+    void announceOutputs();
     /// Bumped on every commit that attaches a buffer. Lets a client-side item
     /// skip re-copying (and re-uploading) pixels the client did not change.
     std::uint64_t commitSerial() const;
@@ -94,6 +99,10 @@ public:
     /// Cuts the item off from its (possibly dying) surface: the paint stops
     /// and no further input is forwarded. Takes the scene lock so an
     /// in-flight render never observes a stale surface.
+    /// The item must still be alive when this runs: own the connection next to
+    /// the item (the item as the signal receiver, or a handle dropped before
+    /// the scene goes away) — a wl_surface destroy can arrive long after the
+    /// item is gone, and cannot be answered then.
     void detachSurface();
     /// Emitted (no arguments) on a pointer press and when the item gains
     /// focus — the embedding compositor raises/activates its window here.

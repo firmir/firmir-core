@@ -47,6 +47,8 @@ plugins/gui/    подгружаемые бэкенды firmir-gui-<имя>.so (
                 eglfs + его device-интеграции в plugins/gui/eglfs/<имя>/)
 plugins/render/ подгружаемые рендер-бэкенды firmir-render-<имя>.so
                 (null, soft, opengl, vulkan)
+plugins/wayland/ бэкенды буферов Wayland: wayland/client/ (firmir-wayland-client-<имя>.so)
+                и wayland/compositor/ (firmir-wayland-compositor-<имя>.so)
 plugins/core/   бэкенды сервисов firmir-core (locale/test: системный язык)
 tools/doc/      firmir-doc      — генератор Markdown из ///-комментариев
 tools/firml/    firmlc          — транспайлер Firml (.fml) → C++ (лексер/парсер, semantic
@@ -128,6 +130,113 @@ WAYLAND_DISPLAY=/run/display/wayland-0 FIRMIR_GUI_DISPLAY=wayland <прилож�
 `signalActivated`. GUI-плагин wayland принимает `wl_touch` (down/up/motion/
 cancel) и отдаёт его как `TouchEvent`, поэтому кнопки клиента работают и от
 пальца.
+
+Композитор отдаёт `wl_compositor` (v4), `wl_shm`, `wl_output` (v4), `wl_seat`
+(v7), `xdg_wm_base` (v6), `wp_viewporter`, `zxdg_decoration_manager_v1` и
+`zxdg_output_manager_v1` (v3). Клиент, создавший `zxdg_output_v1` версии 3,
+получает логическую геометрию и имя без устаревшего `done`: обновление
+завершается `wl_output.done` на его же `wl_output`. Декорацию окна рисует
+композитор, поэтому на `get_toplevel_decoration` сразу приходит `configure` с
+режимом по умолчанию. Последовательность запуска такого клиента (реестр,
+объекты `wl_seat`, состояние вывода, курсорный буфер, окно с декорацией и
+`wp_viewport`, разбор при выходе) проверяет
+`tests/wayland/test_wayland_desktop_client.cpp`: он говорит с композитором
+через libwayland-client, поэтому опечатка в имени запроса обработчика сразу
+валит тест (`invalid object`).
+
+Кадровые буферы вынесены в подсистему бэкендов: `firmir-wayland-client`
+(чем клиент аллоцирует кадр) и `firmir-wayland-compositor` (как композитор
+читает буфер клиента) ищут плагины `firmir-wayland-client-<имя>.so` /
+`firmir-wayland-compositor-<имя>.so` и выбирают лучший при старте:
+
+| бэкенд | что использует | как передаётся кадр |
+| --- | --- | --- |
+| shm | `wl_shm` | разделяемая память, CPU-копия в обе стороны |
+| drm_egl | EGL/GBM | `eglBindWaylandDisplayWL` + `eglCreateImageKHR`: композитор импортирует буфер клиента как EGLImage (dma-buf/wl_drm), клиент рендерит в GBM-буфер |
+
+`drm_egl` у клиента пока только проверяет окружение (EGL, render node,
+`zwp_linux_dmabuf_v1`): самого протокола передачи dma-buf ещё нет, поэтому
+плагин отказывается и выбирается `shm`. У композитора `drm_egl` работает
+сразу: он связывает свой `wl_display` с EGL (EGL-дисплей создаётся из DRM
+render node через GBM — инициализировать EGL *из* серверного `wl_display`
+нельзя) и читает `wl_shm`-буферы тем же путём, что и `shm`, то есть является
+его надмножеством.
+
+```sh
+# порядок по умолчанию: drm_egl, shm
+FIRMIR_WAYLAND_CLIENT_BACKENDS=drm_egl,shm
+FIRMIR_WAYLAND_COMPOSITOR_BACKENDS=drm_egl,shm
+# закрепить один бэкенд (без fallback)
+FIRMIR_WAYLAND_CLIENT_BACKEND=shm
+FIRMIR_WAYLAND_COMPOSITOR_BACKEND=shm
+# каталоги поиска (через ':'); иначе — рядом с исполняемым файлом
+FIRMIR_WAYLAND_CLIENT_PLUGIN_PATH=build/plugins/wayland/client
+FIRMIR_WAYLAND_COMPOSITOR_PLUGIN_PATH=build/plugins/wayland/compositor
+```
+
+Установленные плагины лежат в `lib/firmir/plugins/wayland/{client,compositor}/`
+и находятся без переменных окружения. Порядок поиска: переменная
+`FIRMIR_WAYLAND_{CLIENT,COMPOSITOR}_PLUGIN_PATH`, затем каталоги рядом с
+исполняемым файлом (build-tree), затем `<каталог libfirmir-wayland-*>/firmir/
+plugins/wayland/<сторона>` — то есть рядом с *той* библиотекой, которая реально
+загружена, поэтому установка с любым префиксом (в том числе `lib64`,
+`lib/<arch>`) работает без настройки, затем путь, зашитый при конфигурации.
+Плагин, который не может обслужить соединение (нет EGL, нет render node, нет
+транспорта), возвращает `nullptr` из
+`firmir_wayland_{client,compositor}_create_backend()`, и загрузчик берёт
+следующее имя; если файл есть, но `dlopen` не удался, печатается причина
+(`dlerror`), а если не загрузился ни один плагин — список проверенных
+каталогов. Без плагинов композитор всё равно читает `wl_shm`-буферы сам.
+
+### Окно клиента пустое или чёрное
+
+Кадр может не дойти, и раньше это не оставляло ни одной строки в логе.
+Сейчас композитор один раз на поверхность пишет причину:
+
+```
+firmir-wayland-item: commit 3 produced no pixels (buffer: not wl_shm
+(dma-buf / wl_drm), needs a backend plugin that can read it)
+```
+
+или `buffer: wl_shm` — тогда виноват не транспорт, а чтение/размеры.
+`FIRMIR_WAYLAND_DEBUG=1` добавляет трассу по каждому буферу: строку
+`firmir-wayland-surface: commit ...` с форматом и шагом, причину отказа
+бэкенда (`grab: backend '...' could not read the buffer`), а также
+`firmir-wayland-surface: enter wl_output '...'` — клиент узнаёт свой экран
+только из `wl_surface.enter`, без него окно не отображается.
+
+Закреплённый `shm` отключает GPU-путь целиком (и экспорт `wl_drm`): если окна
+с `FIRMIR_WAYLAND_COMPOSITOR_BACKEND=shm` начинают рисоваться, значит клиент
+отдаёт буферы, которые умеет читать только `drm_egl`, и проблема в импорте
+EGLImage, а не в клиенте.
+
+### Клиент реагирует только на первое нажатие
+
+`FIRMIR_WAYLAND_DEBUG=1` печатает путь указателя целиком:
+
+```
+firmir-wayland-surface: pointer press button=1 at (100.0,80.0) surface 200x160 inside=1 hover=1 held=0x0
+firmir-wayland-pointer: button 0x110 press sent (v7)
+```
+
+`hover=0` при `inside=1` означает, что клиенту не отправлен `wl_pointer.enter`
+для его поверхности — без него клиент вправе отбросить кнопку; строка
+`dropped: no pointer resource for the focused client` значит, что клиент не
+создал `wl_pointer` (или композитор шлёт события в чужой клиент). События
+указателя и касаний завершаются `wl_pointer.frame` / `wl_touch.frame`: клиент,
+который собирает пачку до frame (так делают тулкиты), без него не применяет
+ничего.
+
+Старый клиент, который рисует через EGL (`wl_egl_surface`) и передаёт буферы
+по `wl_drm`, требует именно `drm_egl`: `shm`-бэкенд такие буферы читать не
+умеет, и такой клиент без GPU-пути вообще не работает. `drm_egl` печатает
+причину отказа импорта по шагам — нет размера
+(`eglQueryWaylandBufferWL`), нет образа (`eglCreateImageKHR` с номером ошибки),
+внешний (YUV) формат, нечитаемая текстура или неполный framebuffer, отказ
+`eglMakeCurrent` в render-потоке. EGL-контекст создаётся на потоке запуска
+композитора и сразу освобождается, чтобы render-поток мог забрать его себе:
+контекст, оставленный current в другом потоке, делает `eglMakeCurrent`
+бесполезным (`EGL_BAD_ACCESS`).
 
 Для неблокирующего D-Bus вызова используйте `DBusConnection::asyncCall()`:
 возвращённый `DBusMessage*` принадлежит соединению, а в его сигнале

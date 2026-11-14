@@ -4,7 +4,10 @@
 // loaders (locale backends, GUI backends, render backends, multimedia
 // backends). Not public API: no ABI guarantees, subject to change.
 
+#include <algorithm>
+#include <cctype>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <initializer_list>
 #include <string>
@@ -20,6 +23,7 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
@@ -66,6 +70,58 @@ inline std::string executableDir() {
 #endif
 }
 
+/// True when @p path names an existing file (not a directory).
+inline bool fileExists(const std::string& path) {
+#ifdef _WIN32
+    const DWORD attributes = ::GetFileAttributesA(path.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+           !(attributes & FILE_ATTRIBUTE_DIRECTORY);
+#else
+    struct stat info {};
+    return ::stat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode);
+#endif
+}
+
+/// Text of the last dynamic-loader failure ("" when there is none). Call it
+/// right after a failed libraryOpen().
+inline std::string libraryError() {
+#ifdef _WIN32
+    // GetLastError() is a number; there is no portable message without
+    // FormatMessage, and a missing file is the only realistic failure here.
+    char buffer[64];
+    std::snprintf(buffer, sizeof(buffer), "LoadLibrary error %lu",
+                  ::GetLastError());
+    return buffer;
+#else
+    const char* error = ::dlerror();
+    return error ? error : std::string();
+#endif
+}
+
+/// Directory the shared object containing @p symbol was loaded from ("" when
+/// unknown). Used to find plugins relative to the running library instead of a
+/// prefix baked in at configure time.
+inline std::string libraryDir(const void* symbol) {
+    std::string path;
+#ifdef _WIN32
+    HMODULE module = nullptr;
+    if (!::GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                  GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                              reinterpret_cast<LPCSTR>(symbol), &module))
+        return {};
+    char buf[32768];
+    const DWORD n = ::GetModuleFileNameA(module, buf, sizeof(buf));
+    if (n > 0 && n < sizeof(buf))
+        path.assign(buf, n);
+#else
+    Dl_info info{};
+    if (::dladdr(symbol, &info) && info.dli_fname)
+        path = info.dli_fname;
+#endif
+    const std::size_t slash = path.find_last_of("/\\");
+    return slash == std::string::npos ? std::string() : path.substr(0, slash);
+}
+
 /// Plugin search directories: the separator-separated @p envVar first, then
 /// each @p exeRelative path resolved against the executable's directory
 /// (build-tree and installed layouts).
@@ -89,6 +145,49 @@ inline std::vector<std::string> pluginSearchDirs(
         for (const char* rel : exeRelative)
             dirs.push_back(dir + "/" + rel);
     return dirs;
+}
+
+/// Comma-separated plugin/backend name list ("drm_egl, shm"), trimmed and
+/// lower-cased. Returns {} for a null or empty value.
+inline std::vector<std::string> splitPluginList(const char* value) {
+    std::vector<std::string> names;
+    if (!value)
+        return names;
+    std::string current;
+    for (const char* p = value;; ++p) {
+        if (*p == ',' || *p == '\0') {
+            std::size_t begin = 0;
+            while (begin < current.size() &&
+                   std::isspace(static_cast<unsigned char>(current[begin])))
+                ++begin;
+            std::size_t end = current.size();
+            while (end > begin &&
+                   std::isspace(static_cast<unsigned char>(current[end - 1])))
+                --end;
+            if (end > begin) {
+                std::string name = current.substr(begin, end - begin);
+                std::transform(name.begin(), name.end(), name.begin(),
+                               [](unsigned char c) { return std::tolower(c); });
+                names.push_back(std::move(name));
+            }
+            current.clear();
+            if (*p == '\0')
+                break;
+            continue;
+        }
+        current.push_back(*p);
+    }
+    return names;
+}
+
+/// Plugin file name: pluginFileName("firmir-wayland-client-", "drm_egl") is
+/// "firmir-wayland-client-drm-egl.so" ('_' becomes '-').
+inline std::string pluginFileName(const std::string& prefix,
+                                  const std::string& name) {
+    std::string file = prefix;
+    for (const char c : name)
+        file.push_back(c == '_' ? '-' : c);
+    return file + sharedLibrarySuffix();
 }
 
 /// Loads the shared library at @p path (nullptr on failure).

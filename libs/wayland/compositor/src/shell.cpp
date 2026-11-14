@@ -29,6 +29,16 @@ public:
     wl_global* global = nullptr;
 };
 
+class WaylandWlShellSurface::Impl {
+public:
+    /// wl_shell_surface.set_popup: override-redirect overlay owned by a parent
+    /// surface (a menu, a tooltip), at (x, y) in that surface's coordinates.
+    bool popup = false;
+    WaylandSurface* popupParent = nullptr;
+    int popupX = 0;
+    int popupY = 0;
+};
+
 class WaylandXdgToplevel::Impl {
 public:
     bool maximized = false;
@@ -100,6 +110,20 @@ void WaylandShell::unregisterSurface(WaylandShellSurface* surface) {
 
 WaylandWlShell::WaylandWlShell(Object* parent)
     : WaylandShell(parent), d(std::make_unique<Impl>()) {}
+
+WaylandWlShellSurface::WaylandWlShellSurface(Object* parent)
+    : WaylandShellSurfaceTemplate<>(parent), d(std::make_unique<Impl>()) {}
+WaylandWlShellSurface::~WaylandWlShellSurface() = default;
+bool WaylandWlShellSurface::isPopup() const { return d->popup; }
+void WaylandWlShellSurface::setPopup(WaylandSurface* parent, int x, int y) {
+    d->popup = true;
+    d->popupParent = parent;
+    d->popupX = x;
+    d->popupY = y;
+}
+WaylandSurface* WaylandWlShellSurface::popupParent() const { return d->popupParent; }
+int WaylandWlShellSurface::popupX() const { return d->popupX; }
+int WaylandWlShellSurface::popupY() const { return d->popupY; }
 
 WaylandXdgToplevel::WaylandXdgToplevel(Object* parent)
     : WaylandShellSurface(parent), d(std::make_unique<Impl>()) {}
@@ -240,6 +264,12 @@ int legacyDispatch(const void*, void* target, std::uint32_t, const wl_message* m
         context->shell->registerSurface(surface);
     } else if (context->surface && std::strcmp(message->name, "set_title") == 0) {
         context->surface->setTitle(args[0].s ? args[0].s : "");
+    } else if (context->surface && std::strcmp(message->name, "set_popup") == 0) {
+        // (seat, serial, parent wl_surface, x, y, flags): the surface becomes
+        // an override-redirect overlay of the parent, so the compositor has to
+        // keep the relationship and the position the client chose.
+        context->surface->setPopup(
+            findSurface(context->shell->compositor(), args[2].o), args[3].i, args[4].i);
     }
     return 0;
 }
@@ -405,14 +435,18 @@ int decorationDispatch(const void*, void* target, std::uint32_t,
     auto* manager = static_cast<WaylandXdgDecorationManagerV1*>(wl_resource_get_user_data(resource));
     if (std::strcmp(message->name, "destroy") == 0) {
         wl_resource_destroy(resource);
-    } else if (std::strcmp(message->name, "get_xdg_toplevel_decoration") == 0) {
+    } else if (std::strcmp(message->name, "get_toplevel_decoration") == 0) {
+        // The decorated toplevel: we always paint the decoration ourselves, so
+        // the answer is the manager's default mode.
         wl_resource* decoration = wl_resource_create(wl_resource_get_client(resource),
             &zxdg_toplevel_decoration_v1_interface, 1, args[0].n);
-        if (decoration) {
-            wl_resource_set_dispatcher(decoration, decorationDispatch, manager, manager, nullptr);
-            zxdg_toplevel_decoration_v1_send_configure(decoration,
-                static_cast<std::uint32_t>(manager->defaultMode()));
+        if (!decoration) {
+            wl_client_post_no_memory(wl_resource_get_client(resource));
+            return 0;
         }
+        wl_resource_set_dispatcher(decoration, decorationDispatch, manager, manager, nullptr);
+        zxdg_toplevel_decoration_v1_send_configure(decoration,
+            static_cast<std::uint32_t>(manager->defaultMode()));
     }
     return 0;
 }
@@ -424,22 +458,54 @@ void bindDecoration(wl_client* client, void* data, std::uint32_t version, std::u
     (void)version;
 }
 
+/// State of one zxdg_output_manager_v1 resource and of the zxdg_output_v1
+/// objects created from it. The dispatcher needs the manager for get_xdg_output
+/// and the wrapper so a destroyed resource never receives further events.
+struct XdgOutputContext {
+    WaylandXdgOutputManagerV1* manager = nullptr;
+    WaylandXdgOutputV1* output = nullptr; ///< null for the manager resource
+};
+
+void destroyXdgOutputContext(wl_resource* resource) {
+    auto* context = static_cast<XdgOutputContext*>(wl_resource_get_user_data(resource));
+    if (!context) return;
+    // The client destroyed the object: drop the handle so a later output change
+    // cannot be sent to freed memory.
+    if (context->output) context->output->setResource(nullptr);
+    delete context;
+}
+
 int xdgOutputDispatch(const void*, void* target, std::uint32_t,
                       const wl_message* message, wl_argument* args) {
     auto* resource = static_cast<wl_resource*>(target);
-    auto* manager = static_cast<WaylandXdgOutputManagerV1*>(wl_resource_get_user_data(resource));
+    auto* context = static_cast<XdgOutputContext*>(wl_resource_get_user_data(resource));
+    if (!context) return 0;
     if (std::strcmp(message->name, "destroy") == 0) {
         wl_resource_destroy(resource);
     } else if (std::strcmp(message->name, "get_xdg_output") == 0) {
-        WaylandOutput* output = manager->outputs().empty()
-            ? (manager->compositor()->outputs().empty() ? nullptr : manager->compositor()->outputs().front())
-            : manager->outputs().front()->output();
-        auto* wrapper = manager->addOutput(output);
+        WaylandOutput* output = context->manager->outputs().empty()
+            ? (context->manager->compositor()->outputs().empty()
+                   ? nullptr : context->manager->compositor()->outputs().front())
+            : context->manager->outputs().front()->output();
+        auto* wrapper = context->manager->addOutput(output);
         wl_resource* created = wl_resource_create(wl_resource_get_client(resource),
             &zxdg_output_v1_interface, std::min(3, wl_resource_get_version(resource)), args[0].n);
+        if (!created) {
+            wl_client_post_no_memory(wl_resource_get_client(resource));
+            return 0;
+        }
         wrapper->setResource(created);
-        if (created) wl_resource_set_dispatcher(created, xdgOutputDispatch, manager, manager, nullptr);
+        auto* outputContext = new XdgOutputContext{context->manager, wrapper};
+        wl_resource_set_dispatcher(created, xdgOutputDispatch, outputContext, outputContext,
+                                   destroyXdgOutputContext);
         wrapper->sendDescription();
+        // From version 3 on the batch is terminated by wl_output.done on the
+        // wl_output object the client passed in; zxdg_output_v1.done is
+        // deprecated and must not be sent.
+        wl_resource* outputResource = reinterpret_cast<wl_resource*>(args[1].o);
+        if (wrapper->resource().version() >= 3 && outputResource &&
+            wl_resource_get_version(outputResource) >= WL_OUTPUT_DONE_SINCE_VERSION)
+            wl_output_send_done(outputResource);
     }
     return 0;
 }
@@ -447,8 +513,10 @@ void bindXdgOutputManager(wl_client* client, void* data, std::uint32_t version, 
     auto* manager = static_cast<WaylandXdgOutputManagerV1*>(data);
     wl_resource* resource = wl_resource_create(client, &zxdg_output_manager_v1_interface,
                                                std::min(3u, version), id);
-    if (resource) wl_resource_set_dispatcher(resource, xdgOutputDispatch, manager, manager, nullptr);
-    else wl_client_post_no_memory(client);
+    if (!resource) { wl_client_post_no_memory(client); return; }
+    auto* context = new XdgOutputContext{manager, nullptr};
+    wl_resource_set_dispatcher(resource, xdgOutputDispatch, context, context,
+                               destroyXdgOutputContext);
 }
 
 } // namespace
@@ -486,14 +554,18 @@ WaylandXdgOutputV1* WaylandXdgOutputManagerV1::addOutput(WaylandOutput* output) 
 void WaylandXdgOutputV1::sendDescription() {
     if (!resource().handle() || !d->output) return;
     wl_resource* handle = resource().handle();
+    const int version = resource().version();
     const Size size = d->output->size();
     zxdg_output_v1_send_logical_position(handle, 0, 0);
     zxdg_output_v1_send_logical_size(handle, size.width, size.height);
-    if (resource().version() >= 2) {
+    if (version >= 2) {
         zxdg_output_v1_send_name(handle, d->output->model().c_str());
         zxdg_output_v1_send_description(handle, "Firmir virtual output");
     }
-    zxdg_output_v1_send_done(handle);
+    // Since version 3 the update is terminated by wl_output.done instead; the
+    // event below is deprecated there and clients warn about it.
+    if (version < 3)
+        zxdg_output_v1_send_done(handle);
 }
 } // namespace Compositor
 } // namespace Wayland

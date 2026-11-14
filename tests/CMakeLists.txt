@@ -83,6 +83,45 @@ endif()
 if(TARGET firmir-wayland-compositor)
     list(APPEND TEST_SOURCES wayland/test_wayland.cpp)
     list(APPEND TEST_LIBS firmir-wayland-client firmir-wayland-compositor)
+    # wayland/test_wayland_desktop_client.cpp drives the compositor with
+    # libwayland-client itself, the way a desktop client does, so the client
+    # side of the protocols it exercises is generated here (the xdg-shell one
+    # comes with firmir-wayland-protocols). Generated C code needs the C
+    # language in this directory.
+    enable_language(C)
+    pkg_get_variable(FIRMIR_TEST_WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
+    find_program(FIRMIR_TEST_WAYLAND_SCANNER wayland-scanner)
+    if(FIRMIR_TEST_WAYLAND_SCANNER AND FIRMIR_TEST_WAYLAND_PROTOCOLS_DIR)
+        set(FIRMIR_TEST_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+        file(MAKE_DIRECTORY ${FIRMIR_TEST_GENERATED_DIR})
+        set(FIRMIR_TEST_CLIENT_PROTOCOLS)
+        foreach(xml
+                ${FIRMIR_TEST_WAYLAND_PROTOCOLS_DIR}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml
+                ${FIRMIR_TEST_WAYLAND_PROTOCOLS_DIR}/unstable/xdg-output/xdg-output-unstable-v1.xml
+                ${FIRMIR_TEST_WAYLAND_PROTOCOLS_DIR}/stable/viewporter/viewporter.xml)
+            get_filename_component(stem ${xml} NAME_WE)
+            set(header ${FIRMIR_TEST_GENERATED_DIR}/${stem}-client-protocol.h)
+            set(code ${FIRMIR_TEST_GENERATED_DIR}/${stem}-protocol.c)
+            add_custom_command(
+                OUTPUT ${header} ${code}
+                COMMAND ${FIRMIR_TEST_WAYLAND_SCANNER} client-header ${xml} ${header}
+                COMMAND ${FIRMIR_TEST_WAYLAND_SCANNER} public-code ${xml} ${code}
+                DEPENDS ${xml}
+                VERBATIM)
+            list(APPEND FIRMIR_TEST_CLIENT_PROTOCOLS ${header} ${code})
+        endforeach()
+        list(APPEND TEST_SOURCES wayland/test_wayland_desktop_client.cpp
+             ${FIRMIR_TEST_CLIENT_PROTOCOLS})
+        list(APPEND TEST_LIBS firmir-wayland-protocols)
+    else()
+        message(STATUS "wayland desktop-client test needs wayland-scanner; skipping it")
+    endif()
+    # wayland/test_wayland.cpp loads the real buffer backend plugins; the paths
+    # are wired up below, once the test target exists.
+    if(TARGET firmir-wayland-client-shm)
+        set(FIRMIR_TEST_WAYLAND_CLIENT_PLUGIN_DIR
+            "$<TARGET_FILE_DIR:firmir-wayland-client-shm>")
+    endif()
 endif()
 
 # The wl_keyboard keycode translation (plugins/gui/wayland/keytranslate.hpp)
@@ -99,6 +138,10 @@ endif()
 
 add_executable(tests ${TEST_SOURCES})
 target_include_directories(tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+if(FIRMIR_TEST_GENERATED_DIR)
+    # Client-side protocol headers generated above (desktop-client test).
+    target_include_directories(tests PRIVATE ${FIRMIR_TEST_GENERATED_DIR})
+endif()
 # <drm/drm.h> for gui/test_drm_enumeration.cpp (kernel uapi headers: system,
 # so they must not trip -Werror).
 firmir_use_headers(tests "${FIRMIR_TEST_DRM_INCLUDE_DIR}")
@@ -121,6 +164,18 @@ if(TARGET firmir-render-opengl)
 endif()
 if(TARGET firmir-render-vulkan)
     add_dependencies(tests firmir-render-vulkan)
+endif()
+if(FIRMIR_TEST_WAYLAND_CLIENT_PLUGIN_DIR)
+    # wayland/test_wayland.cpp dlopen()s the wl_shm client backend.
+    target_compile_definitions(tests PRIVATE
+        FIRMIR_WAYLAND_TEST_CLIENT_PLUGIN_DIR="${FIRMIR_TEST_WAYLAND_CLIENT_PLUGIN_DIR}")
+    add_dependencies(tests firmir-wayland-client-shm)
+    if(TARGET firmir-wayland-compositor-shm)
+        add_dependencies(tests firmir-wayland-compositor-shm)
+    endif()
+    if(TARGET firmir-wayland-compositor-drm-egl)
+        add_dependencies(tests firmir-wayland-compositor-drm-egl)
+    endif()
 endif()
 if(TARGET firmir-gui-eglfs)
     # gui/test_eglfs.cpp dlopen()s the backend and its kms integration.

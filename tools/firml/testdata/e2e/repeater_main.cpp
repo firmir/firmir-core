@@ -152,11 +152,24 @@ int main() {
                 2.0f);
     }
 
-    // Shrinking the model removes delegates too (clear() queues the old
-    // delegates for deferred removal; append() builds the new row right away).
+    // Shrinking the model removes delegates too. clear() queues the old
+    // delegates for deferred removal and append() builds the new row right
+    // away; a queued delegate is hidden at once, because one left visible is
+    // laid out beside the fresh delegate for a frame (the taskbar flicker).
 
     o.keys->clear();
+    for (Firmir::Gui::Item* dying : o.rep->childItems()) {
+        if (dying->isVisible()) {
+            std::printf("FAIL a delegate queued for removal is still visible\n");
+            ++failures;
+            break;
+        }
+    }
+    checkEq("grid.implicitWidth during deferred removal", o.grid->implicitWidth(), 0.0f);
+    checkEq("grid.implicitHeight during deferred removal", o.grid->implicitHeight(), 0.0f);
     o.keys->append({{"label", Firmir::String("x")}, {"size", 10.0}});
+    // One 10px cell in a 2-column grid: 2 * 10 + 10 spacing.
+    checkEq("grid.implicitWidth after clear+append", o.grid->implicitWidth(), 30.0f);
     pumpLoop();
     const auto shrunk = o.rep->childItems();
     if (shrunk.size() != 1) {

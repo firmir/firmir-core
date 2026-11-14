@@ -10,6 +10,7 @@
 
 #include <firmir/gui/backend.hpp>
 #include <firmir/thread.hpp>
+#include <firmir/wayland/client/backend.hpp>
 #include <firmir/wayland/client/display.hpp>
 #include <firmir/wayland/client/registry.hpp>
 
@@ -165,14 +166,10 @@ const wl_output_listener WaylandScreen::listener = {
 
 class WaylandWindow : public PlatformWindow {
 public:
-    /// Shared-memory frame buffer (one frame in flight, one spare).
+    /// One frame slot. The buffer itself comes from the client backend plugin
+    /// (wl_shm today, a GPU buffer once the dma-buf transport lands).
     struct Buffer {
-        wl_buffer* handle = nullptr;
-        std::uint32_t* data = nullptr;
-        int width = 0;
-        int height = 0;
-        std::size_t bytes = 0;
-        int fd = -1;
+        std::unique_ptr<Firmir::Wayland::Client::BackendBuffer> buffer;
         bool busy = false; // compositor holds it (release pending)
         WaylandWindow* owner = nullptr;
     };
@@ -270,7 +267,6 @@ private:
     Size m_pendingSize{0, 0};
     /// Commits are gated on this size while non-zero (see commitBuffer).
     Size m_requiredSize{0, 0};
-    int m_shmCounter = 0;
     bool m_loggedFirstFrame = false;
     FrameProbe* m_frameProbe = nullptr;
     std::uint64_t m_commitSeq = 0;
@@ -327,6 +323,12 @@ public:
     wl_compositor* m_compositor = nullptr;
     wl_shm* m_shm = nullptr;
     xdg_wm_base* m_wmBase = nullptr;
+    /// Frame-buffer factory (drm_egl preferred, shm fallback), picked once the
+    /// globals are known.
+    std::unique_ptr<Firmir::Wayland::Client::Backend> m_bufferBackend;
+    /// The compositor advertised zwp_linux_dmabuf_v1 (a GPU backend can share
+    /// its buffers); only probing backends look at it today.
+    bool m_dmabuf = false;
 
     // InputBackend (pointer events from wl_seat/wl_pointer).
     void emitMouse(MouseEvent::Action action, Point pos, int button) {
@@ -658,6 +660,17 @@ WaylandBackend::WaylandBackend() {
     if (!m_compositor || !m_shm || !m_wmBase)
         std::fprintf(stderr, "firmir-wayland: compositor misses "
                              "wl_compositor/wl_shm/xdg_wm_base\n");
+    // Frame buffers come from a backend plugin; the loader tries the
+    // accelerated one first (drm_egl) and falls back to wl_shm.
+    Firmir::Wayland::Client::BackendParams bufferParams;
+    bufferParams.display = m_display;
+    bufferParams.registry = m_registry;
+    bufferParams.shm = m_shm;
+    bufferParams.dmabuf = m_dmabuf;
+    m_bufferBackend = Firmir::Wayland::Client::Backends::create(bufferParams);
+    if (m_bufferBackend && verbose())
+        std::fprintf(stderr, "firmir-wayland: buffer backend '%s'\n",
+                     m_bufferBackend->name());
     m_running = true;
     m_thread = std::thread([this] { threadMain(); });
     if (verbose())
@@ -715,6 +728,10 @@ void WaylandBackend::onGlobal(void* data, wl_registry* registry,
         self->m_wmBase = static_cast<xdg_wm_base*>(
             wl_registry_bind(registry, name, &xdg_wm_base_interface, 1));
         xdg_wm_base_add_listener(self->m_wmBase, &wmBaseListener, self);
+    } else if (std::strcmp(interface, "zwp_linux_dmabuf_v1") == 0) {
+        // Not bound (the protocol plugin does not exist yet): the drm_egl
+        // backend only needs to know the transport is there.
+        self->m_dmabuf = true;
     } else if (std::strcmp(interface, wl_output_interface.name) == 0) {
         self->m_screens.push_back(
             std::make_unique<WaylandScreen>(self, registry, name, version));
@@ -1046,49 +1063,24 @@ WaylandWindow::~WaylandWindow() {
 }
 
 bool WaylandWindow::createBuffer(Buffer& buffer, int width, int height) {
-    const std::size_t bytes = static_cast<std::size_t>(width) * height * 4;
-    char name[64];
-    std::snprintf(name, sizeof(name), "/firmir-wl-%d-%d", ::getpid(),
-                  m_shmCounter++);
-    const int fd = ::shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
-    if (fd < 0) {
-        std::fprintf(stderr, "firmir-wayland: shm_open failed\n");
+    if (!m_backend->m_bufferBackend) {
+        std::fprintf(stderr, "firmir-wayland: no buffer backend, cannot "
+                             "present\n");
         return false;
     }
-    ::shm_unlink(name); // anonymous after the unlink; the fd stays valid
-    if (::ftruncate(fd, static_cast<off_t>(bytes)) != 0) {
-        ::close(fd);
-        return false;
-    }
-    void* data =
-        ::mmap(nullptr, bytes, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-    if (data == MAP_FAILED) {
-        ::close(fd);
-        return false;
-    }
-    wl_shm_pool* pool =
-        wl_shm_create_pool(m_backend->m_shm, fd, static_cast<int>(bytes));
-    buffer.handle = wl_shm_pool_create_buffer(pool, 0, width, height, width * 4,
-                                              WL_SHM_FORMAT_ARGB8888);
-    wl_buffer_add_listener(buffer.handle, &bufferListener, &buffer);
-    wl_shm_pool_destroy(pool); // the buffer keeps the memory alive
-    buffer.data = static_cast<std::uint32_t*>(data);
-    buffer.width = width;
-    buffer.height = height;
-    buffer.bytes = bytes;
-    buffer.fd = fd;
+    buffer.buffer = m_backend->m_bufferBackend->createBuffer(width, height);
     buffer.busy = false;
+    if (!buffer.buffer)
+        return false;
+    // The release notification is what frees the slot; the backend may add its
+    // own listener too (wl_buffer allows several).
+    wl_buffer_add_listener(buffer.buffer->handle(), &bufferListener, &buffer);
     return true;
 }
 
 void WaylandWindow::destroyBuffer(Buffer& buffer) {
-    if (buffer.handle)
-        wl_buffer_destroy(buffer.handle);
-    if (buffer.data)
-        ::munmap(buffer.data, buffer.bytes);
-    if (buffer.fd >= 0)
-        ::close(buffer.fd);
-    buffer = Buffer{};
+    buffer.buffer.reset(); // the backend releases the wl_buffer and its memory
+    buffer.busy = false;
     buffer.owner = this;
 }
 
@@ -1106,7 +1098,8 @@ void WaylandWindow::present(const std::uint32_t* pixels, const Size& size) {
 
     Buffer* buf = nullptr;
     for (auto& b : m_buffers)
-        if (!b.busy && b.width == size.width && b.height == size.height) {
+        if (!b.busy && b.buffer && b.buffer->width() == size.width &&
+            b.buffer->height() == size.height) {
             buf = &b;
             break;
         }
@@ -1126,7 +1119,8 @@ void WaylandWindow::present(const std::uint32_t* pixels, const Size& size) {
         m_backend->bufferReleased.wait_for(lock, std::chrono::milliseconds(100));
         for (auto& b : m_buffers)
             if (!b.busy) {
-                if (b.width != size.width || b.height != size.height) {
+                if (!b.buffer || b.buffer->width() != size.width ||
+                    b.buffer->height() != size.height) {
                     destroyBuffer(b);
                     if (!createBuffer(b, size.width, size.height))
                         return;
@@ -1144,7 +1138,15 @@ void WaylandWindow::present(const std::uint32_t* pixels, const Size& size) {
     }
 
     const std::uint64_t copyStart = monoNs();
-    std::memcpy(buf->data, pixels, buf->bytes);
+    Firmir::Wayland::Client::BackendBuffer& target = *buf->buffer;
+    if (std::uint32_t* staging = target.pixels())
+        std::memcpy(staging, pixels,
+                    static_cast<std::size_t>(size.width) *
+                        static_cast<std::size_t>(size.height) * 4);
+    if (!target.commitPixels()) {
+        trace("present: backend upload failed");
+        return;
+    }
     if (debugTrace())
         trace("present: memcpy %.3fms", (monoNs() - copyStart) / 1e6);
     m_pending = buf;
@@ -1161,14 +1163,19 @@ void WaylandWindow::present(const std::uint32_t* pixels, const Size& size) {
 }
 
 void WaylandWindow::commitBuffer(Buffer& buffer) {
+    Firmir::Wayland::Client::BackendBuffer* target = buffer.buffer.get();
+    if (!target) {
+        m_pending = nullptr;
+        return;
+    }
     if (m_requiredSize.width > 0 &&
-        (buffer.width != m_requiredSize.width ||
-         buffer.height != m_requiredSize.height)) {
+        (target->width() != m_requiredSize.width ||
+         target->height() != m_requiredSize.height)) {
         // The acked configure demands another size (e.g. maximized): the GUI
         // thread applies the new geometry asynchronously and re-renders;
         // committing the old size would be a protocol error. Drop the frame.
-        trace("commit skipped: buffer %dx%d, required %dx%d", buffer.width,
-              buffer.height, m_requiredSize.width, m_requiredSize.height);
+        trace("commit skipped: buffer %dx%d, required %dx%d", target->width(),
+              target->height(), m_requiredSize.width, m_requiredSize.height);
         m_pending = nullptr;
         return;
     }
@@ -1182,8 +1189,8 @@ void WaylandWindow::commitBuffer(Buffer& buffer) {
         m_frameProbe = probe;
         probing = true;
     }
-    wl_surface_attach(m_surface, buffer.handle, 0, 0);
-    wl_surface_damage_buffer(m_surface, 0, 0, buffer.width, buffer.height);
+    wl_surface_attach(m_surface, target->handle(), 0, 0);
+    wl_surface_damage_buffer(m_surface, 0, 0, target->width(), target->height());
     wl_surface_commit(m_surface);
     // Flush right away: the dispatch loop only flushes before entering poll(),
     // so without this a commit can sit in the outgoing buffer for up to the
@@ -1195,8 +1202,8 @@ void WaylandWindow::commitBuffer(Buffer& buffer) {
     if (debugTrace())
         trace("commit seq=%llu buf=%p %dx%d%s",
               static_cast<unsigned long long>(m_commitSeq++),
-              static_cast<void*>(buffer.handle), buffer.width, buffer.height,
-              probing ? " probe-armed" : "");
+              static_cast<void*>(target->handle()), target->width(),
+              target->height(), probing ? " probe-armed" : "");
 }
 
 } // namespace

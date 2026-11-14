@@ -1,9 +1,13 @@
+#include <firmir/wayland/compositor/bufferbackend.hpp>
 #include <firmir/wayland/compositor/input.hpp>
 #include <firmir/wayland/compositor/surface.hpp>
 #include <wayland-server.h>
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <mutex>
 #include <set>
 
@@ -17,6 +21,14 @@ std::uint32_t nowMs() {
         std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
+}
+
+/// Client buffer tracing, off unless FIRMIR_WAYLAND_DEBUG is set. A window
+/// that shows up blank has no log line anywhere else: the client thinks it
+/// committed a frame, the compositor silently reads nothing out of the buffer.
+bool debugEnabled() {
+    static const bool enabled = std::getenv("FIRMIR_WAYLAND_DEBUG") != nullptr;
+    return enabled;
 }
 
 /// Gui::MouseEvent button (1/2/3) -> evdev button code.
@@ -49,6 +61,8 @@ public:
     std::mutex bufferMutex;
     /// See commitSerial().
     std::atomic<std::uint64_t> commitSerial{0};
+    /// Outputs the surface already entered (wl_surface.enter is sent once).
+    std::set<WaylandOutput*> entered;
 };
 
 class WaylandView::Impl {
@@ -63,8 +77,11 @@ public:
     WaylandView* view = nullptr;
     WaylandSeat* seat = nullptr;
     std::uint64_t generation = 0;
-    /// wl_pointer hover state of the hosted surface.
+    /// wl_pointer hover state of the hosted surface. The enter belongs to the
+    /// surface, not to the item: a client that replaces its surface (a second
+    /// toplevel, a re-created window) needs a fresh enter for it.
     bool pointerInside = false;
+    WaylandSurface* hoverSurface = nullptr;
     /// Linux button codes currently pressed on it. The client keeps the
     /// implicit grab until the last release, wherever the pointer moves.
     std::uint32_t pressedButtons = 0;
@@ -79,6 +96,9 @@ public:
     WaylandSurfaceGrabber::Frame frame;
     std::uint64_t frameSerial = 0;
     WaylandSurface* frameSurface = nullptr;
+    /// A blank window is reported once: repeating the same line every frame
+    /// would hide the rest of the log.
+    bool reportedEmptyFrame = false;
 };
 
 class WaylandGuiShellSurfaceItem::Impl {
@@ -137,7 +157,39 @@ void WaylandSurface::commit() {
     d->damage.clear();
     if (release)
         wl_buffer_send_release(release);
+    if (debugEnabled()) {
+        wl_resource* handle = d->buffer.handle();
+        if (wl_shm_buffer* shm = handle ? wl_shm_buffer_get(handle) : nullptr)
+            std::fprintf(stderr,
+                         "firmir-wayland-surface: commit wl_shm %dx%d stride %d fmt 0x%08x"
+                         " serial %llu\n",
+                         wl_shm_buffer_get_width(shm), wl_shm_buffer_get_height(shm),
+                         wl_shm_buffer_get_stride(shm), wl_shm_buffer_get_format(shm),
+                         static_cast<unsigned long long>(d->commitSerial.load()));
+        else if (handle)
+            std::fprintf(stderr,
+                         "firmir-wayland-surface: commit non-wl_shm buffer %p (dma-buf / "
+                         "wl_drm), read through the buffer backend\n",
+                         static_cast<void*>(handle));
+        else
+            std::fprintf(stderr, "firmir-wayland-surface: commit without buffer\n");
+    }
+    if (d->buffer.valid())
+        announceOutputs();
     emitSignal(signalCommitted);
+}
+
+void WaylandSurface::announceOutputs() {
+    if (!d->resource.handle()) return;
+    auto* compositor = static_cast<WaylandCompositor*>(parent());
+    if (!compositor) return;
+    for (WaylandOutput* output : compositor->outputs()) {
+        if (!output || !d->entered.insert(output).second) continue;
+        output->sendEnter(d->resource.handle());
+        if (debugEnabled())
+            std::fprintf(stderr, "firmir-wayland-surface: enter wl_output '%s'\n",
+                         output->model().c_str());
+    }
 }
 
 std::uint64_t WaylandSurface::commitSerial() const {
@@ -151,8 +203,47 @@ WaylandSurfaceGrabber::Frame WaylandSurfaceGrabber::grab(WaylandSurface* surface
     // buffer and releases the old one to the client under the same mutex, so
     // the client cannot rewrite the shm while we read it.
     std::lock_guard<std::mutex> bufferLock(surface->d->bufferMutex);
-    if (!surface->d->buffer.isShm()) return frame;
     const WaylandBufferRef buffer = surface->d->buffer;
+    if (!buffer.valid()) {
+        if (debugEnabled())
+            std::fprintf(stderr, "firmir-wayland-surface: grab: no buffer committed yet\n");
+        return frame;
+    }
+    // A backend plugin reads the buffer (an EGL import for GPU clients, a
+    // mapping for wl_shm). Without one, wl_shm buffers are read here so the
+    // library still works in a tree that has no plugins installed.
+    if (BufferBackend* backend = BufferBackends::selected()) {
+        std::unique_ptr<ImportedBuffer> imported = backend->import(buffer);
+        if (!imported || !imported->valid()) {
+            if (debugEnabled())
+                std::fprintf(stderr,
+                             "firmir-wayland-surface: grab: backend '%s' could not read the "
+                             "buffer%s\n",
+                             backend->name(), buffer.isShm() ? "" : " (non-wl_shm)");
+            return frame;
+        }
+        frame.width = imported->width();
+        frame.height = imported->height();
+        frame.stride = frame.width * 4;
+        // Move the frame out: the import already paid for the copy.
+        frame.pixels = std::move(imported->pixels());
+        if (static_cast<int>(frame.pixels.size()) != frame.width * frame.height) {
+            if (debugEnabled())
+                std::fprintf(stderr,
+                             "firmir-wayland-surface: grab: backend '%s' returned %zu pixels "
+                             "for %dx%d\n",
+                             backend->name(), frame.pixels.size(), frame.width, frame.height);
+            return Frame{};
+        }
+        return frame;
+    }
+    if (!buffer.isShm()) {
+        if (debugEnabled())
+            std::fprintf(stderr,
+                         "firmir-wayland-surface: grab: no backend plugin and the buffer is "
+                         "not wl_shm (dma-buf / wl_drm); nothing to draw\n");
+        return frame;
+    }
     const Size size = buffer.size();
     const int stride = buffer.stride();
     const auto* data = static_cast<const std::uint8_t*>(buffer.data());
@@ -193,6 +284,7 @@ void WaylandGuiItem::detachSurface() {
     d->frameSerial = 0;
     d->frameSurface = nullptr;
     d->pointerInside = false;
+    d->hoverSurface = nullptr;
     d->pressedButtons = 0;
     d->touches.clear();
 }
@@ -218,27 +310,51 @@ void WaylandGuiItem::mouseEvent(Gui::MouseEvent& event) {
     const float surfaceHeight = bufferSize.height > 0 ? static_cast<float>(bufferSize.height)
                                                       : itemHeight;
     const bool inside = sx >= 0 && sy >= 0 && sx < surfaceWidth && sy < surfaceHeight;
+    if (debugEnabled() &&
+        (event.action == Gui::MouseEvent::Action::Press ||
+         event.action == Gui::MouseEvent::Action::Release)) {
+        std::fprintf(stderr,
+                     "firmir-wayland-surface: pointer %s button=%d at (%.1f,%.1f) "
+                     "surface %dx%d inside=%d hover=%d held=0x%x\n",
+                     event.action == Gui::MouseEvent::Action::Press ? "press" : "release",
+                     event.button, sx, sy, bufferSize.width, bufferSize.height, inside,
+                     d->pointerInside, d->pressedButtons);
+    }
+    // The hover state belongs to the surface, not to the item: when the client
+    // hands over a different surface (a second toplevel, a re-created window)
+    // the old enter is useless to it, and the client would drop every event
+    // that follows because it never saw an enter for its surface.
+    const auto ensureEnter = [&] {
+        if (!inside) return;
+        if (d->pointerInside && d->hoverSurface == target) return;
+        if (d->pointerInside && d->hoverSurface)
+            d->seat->pointer()->leave(d->hoverSurface);
+        d->seat->pointer()->enter(target, sx, sy);
+        d->pointerInside = true;
+        d->hoverSurface = target;
+    };
+    const auto hoverLeave = [&] {
+        if (!d->pointerInside) return;
+        d->seat->pointer()->leave(d->hoverSurface ? d->hoverSurface : target);
+        d->pointerInside = false;
+        d->hoverSurface = nullptr;
+    };
     switch (event.action) {
     case Gui::MouseEvent::Action::Move:
         // While a button is held the client keeps the pointer grab: it must
         // keep receiving motion (possibly outside coordinates) and the leave
         // is deferred until the last button is released.
-        if (d->pointerInside && (inside || d->pressedButtons)) {
+        if (d->pointerInside && d->hoverSurface == target && (inside || d->pressedButtons)) {
             d->seat->pointer()->motion(nowMs(), sx, sy);
         } else if (inside) {
-            d->seat->pointer()->enter(target, sx, sy);
-            d->pointerInside = true;
-        } else if (d->pointerInside) {
-            d->seat->pointer()->leave(target);
-            d->pointerInside = false;
+            ensureEnter();
+        } else {
+            hoverLeave();
         }
         break;
     case Gui::MouseEvent::Action::Press: {
         const std::uint32_t code = linuxButton(event.button);
-        if (inside && !d->pointerInside) {
-            d->seat->pointer()->enter(target, sx, sy);
-            d->pointerInside = true;
-        }
+        ensureEnter();
         emitSignal(signalActivated);
         if (d->pointerInside && code) {
             d->seat->pointer()->button(nowMs(), code, true);
@@ -255,10 +371,8 @@ void WaylandGuiItem::mouseEvent(Gui::MouseEvent& event) {
             d->pressedButtons &= ~code;
         }
         // Grab over: re-evaluate the hover state now.
-        if (!d->pressedButtons && d->pointerInside && !inside) {
-            d->seat->pointer()->leave(target);
-            d->pointerInside = false;
-        }
+        if (!d->pressedButtons && !inside)
+            hoverLeave();
         break;
     }
     case Gui::MouseEvent::Action::Wheel:
@@ -340,10 +454,32 @@ void WaylandGuiItem::paint(Gui::Painter& painter) {
     // (and the texture the painter caches for this generation) is reused
     // otherwise.
     const std::uint64_t serial = surface->commitSerial();
+    // Nothing was ever committed: the window is being created, not blank.
+    if (serial == 0) return;
     if (d->frameSurface != surface || serial != d->frameSerial) {
         WaylandSurfaceGrabber::Frame frame =
             WaylandSurfaceGrabber().grab(surface);
-        if (frame.pixels.empty()) return;
+        if (frame.pixels.empty()) {
+            if (!d->reportedEmptyFrame) {
+                d->reportedEmptyFrame = true;
+                const WaylandBufferRef buffer = surface->buffer();
+                std::fprintf(stderr,
+                             "firmir-wayland-item: commit %llu produced no pixels (buffer: %s); "
+                             "the window stays empty. Set FIRMIR_WAYLAND_DEBUG=1 for the "
+                             "per-buffer trace.\n",
+                             static_cast<unsigned long long>(serial),
+                             !buffer.valid() ? "none"
+                             : buffer.isShm() ? "wl_shm"
+                                              : "not wl_shm (dma-buf / wl_drm), needs a backend "
+                                                "plugin that can read it");
+            }
+            // Remember the attempt: the surface will not change until the
+            // client commits again.
+            d->frameSerial = serial;
+            d->frameSurface = surface;
+            return;
+        }
+        d->reportedEmptyFrame = false;
         d->frame = std::move(frame);
         d->frameSerial = serial;
         d->frameSurface = surface;

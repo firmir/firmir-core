@@ -37,7 +37,7 @@ add_custom_command(
     VERBATIM)
 
 add_library(firmir-wayland-compositor SHARED
-    src/core.cpp src/surface.cpp src/input.cpp src/shell.cpp
+    src/core.cpp src/surface.cpp src/input.cpp src/shell.cpp src/bufferbackend.cpp
     ${VIEWPORTER_C} ${DECORATION_C} ${XDG_OUTPUT_C}
     ${XDG_SERVER_HPP})
 add_dependencies(firmir-wayland-compositor firmir-wayland-client-protocols)
@@ -45,7 +45,12 @@ target_include_directories(firmir-wayland-compositor PUBLIC include ${GENERATED_
     ${WAYLAND_SERVER_INCLUDE_DIRS})
 target_link_libraries(firmir-wayland-compositor
     PUBLIC firmir-wayland-server firmir-gui firmir-wayland-protocols
-    PRIVATE PkgConfig::XKBCOMMON)
+    PRIVATE PkgConfig::XKBCOMMON firmir-core ${CMAKE_DL_LIBS})
+# The buffer backend loader needs firmir/detail/dynload.hpp; installed binaries
+# fall back to the system plugin directory (see the client library — the loader
+# appends "/wayland/compositor" itself).
+target_compile_definitions(firmir-wayland-compositor PRIVATE
+    FIRMIR_SYSTEM_PLUGIN_DIR="${FIRMIR_SYSTEM_PLUGIN_DIR}")
 
 firmir_install_library(firmir-wayland-compositor MODULE wayland-compositor
     REQUIRES firmir-wayland-server firmir-gui)
