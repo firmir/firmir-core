@@ -50,6 +50,10 @@ struct DrmScreenInfo {
     std::uint32_t crtcId = 0;
     std::uint32_t encoderId = 0;
     drm_mode_modeinfo mode{};
+    /// Physical size of the panel in millimetres, from the EDID; 0 when the
+    /// driver does not report it.
+    std::uint32_t widthMm = 0;
+    std::uint32_t heightMm = 0;
     std::string name;
     // dumb buffer + FB for the single fullscreen surface
     std::uint32_t fbId = 0;
@@ -69,6 +73,10 @@ public:
     std::string name() const override { return m_info.name; }
     Size size() const override {
         return {m_info.mode.hdisplay, m_info.mode.vdisplay};
+    }
+    Size physicalSize() const override {
+        return {static_cast<int>(m_info.widthMm),
+                static_cast<int>(m_info.heightMm)};
     }
     DrmScreenInfo m_info;
 };
@@ -269,6 +277,8 @@ private:
 
         info.connectorId = connectorId;
         info.mode = modes[0]; // first mode is the preferred one
+        info.widthMm = conn.mm_width;
+        info.heightMm = conn.mm_height;
         info.name = "connector-" + std::to_string(connectorId);
 
         // Find an encoder (prefer the current one) and a free CRTC it can

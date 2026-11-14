@@ -103,6 +103,7 @@ public:
         return "wayland-" + std::to_string(m_registryName);
     }
     Size size() const override { return m_size; }
+    Size physicalSize() const override { return m_physicalSize; }
 
     std::uint32_t registryName() const { return m_registryName; }
     bool announced() const { return m_announced; }
@@ -116,9 +117,21 @@ public:
     }
 
 private:
-    static void onGeometry(void*, wl_output*, std::int32_t, std::int32_t,
-                           std::int32_t, std::int32_t, std::int32_t,
-                           const char*, const char*, std::int32_t) {}
+    static void onGeometry(void* data, wl_output*, std::int32_t, std::int32_t,
+                           std::int32_t physicalWidth, std::int32_t physicalHeight,
+                           std::int32_t, const char*, const char*,
+                           std::int32_t transform) {
+        auto* self = static_cast<WaylandScreen*>(data);
+        // The physical size follows the panel orientation; a 90/270 degree
+        // transform swaps the axes (WL_OUTPUT_TRANSFORM_90/270).
+        const bool rotated = transform == WL_OUTPUT_TRANSFORM_90 ||
+            transform == WL_OUTPUT_TRANSFORM_270 ||
+            transform == WL_OUTPUT_TRANSFORM_FLIPPED_90 ||
+            transform == WL_OUTPUT_TRANSFORM_FLIPPED_270;
+        self->m_physicalSize =
+            rotated ? Size{physicalHeight, physicalWidth}
+                    : Size{physicalWidth, physicalHeight};
+    }
     static void onMode(void* data, wl_output*, std::uint32_t flags,
                        std::int32_t w, std::int32_t h, std::int32_t) {
         auto* self = static_cast<WaylandScreen*>(data);
@@ -140,6 +153,7 @@ private:
     std::uint32_t m_version;
     std::string m_name;
     Size m_size{0, 0};
+    Size m_physicalSize{0, 0};
     bool m_announced = false;
 };
 

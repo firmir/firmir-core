@@ -33,6 +33,9 @@ class WaylandXdgToplevel::Impl {
 public:
     bool maximized = false;
     bool fullscreen = false;
+    /// A client asked to be minimized (xdg_toplevel.set_minimized) and the
+    /// request has not been consumed by the compositor yet.
+    bool minimizeRequest = false;
     WaylandXdgSurface* xdgSurface = nullptr;
 };
 
@@ -102,6 +105,11 @@ WaylandXdgToplevel::WaylandXdgToplevel(Object* parent)
     : WaylandShellSurface(parent), d(std::make_unique<Impl>()) {}
 WaylandXdgToplevel::~WaylandXdgToplevel() = default;
 bool WaylandXdgToplevel::maximized() const { return d->maximized; }
+bool WaylandXdgToplevel::takeMinimizeRequest() {
+    const bool requested = d->minimizeRequest;
+    d->minimizeRequest = false;
+    return requested;
+}
 bool WaylandXdgToplevel::fullscreen() const { return d->fullscreen; }
 
 WaylandXdgSurface::WaylandXdgSurface(Object* parent)
@@ -178,7 +186,7 @@ void WaylandXdgToplevel::setFullscreen(bool fullscreen) {
     d->fullscreen = fullscreen;
     sendConfigure(size().width, size().height);
 }
-void WaylandXdgToplevel::setMinimized() {}
+void WaylandXdgToplevel::setMinimized() { d->minimizeRequest = true; }
 WaylandXdgSurface* WaylandXdgToplevel::xdgSurface() const { return d->xdgSurface; }
 void WaylandXdgToplevel::setXdgSurface(WaylandXdgSurface* surface) { d->xdgSurface = surface; }
 void WaylandXdgSurface::sendConfigure(int width, int height) {

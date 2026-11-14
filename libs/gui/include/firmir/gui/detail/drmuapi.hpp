@@ -3,8 +3,8 @@
 //
 // The kernel headers are plain C and not every copy out there compiles as C++:
 // <drm/drm.h> from kernels older than ~4.0 declares a member called "virtual"
-// in struct drm_buf_map (the DRM_IOCTL_MAP_BUFS argument), e.g. the header
-// Sailfish and other older targets ship:
+// in struct drm_buf_map (the DRM_IOCTL_MAP_BUFS argument), e.g. the header that
+// some older distributions ship:
 //
 //     struct drm_buf_map {
 //         int count;

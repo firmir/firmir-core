@@ -1,6 +1,7 @@
 #include <firmir/wayland/compositor/input.hpp>
 #include <firmir/wayland/compositor/surface.hpp>
 #include <wayland-server.h>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <mutex>
@@ -46,6 +47,8 @@ public:
     /// thread): wl_buffer.release for a replaced buffer is only sent when no
     /// grab of it can be in flight.
     std::mutex bufferMutex;
+    /// See commitSerial().
+    std::atomic<std::uint64_t> commitSerial{0};
 };
 
 class WaylandView::Impl {
@@ -67,6 +70,15 @@ public:
     std::uint32_t pressedButtons = 0;
     /// Touch contacts that began on this item (window grab covers the rest).
     std::set<int> touches;
+    /// Last frame copied out of the surface (see paint()). Grabbing on every
+    /// compositor frame would copy every visible client buffer at the display
+    /// rate — for a fullscreen 1200x2000 window that is ~10 MB per frame — and
+    /// re-upload it, holding the scene lock long enough to starve the GUI
+    /// thread (input stops being dispatched while a window is dragged or
+    /// animated).
+    WaylandSurfaceGrabber::Frame frame;
+    std::uint64_t frameSerial = 0;
+    WaylandSurface* frameSurface = nullptr;
 };
 
 class WaylandGuiShellSurfaceItem::Impl {
@@ -110,6 +122,10 @@ void WaylandSurface::commit() {
             d->buffer = d->pendingBuffer;
             d->pendingBuffer = WaylandBufferRef();
             d->hasPendingAttach = false;
+            // The pixels changed (a client may re-attach the very same shm
+            // buffer after drawing into it, which is why the serial is bumped
+            // for every attach, not only for a new handle).
+            d->commitSerial.fetch_add(1, std::memory_order_release);
             // Hand the replaced buffer back to the client. The mutex
             // guarantees the render thread is not copying it right now.
             // Re-committing the same buffer keeps it (still the current
@@ -122,6 +138,10 @@ void WaylandSurface::commit() {
     if (release)
         wl_buffer_send_release(release);
     emitSignal(signalCommitted);
+}
+
+std::uint64_t WaylandSurface::commitSerial() const {
+    return d->commitSerial.load(std::memory_order_acquire);
 }
 
 WaylandSurfaceGrabber::Frame WaylandSurfaceGrabber::grab(WaylandSurface* surface) const {
@@ -168,6 +188,10 @@ void WaylandGuiItem::detachSurface() {
     // the surface while painting, and the caller may be destroying it.
     auto lock = lockScene();
     if (d->view) d->view->setSurface(nullptr);
+    // The cached frame belongs to the surface that is going away.
+    d->frame = WaylandSurfaceGrabber::Frame();
+    d->frameSerial = 0;
+    d->frameSurface = nullptr;
     d->pointerInside = false;
     d->pressedButtons = 0;
     d->touches.clear();
@@ -311,9 +335,22 @@ void WaylandGuiShellSurfaceItem::setShellSurface(WaylandShellSurface* surface) {
 }
 void WaylandGuiItem::paint(Gui::Painter& painter) {
     if (!d->view || !d->view->surface()) return;
-    const auto frame = WaylandSurfaceGrabber().grab(d->view->surface());
+    WaylandSurface* surface = d->view->surface();
+    // Copy the client's buffer only when it committed something new; the frame
+    // (and the texture the painter caches for this generation) is reused
+    // otherwise.
+    const std::uint64_t serial = surface->commitSerial();
+    if (d->frameSurface != surface || serial != d->frameSerial) {
+        WaylandSurfaceGrabber::Frame frame =
+            WaylandSurfaceGrabber().grab(surface);
+        if (frame.pixels.empty()) return;
+        d->frame = std::move(frame);
+        d->frameSerial = serial;
+        d->frameSurface = surface;
+        ++d->generation;
+    }
+    const WaylandSurfaceGrabber::Frame& frame = d->frame;
     if (frame.pixels.empty()) return;
-    ++d->generation;
     if (implicitWidth() != frame.width) setImplicitWidth(frame.width);
     if (implicitHeight() != frame.height) setImplicitHeight(frame.height);
     painter.drawRgba(Gui::RectF{0, 0, width() > 0 ? width() : static_cast<float>(frame.width),

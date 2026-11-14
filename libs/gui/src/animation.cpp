@@ -4,16 +4,39 @@
 #include "detail/window_internal.hpp"
 
 #include <firmir/gui/item.hpp>
+#include <firmir/log.hpp>
 #include <firmir/timer.hpp>
 
 #include <algorithm>
 #include <any>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <stdexcept>
+#include <string>
 #include <utility>
 
 namespace Firmir {
 namespace Gui {
+
+namespace {
+
+const LoggingCategory& lcGui() {
+    static const LoggingCategory category("gui");
+    return category;
+}
+
+/// FIRMIR_GUI_FRAME_TRACE=1: also reports animation ticks that arrived late,
+/// i.e. GUI-thread stalls that make an animation jump.
+bool tickTraceEnabled() {
+    static const bool enabled = [] {
+        const char* value = std::getenv("FIRMIR_GUI_FRAME_TRACE");
+        return value && *value && std::string(value) != "0";
+    }();
+    return enabled;
+}
+
+} // namespace
 
 double applyEasing(Easing easing, double t) {
     t = std::clamp(t, 0.0, 1.0);
@@ -53,14 +76,17 @@ Color propertyAsColor(Object* object, const std::string& property) {
     return detail::anyToColor(object->getProperty(property));
 }
 
-/// Interval of the shared animation clock. Deliberately faster than common
-/// display refresh rates (60–120 Hz): positions are computed from the wall
-/// clock, so a clock that outruns the display means every presented frame
-/// shows the freshest position, while a slower clock (16 ms on a 60 Hz panel)
-/// makes a frame occasionally advance two ticks at once — a visible hitch.
-/// The extra ticks only cost a few property writes: the render thread
-/// coalesces frame requests and the display backend paces presentation.
-constexpr auto kFrameInterval = std::chrono::milliseconds(8);
+/// Interval of the shared animation clock.
+///
+/// The position shown on screen is the one written by the last tick before the
+/// frame was painted, so a coarse clock ages the drawn position by up to one
+/// interval. Because the clock period does not divide the display refresh
+/// (8 ms vs 16.7 ms), a coarse clock makes that age drift from frame to frame:
+/// the rectangle advances 10 px on one frame and 26 px on the next, which reads
+/// as a jerky move even though the animation itself is on time. A 2 ms clock
+/// keeps the age — and with it the per-frame jitter — under ~2 px at tablet
+/// animation speeds, at a cost of two property writes per tick.
+constexpr auto kFrameInterval = std::chrono::milliseconds(2);
 
 /**
  * Shared frame driver: one timer per thread advances every running animation.
@@ -87,7 +113,10 @@ public:
         if (std::find(d->animations.begin(), d->animations.end(), animation) !=
             d->animations.end())
             return;
+        const bool wasEmpty = d->animations.empty();
         d->animations.push_back(animation);
+        if (wasEmpty)
+            d->fresh = true; // no tick ran for a while: not a stall
         ensureTimer().start();
     }
 
@@ -116,6 +145,20 @@ private:
         // Snapshot: finishing, stopping or destroying an animation mutates
         // the list (a callback may even delete items during the tick).
         const std::vector<Animation*> snapshot = d->animations;
+        const auto now = std::chrono::steady_clock::now();
+        // A tick this late means the GUI thread was busy elsewhere (a slow
+        // handler, a slow paint holding the scene lock): the animation then
+        // jumps instead of moving smoothly, so report the stall with its size
+        // (FIRMIR_GUI_FRAME_TRACE=1 shows the frame gap it caused).
+        if (tickTraceEnabled() && !d->fresh &&
+            now - d->previousTick > std::chrono::milliseconds(30)) {
+            const std::chrono::duration<double, std::milli> late =
+                now - d->previousTick;
+            cLogWarning(lcGui()) << "animation tick gap" << late.count()
+                                 << "ms";
+        }
+        d->fresh = false;
+        d->previousTick = now;
         detail::beginFrameBatch();
         for (Animation* animation : snapshot) {
             auto& list = d->animations;
@@ -137,6 +180,10 @@ private:
     public:
         std::vector<Animation*> animations;
         Timer* timer = nullptr;
+        /// Set when the clock (re)starts, so the idle time before the first tick
+        /// of a run is not reported as a stall.
+        bool fresh = true;
+        std::chrono::steady_clock::time_point previousTick;
     };
     std::unique_ptr<Data> d = std::make_unique<Data>();
 };
@@ -270,9 +317,14 @@ void PropertyAnimation::onStart() {
 void PropertyAnimation::advance() {
     if (!running())
         return;
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - d->started);
-    const double t = static_cast<double>(elapsed.count()) / d->duration.count();
+    // Sub-millisecond precision: the frame clock ticks every 2 ms, so rounding
+    // the progress to whole milliseconds would quantize the position on top of
+    // the clock quantization and add visible jitter to fast moves.
+    const double elapsed =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                 d->started)
+            .count();
+    const double t = elapsed / static_cast<double>(d->duration.count());
     if (t >= 1.0) {
         d->target->setPropertyDirect(d->property, std::any(d->to));
         finish();
@@ -339,9 +391,14 @@ void ColorAnimation::onStart() {
 void ColorAnimation::advance() {
     if (!running())
         return;
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - d->started);
-    const double t = static_cast<double>(elapsed.count()) / d->duration.count();
+    // Sub-millisecond precision: the frame clock ticks every 2 ms, so rounding
+    // the progress to whole milliseconds would quantize the position on top of
+    // the clock quantization and add visible jitter to fast moves.
+    const double elapsed =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() -
+                                                 d->started)
+            .count();
+    const double t = elapsed / static_cast<double>(d->duration.count());
     if (t >= 1.0) {
         d->target->setPropertyDirect(d->property, std::any(d->to));
         finish();

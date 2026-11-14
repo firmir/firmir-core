@@ -18,8 +18,23 @@
 Firmir.Gui.Window {
     id: root
     title: "Calculator"
-    width: 340
-    height: 506
+
+    // --------------------------- layout metrics --------------------------
+    // baseMm: 1 mm in pixels. ppcm is pixels per centimetre, so a tenth of it
+    // is one millimetre; 96 ppi is the fallback when the backend does not
+    // report the panel size.
+    property number baseMm: root.ppcm > 0 ? root.ppcm / 10 : 3.7795
+    // fit: how much of the screen the window covers (Window.uiScale), floored
+    // at 3/4 so the text stays readable in a small window. The keypad is laid
+    // out for a fullscreen window, so it keeps its proportions in a window
+    // that is smaller than the screen instead of overflowing it.
+    property number fit: root.uiScale < 0.75 ? 0.75 : root.uiScale
+    property number mm: root.baseMm * root.fit
+
+    // The window itself is sized in millimetres too, so it is as large on a
+    // dense panel as it is on a 96 ppi display (340x506 px there).
+    width: 90 * baseMm
+    height: 134 * baseMm
 
     // ------------------------- calculator state -------------------------
     property number acc: 0      // accumulated result / left operand
@@ -29,10 +44,14 @@ Firmir.Gui.Window {
     property bool fresh: true   // the next digit starts a new entry
     property bool editing: true // the display shows `entry` (false: shows `acc`)
 
-    // --------------------------- layout metrics --------------------------
-    property number gap: 8
-    property number barH: 36      // window-controls strip at the top
-    property number displayH: 80
+    // --------------------------- key sizes ------------------------------
+    property number gap: 2.1 * mm
+    property number barH: 9.5 * mm    // window-controls strip at the top
+    property number displayH: 21 * mm
+    property number ctrlWidth: 9 * mm
+    property number ctrlHeight: 7 * mm
+    property number ctrlMargin: 1.1 * mm
+    property number ctrlFont: 3.2 * mm
     property number colW: (width - 5 * gap) / 4
     property number rowH: (height - barH - displayH - 7 * gap) / 5
 
@@ -84,7 +103,7 @@ Firmir.Gui.Window {
         y: root.gap + root.barH + (root.displayH - 40) / 2
         width: displayBg.width - 24
         height: 40
-        fontSize: 34
+        fontSize: 9 * root.mm
         color: "#ffffff"
         text: root.editing ? "" + root.entry : "" + root.acc
     }
@@ -100,7 +119,7 @@ Firmir.Gui.Window {
             model: keys
             Button {
                 text: model.text
-                fontSize: 22
+                fontSize: 5.8 * root.mm
                 width: root.colW
                 height: root.rowH
                 color: pressed ? darker(model.bg) : model.bg
@@ -121,13 +140,14 @@ Firmir.Gui.Window {
     Button {
         id: closeButton
         text: "X"
-        width: 36
-        height: 28
+        width: root.ctrlWidth
+        height: root.ctrlHeight
+        fontSize: root.ctrlFont
         anchors {
             right: parent.right
             top: parent.top
-            rightMargin: 4
-            topMargin: 4
+            rightMargin: root.ctrlMargin
+            topMargin: root.ctrlMargin
         }
         onClicked: Firmir.Gui.App.close()
     }
@@ -135,13 +155,14 @@ Firmir.Gui.Window {
     Button {
         id: maximizeButton
         text: "[]"
-        width: 36
-        height: 28
+        width: root.ctrlWidth
+        height: root.ctrlHeight
+        fontSize: root.ctrlFont
         anchors {
             right: closeButton.left
             top: parent.top
-            rightMargin: 4
-            topMargin: 4
+            rightMargin: root.ctrlMargin
+            topMargin: root.ctrlMargin
         }
         onClicked: Firmir.Gui.App.toggleMaximized()
     }
@@ -149,13 +170,14 @@ Firmir.Gui.Window {
     Button {
         id: minimizeButton
         text: "_"
-        width: 36
-        height: 28
+        width: root.ctrlWidth
+        height: root.ctrlHeight
+        fontSize: root.ctrlFont
         anchors {
             right: maximizeButton.left
             top: parent.top
-            rightMargin: 4
-            topMargin: 4
+            rightMargin: root.ctrlMargin
+            topMargin: root.ctrlMargin
         }
         onClicked: Firmir.Gui.App.showMinimized()
     }

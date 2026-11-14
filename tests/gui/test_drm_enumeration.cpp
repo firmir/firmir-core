@@ -30,6 +30,8 @@ struct FakeDevice {
         std::uint32_t status = DRM_MODE_CONNECTED;
         std::uint32_t encoderId = 0;
         std::uint32_t props = 3; // every connector has CRTC_ID, DPMS, EDID
+        std::uint32_t mmWidth = 0;  // panel size from the EDID
+        std::uint32_t mmHeight = 0;
         std::vector<drm_mode_modeinfo> modes;
         std::vector<std::uint32_t> encoders;
     };
@@ -137,6 +139,8 @@ int fakeIoctl(int, unsigned long request, void* arg) {
         conn->connection = found->status;
         conn->connector_type = found->type;
         conn->encoder_id = found->encoderId;
+        conn->mm_width = found->mmWidth;
+        conn->mm_height = found->mmHeight;
         conn->count_modes = found->modes.size();
         conn->count_encoders = found->encoders.size();
         conn->count_props = found->props;
@@ -172,6 +176,8 @@ TEST_CASE(gui_drm_enumeration_protocol) {
     hdmi.encoderId = 60;
     hdmi.modes = {mode(1920, 1080, "1920x1080"), mode(1280, 720, "1280x720")};
     hdmi.encoders = {60};
+    hdmi.mmWidth = 344; // panel size, as the EDID reports it
+    hdmi.mmHeight = 194;
     FakeDevice::FakeConnector vga;
     vga.id = 32;
     vga.type = 1; // DRM_MODE_CONNECTOR_VGA
@@ -196,6 +202,9 @@ TEST_CASE(gui_drm_enumeration_protocol) {
     CHECK_EQ(output.mode.hdisplay, std::uint16_t(1920));
     CHECK_EQ(output.mode.vdisplay, std::uint16_t(1080));
     CHECK_EQ(output.name, std::string("connector-31"));
+    // The panel size is carried through for the density helpers (Screen::ppi).
+    CHECK_EQ(output.widthMm, std::uint32_t(344));
+    CHECK_EQ(output.heightMm, std::uint32_t(194));
     // The previous CRTC state is kept so the window can restore it.
     CHECK_EQ(output.savedCrtc.crtc_id, std::uint32_t(40));
     CHECK_EQ(output.savedCrtc.mode_valid, 1u);

@@ -28,6 +28,10 @@ public:
     std::string manufacturer = "Firmir";
     std::string model = "Virtual output";
     Size size{1280, 720};
+    /// Physical panel size in millimetres; {0, 0} when unknown, which is what
+    /// wl_output.geometry reports for a compositor that has no panel size
+    /// (clients then fall back to their default density).
+    Size physicalSize{0, 0};
     int scale = 1;
     WaylandOutputMode currentMode{1280, 720, 60000};
     std::vector<WaylandOutputMode> modes;
@@ -108,8 +112,11 @@ void outputRelease(wl_client*, wl_resource* resource) { wl_resource_destroy(reso
 const struct wl_output_interface outputImplementation = {outputRelease};
 
 void sendOutputDescription(WaylandOutput* output, wl_resource* resource, int version) {
-    const Size size = output->size();
-    wl_output_send_geometry(resource, 0, 0, size.width, size.height,
+    // Physical size in millimetres, not the pixel mode: a client derives its
+    // millimetre-based layout from it, and reporting the pixel size makes a
+    // dense panel look like a huge and very coarse one.
+    const Size physical = output->physicalSize();
+    wl_output_send_geometry(resource, 0, 0, physical.width, physical.height,
                             WL_OUTPUT_SUBPIXEL_UNKNOWN,
                             output->manufacturer().c_str(), output->model().c_str(),
                             WL_OUTPUT_TRANSFORM_NORMAL);
@@ -143,6 +150,8 @@ void WaylandOutput::setManufacturer(std::string value) { d->manufacturer = std::
 std::string WaylandOutput::model() const { return d->model; }
 void WaylandOutput::setModel(std::string value) { d->model = std::move(value); }
 Size WaylandOutput::size() const { return d->size; }
+Size WaylandOutput::physicalSize() const { return d->physicalSize; }
+void WaylandOutput::setPhysicalSize(Size size) { d->physicalSize = size; }
 int WaylandOutput::scale() const { return d->scale; }
 void WaylandOutput::setScale(int scale) { d->scale = scale; }
 WaylandOutputMode WaylandOutput::currentMode() const { return d->currentMode; }

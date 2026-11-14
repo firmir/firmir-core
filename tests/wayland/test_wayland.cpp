@@ -80,6 +80,37 @@ TEST_CASE(wayland_compositor_core_and_extensions) {
     CHECK(!empty.isShm());
 }
 
+// wl_output reports the physical panel size, not the pixel mode: a client lays
+// out in millimetres from it. The minimize request is a one-shot the
+// compositor consumes.
+TEST_CASE(wayland_output_physical_size_and_client_minimize) {
+    using namespace Wayland::Compositor;
+    WaylandCompositor compositor;
+    CHECK(compositor.create());
+    auto* output = compositor.addOutput({1200, 2000});
+    CHECK(output != nullptr);
+    if (output) {
+        // Unknown until the compositor knows its panel: {0, 0} means
+        // "unknown" to the client, never "1200x2000 mm".
+        CHECK_EQ(output->physicalSize().width, 0);
+        CHECK_EQ(output->physicalSize().height, 0);
+        output->setPhysicalSize({100, 167});
+        CHECK_EQ(output->physicalSize().width, 100);
+        CHECK_EQ(output->physicalSize().height, 167);
+        // The pixel size is unaffected.
+        CHECK_EQ(output->size().width, 1200);
+        CHECK_EQ(output->size().height, 2000);
+    }
+
+    WaylandXdgToplevel toplevel;
+    CHECK(!toplevel.takeMinimizeRequest());
+    toplevel.setMinimized();
+    CHECK(toplevel.takeMinimizeRequest());
+    CHECK(!toplevel.takeMinimizeRequest());
+    toplevel.setMinimized();
+    CHECK(toplevel.takeMinimizeRequest());
+}
+
 // Display::addSocketAuto(): /run/display/wayland-0 by default, wayland-1 when
 // the first name is taken, overridable through the environment.
 TEST_CASE(wayland_socket_auto_numbering) {

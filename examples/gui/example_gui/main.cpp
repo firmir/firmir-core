@@ -13,8 +13,11 @@
 #include <firmir/gui/screen.hpp>
 #include <firmir/log.hpp>
 #include <firmir/thread.hpp>
+#include <firmir/timer.hpp>
 
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 
 int main() {
     Firmir::Gui::Platform* platform = Firmir::Gui::Platform::instance();
@@ -31,6 +34,18 @@ int main() {
     // Creates the window, the item tree and the Firmir.Gui.App singleton,
     // then shows the window (see example_gui.fml).
     ExampleGuiObjects objects = createExampleGui(screen);
+
+    // FIRMIR_EXAMPLE_TIMER_MS overrides the timer interval; the default in the
+    // .fml is 500 ms, the same as the move animation, so the rectangle moves
+    // continuously. A value above that (e.g. 1000) leaves the window idle
+    // between moves, which shows both the idle gap and the cold first frames
+    // after it (FIRMIR_GUI_FRAME_TRACE=1 reports both as a large "frame gap").
+    if (const char* value = std::getenv("FIRMIR_EXAMPLE_TIMER_MS")) {
+        const int interval = std::atoi(value);
+        if (interval > 0)
+            objects.mainTimer->setInterval(
+                std::chrono::milliseconds(interval));
+    }
 
     const int rc = Firmir::Thread::mainThread()->exec();
     delete objects.root; // owns the whole tree (items, timer, app singleton)

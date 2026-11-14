@@ -69,6 +69,10 @@ struct DrmOutput {
     /// Every mode the connector reports, preferred first. A window that asks for
     /// a different size than the preferred mode can be given one of these.
     std::vector<drm_mode_modeinfo> modes;
+    /// Physical size of the panel in millimetres, from the EDID; 0 when the
+    /// driver does not report it.
+    std::uint32_t widthMm = 0;
+    std::uint32_t heightMm = 0;
     std::string name;
     /// Pre-eglfs CRTC state, restored when the window goes away.
     drm_mode_crtc savedCrtc{};
@@ -235,6 +239,10 @@ inline DrmEnumerationResult enumerateDrmOutputs(int fd,
             conn.count_props = request.count_props;
             conn.connection = request.connection;
             conn.encoder_id = request.encoder_id;
+            // The physical size comes from the EDID, and the EDID read is what
+            // the fill call triggers — keep the values of the successful call.
+            conn.mm_width = request.mm_width;
+            conn.mm_height = request.mm_height;
             if (drmdetail::buffersTooSmall(modes, request.count_modes,
                                            connectorEncoders,
                                            request.count_encoders, props,
@@ -311,6 +319,8 @@ inline DrmEnumerationResult enumerateDrmOutputs(int fd,
         output.encoderId = chosenEncoder;
         output.mode = modes.front(); // the preferred mode comes first
         output.modes = modes;
+        output.widthMm = conn.mm_width;
+        output.heightMm = conn.mm_height;
         output.name = "connector-" + std::to_string(connectorId);
         output.savedCrtc.crtc_id = chosenCrtc;
         ioctlFn(fd, DRM_IOCTL_MODE_GETCRTC, &output.savedCrtc);

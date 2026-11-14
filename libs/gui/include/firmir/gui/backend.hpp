@@ -35,6 +35,11 @@ public:
     virtual ~PlatformScreen() = default;
     virtual std::string name() const = 0;
     virtual Size size() const = 0;
+    /// Physical size of the panel in millimetres, as reported by the backend
+    /// (connector EDID, wl_output geometry). {0, 0} when the backend does not
+    /// know it — Screen::ppi()/ppcm() are then 0 too, and layout code falls
+    /// back to pixel sizes.
+    virtual Size physicalSize() const { return Size{0, 0}; }
 };
 
 /// A native window created by a display backend.

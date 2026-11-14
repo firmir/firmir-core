@@ -14,6 +14,7 @@
 #include <headless_control.hpp>
 
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 
@@ -37,6 +38,9 @@ int main() {
     auto* platform = Firmir::Gui::Platform::instance();
     (void)platform;
     firmir_gui_headless_add_screen("WIN-1", 640, 480);
+    // 640x480 px on a 160x120 mm panel: 800 px diagonal over 20 cm, i.e.
+    // 40 px/cm and 101.6 ppi — a 9 mm touch target is 36 px.
+    firmir_gui_headless_set_screen_physical_size("WIN-1", 160, 120);
 
     WindowAppObjects objects = createWindowApp(platform->screens().front());
     CHECK(objects.root != nullptr);
@@ -53,6 +57,18 @@ int main() {
     CHECK(app->window() == objects.root);
     CHECK(app->screenWidth() == 640.0);
     CHECK(app->screenHeight() == 480.0);
+
+    // The window's density is bound in Firml (root.ppcm / root.ppi), so a
+    // millimetre-based layout follows its own screen.
+    const double ppcm = std::any_cast<double>(
+        objects.root->getProperty("pixelsPerCentimetre"));
+    CHECK(std::abs(ppcm - 40.0) < 0.01);
+    const double ppi = std::any_cast<double>(
+        objects.root->getProperty("pixelsPerInch"));
+    CHECK(std::abs(ppi - 101.6) < 0.05);
+    const double touchTarget = std::any_cast<double>(
+        objects.root->getProperty("touchTarget"));
+    CHECK(std::abs(touchTarget - 9.0 * ppcm) < 0.01);
 
     CHECK(objects.box != nullptr);
     CHECK(objects.box->x() == 5.0f);

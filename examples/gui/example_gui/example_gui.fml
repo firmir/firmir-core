@@ -16,6 +16,19 @@ Firmir.Gui.Window {
     width: Firmir.Gui.App.screenWidth / 2
     height: Firmir.Gui.App.screenHeight / 2
 
+    // Density-independent metrics: 1 mm in pixels. root.ppcm is pixels per
+    // centimetre, so a tenth of it is one millimetre. A finger needs a ~9 mm
+    // target: ~34 px on a 96 ppi display, ~106 px on a dense tablet panel, and
+    // the window controls below stay tappable on both. root.ppcm is 0 when the
+    // backend does not report the panel size, so fall back to 96 ppi
+    // (3.7795 px/mm); every binding re-evaluates when the window moves to
+    // another screen.
+    property number mm: root.ppcm > 0 ? root.ppcm / 10 : 3.7795
+    property number ctrlWidth: 9 * mm
+    property number ctrlHeight: 7 * mm
+    property number ctrlMargin: 1.5 * mm
+    property number ctrlFont: 3.2 * mm
+
     Firmir.Gui.Rectangle {
         anchors.fill: parent
         color: "#000000"
@@ -47,7 +60,11 @@ Firmir.Gui.Window {
         id: mainTimer
         running: true
         singleShot: false
-        interval: 1000
+        // Same as the animation duration below, so the next move starts when
+        // the previous one ends and the rectangle moves continuously. A longer
+        // interval (e.g. FIRMIR_EXAMPLE_TIMER_MS=1000) leaves the window idle
+        // between moves and shows the cold-start gap.
+        interval: 500
 
         onTimeout: {
             mainRect.x = root.width * 0.75 - mainRect.x
@@ -59,13 +76,14 @@ Firmir.Gui.Window {
     Button {
         id: closeButton
         text: "X"
-        width: 36
-        height: 28
+        width: root.ctrlWidth
+        height: root.ctrlHeight
+        fontSize: root.ctrlFont
         anchors {
             right: parent.right
             top: parent.top
-            rightMargin: 4
-            topMargin: 4
+            rightMargin: root.ctrlMargin
+            topMargin: root.ctrlMargin
         }
         onClicked: Firmir.Gui.App.close()
     }
@@ -73,13 +91,14 @@ Firmir.Gui.Window {
     Button {
         id: maximizeButton
         text: "[]"
-        width: 36
-        height: 28
+        width: root.ctrlWidth
+        height: root.ctrlHeight
+        fontSize: root.ctrlFont
         anchors {
             right: closeButton.left
             top: parent.top
-            rightMargin: 4
-            topMargin: 4
+            rightMargin: root.ctrlMargin
+            topMargin: root.ctrlMargin
         }
         onClicked: Firmir.Gui.App.toggleMaximized()
     }
@@ -87,13 +106,14 @@ Firmir.Gui.Window {
     Button {
         id: minimizeButton
         text: "_"
-        width: 36
-        height: 28
+        width: root.ctrlWidth
+        height: root.ctrlHeight
+        fontSize: root.ctrlFont
         anchors {
             right: maximizeButton.left
             top: parent.top
-            rightMargin: 4
-            topMargin: 4
+            rightMargin: root.ctrlMargin
+            topMargin: root.ctrlMargin
         }
         onClicked: Firmir.Gui.App.showMinimized()
     }

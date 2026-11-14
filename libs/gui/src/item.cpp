@@ -620,6 +620,13 @@ Item* Item::itemAt(float x, float y) const {
     for (auto it = kids.rbegin(); it != kids.rend(); ++it) {
         Item* child = *it;
         const Point local = child->mapFromParent({x, y});
+        // A clipped child shows nothing outside its own bounds, so a point
+        // outside it must not reach its children either (they may hang over
+        // the edge; the fullscreen frame inside a clipped desktop is such a
+        // case, and it must not swallow clicks meant for the taskbar below).
+        if (child->clip() &&
+            !RectF{0, 0, child->width(), child->height()}.contains(local.x, local.y))
+            continue;
         if (Item* hit = child->itemAt(local.x, local.y))
             return hit;
     }

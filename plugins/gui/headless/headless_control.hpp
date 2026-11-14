@@ -29,6 +29,12 @@ void firmir_gui_headless_add_screen(const char* name, int width, int height);
 /// Removes the screen named @p name (triggers signalScreenRemoved).
 void firmir_gui_headless_remove_screen(const char* name);
 
+/// Reports the physical size of the screen named @p name in millimetres, which
+/// is what Screen::ppi()/ppcm() derive from (headless screens report none by
+/// default, i.e. 0 ppi).
+void firmir_gui_headless_set_screen_physical_size(const char* name, int widthMm,
+                                                  int heightMm);
+
 /// Injects input events (delivered to the currently visible windows).
 void firmir_gui_headless_inject_mouse(int action, float x, float y,
                                       int button);
@@ -40,6 +46,13 @@ void firmir_gui_headless_inject_touch(int action, int id, float x, float y);
 
 /// Number of windows created through the backend.
 int firmir_gui_headless_window_count();
+/// Number of frames whose present() has been entered for window @p index.
+int firmir_gui_headless_present_count(int index);
+/// Makes present() of window @p index sleep @p milliseconds before it stores
+/// the frame (0 disables). Emulates a backend that waits for the display
+/// refresh, so tests can assert that a slow present does not block the GUI
+/// thread.
+void firmir_gui_headless_set_present_delay_ms(int index, int milliseconds);
 /// Copies the last presented frame of window @p index into @p outPixels
 /// (ARGB32, outSize receives the pixel size). Returns false when the window
 /// does not exist or no frame was presented yet.

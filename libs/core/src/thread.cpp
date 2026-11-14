@@ -1,5 +1,6 @@
 #include <firmir/thread.hpp>
 
+#include <firmir/log.hpp>
 #include <firmir/timer.hpp>
 
 #include "detail/bridge.hpp"
@@ -9,10 +10,13 @@
 
 #include <algorithm>
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
+#include <string>
 #include <system_error>
 #include <vector>
 
@@ -27,7 +31,38 @@ namespace Firmir {
 
 namespace {
 thread_local Thread* t_currentThread = nullptr;
+
+const LoggingCategory& lcThread() {
+    static const LoggingCategory category("thread");
+    return category;
 }
+
+/// FIRMIR_EVENTLOOP_TRACE=1 reports a handler that blocked the loop for more
+/// than 10 ms. A stalled loop delays every frame request of the thread, and the
+/// per-window frame trace only shows the resulting gap, not the handler behind
+/// it (a 1 s timer whose handler runs long, a slow input device, a task).
+template <typename Label, typename Handler>
+void dispatchTraced(bool traceSlow, Label&& label, Handler&& handler) {
+    if (!traceSlow) {
+        handler();
+        return;
+    }
+    const auto started = std::chrono::steady_clock::now();
+    handler();
+    const std::chrono::duration<double, std::milli> cost =
+        std::chrono::steady_clock::now() - started;
+    if (cost > std::chrono::milliseconds(10))
+        cLogWarning(lcThread()) << "event loop busy" << cost.count() << "ms in"
+                                << label();
+}
+
+bool eventLoopTraceEnabled() {
+    // Read every time instead of caching: the cost is a lookup in the
+    // environment (a few per millisecond at most) and tests can toggle it.
+    const char* value = std::getenv("FIRMIR_EVENTLOOP_TRACE");
+    return value && *value && std::string(value) != "0";
+}
+} // namespace
 
 Thread::Impl::Impl(Thread* owner, bool mainThread)
     : q(owner), isMain(mainThread), creatorId(std::this_thread::get_id()),
@@ -225,10 +260,17 @@ int Thread::Impl::execLoop() {
         }
         if (rc > WAIT_OBJECT_0 && rc - WAIT_OBJECT_0 < count) {
             const DWORD idx = rc - WAIT_OBJECT_0 - 1;
-            if (kinds[idx] == 0)
-                processTimerEvent(keys[idx]);
-            else
-                processNotifierEvent(keys[idx]);
+            dispatchTraced(
+                eventLoopTraceEnabled(),
+                [kind = kinds[idx]] {
+                    return std::string(kind == 0 ? "timer" : "notifier");
+                },
+                [&] {
+                    if (kinds[idx] == 0)
+                        processTimerEvent(keys[idx]);
+                    else
+                        processNotifierEvent(keys[idx]);
+                });
         }
     }
 #else
@@ -246,17 +288,28 @@ int Thread::Impl::execLoop() {
                 continue;
             break;
         }
+        const bool traceSlow = eventLoopTraceEnabled();
         for (int i = 0; i < count; ++i) {
             const int fd = events[i].data.fd;
             if (fd == wakeFd) {
-                std::uint64_t value = 0;
-                while (::read(wakeFd, &value, sizeof(value)) > 0) {
-                }
-                drainTasks();
-            } else if (timers.find(fd) != timers.end()) {
-                processTimerEvent(fd);
+                dispatchTraced(
+                    traceSlow, [] { return std::string("tasks"); }, [&] {
+                        std::uint64_t value = 0;
+                        while (::read(wakeFd, &value, sizeof(value)) > 0) {
+                        }
+                        drainTasks();
+                    });
+            } else if (const auto it = timers.find(fd); it != timers.end()) {
+                dispatchTraced(
+                    traceSlow,
+                    [intervalMs = it->second->intervalMs.load()] {
+                        return "timer " + std::to_string(intervalMs) + " ms";
+                    },
+                    [&] { processTimerEvent(fd); });
             } else {
-                processNotifierEvent(fd);
+                dispatchTraced(
+                    traceSlow, [fd] { return "notifier " + std::to_string(fd); },
+                    [&] { processNotifierEvent(fd); });
             }
         }
     }

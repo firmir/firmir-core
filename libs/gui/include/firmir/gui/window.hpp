@@ -43,6 +43,53 @@ public:
     /// Owning screen; nullptr after the screen was unplugged.
     Screen* screen() const;
 
+    /**
+     * @brief Moves the window to @p screen (nullptr detaches it).
+     *
+     * A native window belongs to one screen, so it is re-created there; the
+     * item tree, the focus and running animations stay. DPI-dependent layout
+     * re-evaluates through signalScreenChanged (bindings on Window.ppi/ppcm),
+     * and a visible window is shown on the new screen.
+     */
+    void setScreen(Screen* screen);
+
+    /**
+     * @brief Pixel density of the window's screen (Screen::ppi()/ppcm()).
+     *
+     * 0 when there is no screen or the backend does not report the physical
+     * panel size. Every window has its own screen, so density belongs here
+     * rather than to the application singleton: two windows of one app can sit
+     * on two panels with different densities.
+     *
+     * Exposed to Firml as the read-only Number properties "ppi" and "ppcm" of
+     * the window, and re-emitted on screen hotplug and on setScreen(), so a
+     * layout can be sized in millimetres:
+     *
+     *     property number mm: root.ppcm > 0 ? root.ppcm / 10 : 3.7795
+     *     width: 9 * mm      // a finger-sized touch target
+     *
+     * (ppcm is pixels per centimetre, so a tenth of it is one millimetre;
+     * 3.7795 px/mm is 96 ppi, the density that fixed pixel sizes assume.)
+     */
+    double ppi() const;
+    double ppcm() const;
+
+    /**
+     * @brief How much of its screen the window covers, 0..1.
+     *
+     * min(width / screen width, height / screen height); 1 when the window
+     * fills the screen or has none. Millimetre metrics describe a fullscreen
+     * window, so multiply them by this factor when the window only takes a
+     * part of the screen and the layout should keep its proportions instead
+     * of keeping the physical size:
+     *
+     *     property number mm: (root.ppcm > 0 ? root.ppcm / 10 : 3.7795) * root.uiScale
+     *
+     * Read-only Number property "uiScale", re-emitted when the window is
+     * resized and when it moves to another screen.
+     */
+    double uiScale() const;
+
     std::string title() const;
     void setTitle(const std::string& title);
 
@@ -91,10 +138,24 @@ public:
     /// Signal "frameRendered" — emitted from the render thread after each
     /// presented frame.
     static constexpr auto signalFrameRendered = "frameRendered";
+    /// Signal "screenChanged" — (Screen* screen, nullptr when the screen went
+    /// away), GUI thread. Emitted by setScreen() and when the window's screen
+    /// is unplugged; re-evaluate DPI-dependent layout here.
+    static constexpr auto signalScreenChanged = "screenChanged";
     /// Signal "visibilityChanged" — (bool visible), GUI thread.
     static constexpr auto signalVisibilityChanged = "visibilityChanged";
 
 private:
+    /// Handler of the current screen's signalRemoved: the screen object is
+    /// already going away, so the window only drops it.
+    void screenRemoved();
+
+    /// Re-emits "ppi"/"ppcm"/"uiScale" (Firml bindings on the metrics
+    /// re-evaluate).
+    void notifyDensityChanged();
+    /// The density/scale properties are read-only.
+    void rejectMetricWrite(double value);
+
     /// Input dispatch entry points used by Platform. GUI thread only.
     void dispatchMouse(MouseEvent& event);
     void watchGrabbedItem(Item* item);

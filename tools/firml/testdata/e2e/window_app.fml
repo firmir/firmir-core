@@ -12,6 +12,12 @@ Firmir.Gui.Window {
     width: Firmir.Gui.App.screenWidth / 2
     height: Firmir.Gui.App.screenHeight / 2
 
+    // Density of the window's own screen (Window.ppi/ppcm), so the e2e can
+    // check that millimetre-based layout reads the right panel.
+    property number pixelsPerCentimetre: root.ppcm
+    property number pixelsPerInch: root.ppi
+    property number touchTarget: 9 * (root.ppcm > 0 ? root.ppcm : 3.7795)
+
     Firmir.Gui.Rectangle {
         anchors.fill: parent
         color: "#000000"

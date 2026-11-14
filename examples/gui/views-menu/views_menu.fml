@@ -16,8 +16,26 @@
 Firmir.Gui.Window {
     id: root
     title: "views-menu"
-    width: 400
-    height: 300
+
+    // Density-independent metrics: baseMm is 1 mm in pixels (ppcm is pixels
+    // per centimetre, so a tenth of it is one millimetre; 96 ppi is the
+    // fallback when the backend does not report the panel size).
+    property number baseMm: root.ppcm > 0 ? root.ppcm / 10 : 3.7795
+    // fit is how much of the screen the window covers (Window.uiScale),
+    // floored at 3/4 so the text stays readable in a small window: the menu
+    // keeps its proportions in a window smaller than the screen.
+    property number fit: root.uiScale < 0.75 ? 0.75 : root.uiScale
+    property number mm: root.baseMm * root.fit
+
+    // Sized in millimetres, so the window is as large on a dense panel as it
+    // is on a 96 ppi display (400x300 px there).
+    width: 106 * baseMm
+    height: 79 * baseMm
+
+    property number ctrlWidth: 9 * mm
+    property number ctrlHeight: 7 * mm
+    property number ctrlMargin: 1.5 * mm
+    property number ctrlFont: 3.2 * mm
 
     ListModel {
         id: viewList
@@ -42,71 +60,73 @@ Firmir.Gui.Window {
 
     Rectangle {
         id: greetingView
-        x: 150
-        y: 52
-        width: 234
-        height: 232
+        x: menu.x + menu.width + 4 * root.mm
+        y: root.ctrlHeight + 3 * root.mm
+        width: parent.width - x - 4 * root.mm
+        height: parent.height - y - 4 * root.mm
         color: "#C0392B"
         Text {
             text: "Hello, Firml!"
             color: "#FFFFFF"
-            fontSize: 16
+            fontSize: root.ctrlFont * 1.6
             anchors.centerIn: parent
         }
     }
 
     Rectangle {
         id: paletteView
-        x: 150
-        y: 52
-        width: 234
-        height: 232
+        x: greetingView.x
+        y: greetingView.y
+        width: greetingView.width
+        height: greetingView.height
         color: "#204080"
         visible: false
         Text {
             text: "Second view"
             color: "#FFFFFF"
-            fontSize: 24
+            fontSize: root.ctrlFont * 2.2
             anchors.centerIn: parent
         }
     }
 
     Rectangle {
         id: aboutView
-        x: 150
-        y: 52
-        width: 234
-        height: 232
+        x: greetingView.x
+        y: greetingView.y
+        width: greetingView.width
+        height: greetingView.height
         color: "#30363F"
         visible: false
         Text {
             text: "views-menu: FML logic"
             color: "#FFFFFF"
-            fontSize: 14
+            fontSize: root.ctrlFont * 1.3
             anchors.centerIn: parent
         }
     }
 
     Column {
-        x: 16
-        y: 16
-        spacing: 8
+        id: menu
+        x: 4 * root.mm
+        y: 4 * root.mm
+        width: 29 * root.mm
+        spacing: 2 * root.mm
 
         Text {
             text: "Views"
             color: "#FFFFFF"
-            fontSize: 20
-            width: 110
-            height: 28
+            fontSize: root.ctrlFont * 1.6
+            width: menu.width
+            height: 7 * root.mm
         }
 
         Repeater {
             model: viewList
             Button {
-                width: 110
-                height: 36
+                width: menu.width
+                height: 9 * root.mm
                 text: model.title
-                fontSize: 15
+                fontSize: root.ctrlFont
                 color: pressed ? "#50627A" : "#3A4A5C"
                 textColor: "#FFFFFF"
                 onClicked: {
@@ -122,13 +142,14 @@ Firmir.Gui.Window {
     Button {
         id: closeButton
         text: "X"
-        width: 36
-        height: 28
+        width: root.ctrlWidth
+        height: root.ctrlHeight
+        fontSize: root.ctrlFont
         anchors {
             right: parent.right
             top: parent.top
-            rightMargin: 4
-            topMargin: 4
+            rightMargin: root.ctrlMargin
+            topMargin: root.ctrlMargin
         }
         onClicked: Firmir.Gui.App.close()
     }
@@ -136,13 +157,14 @@ Firmir.Gui.Window {
     Button {
         id: maximizeButton
         text: "[]"
-        width: 36
-        height: 28
+        width: root.ctrlWidth
+        height: root.ctrlHeight
+        fontSize: root.ctrlFont
         anchors {
             right: closeButton.left
             top: parent.top
-            rightMargin: 4
-            topMargin: 4
+            rightMargin: root.ctrlMargin
+            topMargin: root.ctrlMargin
         }
         onClicked: Firmir.Gui.App.toggleMaximized()
     }
@@ -150,13 +172,14 @@ Firmir.Gui.Window {
     Button {
         id: minimizeButton
         text: "_"
-        width: 36
-        height: 28
+        width: root.ctrlWidth
+        height: root.ctrlHeight
+        fontSize: root.ctrlFont
         anchors {
             right: maximizeButton.left
             top: parent.top
-            rightMargin: 4
-            topMargin: 4
+            rightMargin: root.ctrlMargin
+            topMargin: root.ctrlMargin
         }
         onClicked: Firmir.Gui.App.showMinimized()
     }

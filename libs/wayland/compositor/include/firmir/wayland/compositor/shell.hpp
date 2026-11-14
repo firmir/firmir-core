@@ -83,7 +83,12 @@ public:
     void sendClose();
     void setMaximized(bool maximized);
     void setFullscreen(bool fullscreen);
+    /// Records the client's xdg_toplevel.set_minimized request; the
+    /// compositor consumes it with takeMinimizeRequest() and applies its own
+    /// minimize policy (animation, taskbar entry, ...).
     void setMinimized();
+    /// True once per client minimize request.
+    bool takeMinimizeRequest();
     bool maximized() const;
     bool fullscreen() const;
     /// The xdg_surface this toplevel role belongs to (nullptr for orphaned

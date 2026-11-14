@@ -125,6 +125,12 @@ public:
     void setModel(std::string value);
     Size size() const;
     void setSize(Size size);
+    /// Physical panel size in millimetres, reported to clients through
+    /// wl_output.geometry so their millimetre-based layout matches the panel;
+    /// {0, 0} (the default) means "unknown" and clients use their own default
+    /// density.
+    Size physicalSize() const;
+    void setPhysicalSize(Size size);
     int scale() const;
     void setScale(int scale);
     WaylandOutputMode currentMode() const;

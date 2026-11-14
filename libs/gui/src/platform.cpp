@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <string>
+#include <vector>
 #include <firmir/detail/dynload.hpp>
 #include <firmir/gui/detail/backendselection.hpp>
 #include <firmir/thread.hpp>
@@ -13,6 +15,7 @@
 #include <stdexcept>
 #ifndef _WIN32
 #include <cstring>
+#include <dirent.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -40,12 +43,12 @@ public:
     bool added;
 };
 
-/// Posted to Platform when an input backend reports an event off-thread.
-class PlatformInputEvent : public Event {
+/// Posted to Platform when input queued from a backend thread must be
+/// dispatched on the GUI thread (see Impl::postInput). Carries no payload:
+/// the queue is the payload, so a burst of backend events needs one wakeup.
+class InputReadyEvent : public Event {
 public:
-    explicit PlatformInputEvent(const InputEvent& input)
-        : Event(InputEventType), input(input) {}
-    InputEvent input;
+    InputReadyEvent() : Event(InputEventType) {}
 };
 
 /// Directories searched for firmir-gui-<name> plugins (.so/.dll):
@@ -63,22 +66,12 @@ std::vector<std::string> pluginDirs() {
 }
 
 #ifndef _WIN32
-/// True when a Wayland compositor accepts connections: $WAYLAND_DISPLAY
-/// (absolute, or relative to $XDG_RUNTIME_DIR; default wayland-0) must exist
-/// and be connectable. A stale socket file counts as "no compositor" so the
-/// next backend of the list is tried instead of failing with "no screens".
-bool waylandCompositorAvailable() {
-    const char* display = std::getenv("WAYLAND_DISPLAY");
-    std::string socket = display && *display ? display : "";
-    if (socket.empty() || socket.front() != '/') {
-        const char* runtimeDir = std::getenv("XDG_RUNTIME_DIR");
-        if (!runtimeDir || !*runtimeDir)
-            return false;
-        socket = std::string(runtimeDir) + "/" +
-                 (socket.empty() ? std::string("wayland-0") : socket);
-    }
+/// True when @p socket accepts a connection. A stale socket file counts as
+/// "no compositor" so the next backend of the list is tried instead of failing
+/// with "no screens".
+bool waylandSocketConnectable(const std::string& socket) {
     sockaddr_un address{};
-    if (socket.size() >= sizeof(address.sun_path))
+    if (socket.empty() || socket.size() >= sizeof(address.sun_path))
         return false;
     address.sun_family = AF_UNIX;
     std::memcpy(address.sun_path, socket.c_str(), socket.size() + 1);
@@ -89,6 +82,61 @@ bool waylandCompositorAvailable() {
         ::connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
     ::close(fd);
     return connected;
+}
+
+/// Wayland sockets of the compositors in @p directory (files named
+/// "wayland-N", sorted by name).
+std::vector<std::string> waylandSocketsIn(const std::string& directory) {
+    std::vector<std::string> sockets;
+    DIR* dir = ::opendir(directory.c_str());
+    if (!dir)
+        return sockets;
+    while (const dirent* entry = ::readdir(dir)) {
+        const std::string name = entry->d_name;
+        // "wayland-0" and friends; skip "wayland-0.lock" and dot files.
+        if (name.compare(0, 8, "wayland-") != 0 || name.find('.') != std::string::npos)
+            continue;
+        sockets.push_back(directory + "/" + name);
+    }
+    ::closedir(dir);
+    std::sort(sockets.begin(), sockets.end());
+    return sockets;
+}
+
+/// True when a Wayland compositor accepts connections, $WAYLAND_DISPLAY
+/// (absolute, or relative to $XDG_RUNTIME_DIR; default wayland-0) must exist
+/// and be connectable. When $WAYLAND_DISPLAY is not set, the sockets the
+/// compositors in /run/display create are probed; the first connectable one is
+/// exported as $WAYLAND_DISPLAY so the client library connects to the same
+/// compositor. A stale socket file counts as "no compositor" so the next
+/// backend of the list is tried instead of failing with "no screens".
+bool waylandCompositorAvailable() {
+    const char* display = std::getenv("WAYLAND_DISPLAY");
+    std::string socket = display && *display ? display : "";
+    if (socket.empty()) {
+        // No explicit socket: /run/display is where the firmir compositor
+        // creates its socket, so an app started there finds it without any
+        // WAYLAND_DISPLAY in the environment.
+        for (const std::string& candidate : waylandSocketsIn("/run/display")) {
+            if (!waylandSocketConnectable(candidate))
+                continue;
+            // libwayland reads the variable (an absolute path is the socket
+            // itself), so the backend later connects to the same compositor.
+            ::setenv("WAYLAND_DISPLAY", candidate.c_str(), 1);
+            return true;
+        }
+        const char* runtimeDir = std::getenv("XDG_RUNTIME_DIR");
+        if (!runtimeDir || !*runtimeDir)
+            return false;
+        return waylandSocketConnectable(std::string(runtimeDir) + "/wayland-0");
+    }
+    if (socket.front() != '/') {
+        const char* runtimeDir = std::getenv("XDG_RUNTIME_DIR");
+        if (!runtimeDir || !*runtimeDir)
+            return false;
+        socket = std::string(runtimeDir) + "/" + socket;
+    }
+    return waylandSocketConnectable(socket);
 }
 
 /// True when at least one /dev/dri/cardN device node exists.
@@ -123,6 +171,14 @@ public:
     void handleScreenChanged(Platform* q, PlatformScreen* backendScreen,
                              bool added);
     void routeInput(Platform* q, const InputEvent& event);
+    /// Queues an event reported from a backend thread and wakes the GUI
+    /// thread; see the note on the queue members below. Thread-safe.
+    void postInput(Platform* q, const InputEvent& event);
+    /// Dispatches the queued events on the GUI thread (InputReadyEvent).
+    void drainInput(Platform* q);
+    /// Appends @p event to the queue, folding it into the queued tail when a
+    /// newer position makes that tail obsolete. Caller holds inputMutex.
+    void appendQueued(const InputEvent& event);
     PlatformScreen* backendFor(Screen* screen) const;
     /// Tells the input backend the size of the primary screen (absolute
     /// devices such as evdev touchscreens are scaled to it).
@@ -139,8 +195,77 @@ public:
     /// GUI thread only, cleared by removeWindow().
     Window* mouseWindow = nullptr;
     Window* touchWindow = nullptr;
+    /// Input reported by backend threads (evdev reader, Wayland dispatch
+    /// thread) is queued here and dispatched on the GUI thread by a single
+    /// posted wakeup. Blocking those threads on the scene mutex — which the
+    /// render thread holds while painting — made a fast drag queue up seconds
+    /// of stale motion events: the window trailed the finger and only caught
+    /// up after the finger stopped.
+    std::mutex inputMutex;
+    std::vector<InputEvent> inputQueue;
+    bool inputWakeupPosted = false;
     mutable std::mutex mutex; // guards screenMap and windows
 };
+
+void Platform::Impl::appendQueued(const InputEvent& event) {
+    if (inputQueue.empty()) {
+        inputQueue.push_back(event);
+        return;
+    }
+    // Only positions are coalesced, and only against the queued tail, so the
+    // order of presses/releases/keys is never changed.
+    const bool tailIsMouseMove =
+        inputQueue.back().type == InputEvent::Type::Mouse &&
+        inputQueue.back().mouse.action == MouseEvent::Action::Move;
+    if (event.type == InputEvent::Type::Mouse &&
+        event.mouse.action == MouseEvent::Action::Move && tailIsMouseMove) {
+        inputQueue.back() = event;
+        return;
+    }
+    if (event.type == InputEvent::Type::Touch &&
+        !event.touch.points.empty() &&
+        event.touch.action != TouchEvent::Action::Begin) {
+        const int id = event.touch.points.front().id;
+        // The new position supersedes the queued updates of the same
+        // contact; the Begin keeps its place, and the End is appended so the
+        // grab is released in order.
+        while (!inputQueue.empty()) {
+            const InputEvent& tail = inputQueue.back();
+            if (tail.type != InputEvent::Type::Touch ||
+                tail.touch.action != TouchEvent::Action::Update ||
+                tail.touch.points.empty() ||
+                tail.touch.points.front().id != id)
+                break;
+            inputQueue.pop_back();
+        }
+    }
+    inputQueue.push_back(event);
+}
+
+void Platform::Impl::postInput(Platform* q, const InputEvent& event) {
+    bool wake = false;
+    {
+        std::lock_guard<std::mutex> lock(inputMutex);
+        appendQueued(event);
+        if (!inputWakeupPosted) {
+            inputWakeupPosted = true;
+            wake = true;
+        }
+    }
+    if (wake)
+        Object::postEvent(q, std::make_unique<InputReadyEvent>());
+}
+
+void Platform::Impl::drainInput(Platform* q) {
+    std::vector<InputEvent> events;
+    {
+        std::lock_guard<std::mutex> lock(inputMutex);
+        events.swap(inputQueue);
+        inputWakeupPosted = false;
+    }
+    for (const InputEvent& event : events)
+        routeInput(q, event);
+}
 
 void Platform::Impl::loadBackends(Platform* q) {
     // Backends: FIRMIR_GUI_DISPLAY / FIRMIR_GUI_INPUT pin a single backend,
@@ -239,8 +364,7 @@ void Platform::Impl::loadBackends(Platform* q) {
                 if (Thread::currentThread() == q->thread())
                     q->d->routeInput(q, event);
                 else
-                    Object::postEvent(
-                        q, std::make_unique<PlatformInputEvent>(event));
+                    q->d->postInput(q, event);
             };
         }
     }
@@ -434,8 +558,7 @@ bool Platform::event(Event& event) {
         return true;
     }
     if (event.type() == InputEventType) {
-        auto& e = static_cast<PlatformInputEvent&>(event);
-        d->routeInput(this, e.input);
+        d->drainInput(this);
         return true;
     }
     return Object::event(event);

@@ -35,6 +35,21 @@ Firmir.Gui.Window {
     width: App.screenWidth / 3
     height: App.screenHeight / 3
 
+    // Density-independent metrics: 1 mm in pixels. ppcm is pixels per
+    // centimetre, so a tenth of it is one millimetre; 96 ppi is the fallback
+    // when the backend does not report the panel size. The window controls, the
+    // page headers and the menu stay finger-sized on a dense panel and
+    // unchanged on a desktop display; every binding re-evaluates when the
+    // window is moved to another screen. The demo widgets on the pages keep
+    // their pixel sizes.
+    property number mm: root.ppcm > 0 ? root.ppcm / 10 : 3.7795
+    property number ctrlWidth: 9 * mm
+    property number ctrlHeight: 7 * mm
+    property number ctrlMargin: 1.5 * mm
+    property number ctrlFont: 3.2 * mm
+    property number navWidth: 25 * mm
+    property number navHeight: 9 * mm
+
     GalleryApp {
         id: gallery
     }
@@ -63,47 +78,50 @@ Firmir.Gui.Window {
 
     // Header: title + window controls.
     Text {
-        x: 12
-        y: 10
-        fontSize: 20
+        x: 3 * root.mm
+        y: 2.5 * root.mm
+        fontSize: root.ctrlFont * 1.6
         color: "#F5F8FC"
         text: "Firmir Controls Gallery"
     }
     Button {
         id: closeButton
-        width: 36
-        height: 32
+        width: root.ctrlWidth
+        height: root.ctrlHeight
+        fontSize: root.ctrlFont
         text: "X"
         anchors {
             right: parent.right
             top: parent.top
-            rightMargin: 6
-            topMargin: 6
+            rightMargin: root.ctrlMargin
+            topMargin: root.ctrlMargin
         }
         onClicked: App.close()
     }
     Button {
         id: maxButton
-        width: 36
-        height: 32
+        width: root.ctrlWidth
+        height: root.ctrlHeight
+        fontSize: root.ctrlFont
         text: "[]"
         anchors {
             right: closeButton.left
             top: parent.top
-            rightMargin: 4
-            topMargin: 6
+            rightMargin: root.ctrlMargin
+            topMargin: root.ctrlMargin
         }
         onClicked: App.toggleMaximized()
     }
     Button {
-        width: 36
-        height: 32
+        width: root.ctrlWidth
+        height: root.ctrlHeight
+        fontSize: root.ctrlFont
         text: "_"
         anchors {
             right: maxButton.left
             top: parent.top
-            rightMargin: 4
-            topMargin: 6
+            rightMargin: root.ctrlMargin
+            topMargin: root.ctrlMargin
         }
         onClicked: App.showMinimized()
     }
@@ -116,13 +134,13 @@ Firmir.Gui.Window {
             right: parent.right
             top: parent.top
             bottom: parent.bottom
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
             leftMargin: 8
             rightMargin: 8
         }
         visible: gallery.page == -1
-        contentWidth: 720
-        contentHeight: 380
+        contentWidth: 4 * 44 * root.mm + 3 * 10 + 20
+        contentHeight: 4 * 9 * root.mm + 3 * 10 + 20
 
         Grid {
             columns: 4
@@ -130,8 +148,9 @@ Firmir.Gui.Window {
             Repeater {
                 model: menuModel
                 Button {
-                    width: 165
-                    height: 36
+                    width: 44 * root.mm
+                    height: 9 * root.mm
+                    fontSize: root.ctrlFont
                     text: model.label
                     onClicked: gallery.showPage(index)
                 }
@@ -143,7 +162,7 @@ Firmir.Gui.Window {
     Item {
         anchors {
             fill: parent
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
         }
         visible: gallery.page == 0
         property number clicks: 0
@@ -151,8 +170,9 @@ Firmir.Gui.Window {
         Button {
             x: 8
             y: 8
-            width: 96
-            height: 32
+            width: root.navWidth
+            height: root.navHeight
+            fontSize: root.ctrlFont
             text: "< Menu"
             onClicked: gallery.showMenu()
         }
@@ -199,15 +219,16 @@ Firmir.Gui.Window {
     Item {
         anchors {
             fill: parent
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
         }
         visible: gallery.page == 1
 
         Button {
             x: 8
             y: 8
-            width: 96
-            height: 32
+            width: root.navWidth
+            height: root.navHeight
+            fontSize: root.ctrlFont
             text: "< Menu"
             onClicked: gallery.showMenu()
         }
@@ -262,15 +283,16 @@ Firmir.Gui.Window {
     Item {
         anchors {
             fill: parent
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
         }
         visible: gallery.page == 2
 
         Button {
             x: 8
             y: 8
-            width: 96
-            height: 32
+            width: root.navWidth
+            height: root.navHeight
+            fontSize: root.ctrlFont
             text: "< Menu"
             onClicked: gallery.showMenu()
         }
@@ -317,15 +339,16 @@ Firmir.Gui.Window {
     Item {
         anchors {
             fill: parent
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
         }
         visible: gallery.page == 3
 
         Button {
             x: 8
             y: 8
-            width: 96
-            height: 32
+            width: root.navWidth
+            height: root.navHeight
+            fontSize: root.ctrlFont
             text: "< Menu"
             onClicked: gallery.showMenu()
         }
@@ -370,15 +393,16 @@ Firmir.Gui.Window {
     Item {
         anchors {
             fill: parent
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
         }
         visible: gallery.page == 4
 
         Button {
             x: 8
             y: 8
-            width: 96
-            height: 32
+            width: root.navWidth
+            height: root.navHeight
+            fontSize: root.ctrlFont
             text: "< Menu"
             onClicked: gallery.showMenu()
         }
@@ -439,15 +463,16 @@ Firmir.Gui.Window {
     Item {
         anchors {
             fill: parent
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
         }
         visible: gallery.page == 5
 
         Button {
             x: 8
             y: 8
-            width: 96
-            height: 32
+            width: root.navWidth
+            height: root.navHeight
+            fontSize: root.ctrlFont
             text: "< Menu"
             onClicked: gallery.showMenu()
         }
@@ -518,15 +543,16 @@ Firmir.Gui.Window {
     Item {
         anchors {
             fill: parent
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
         }
         visible: gallery.page == 6
 
         Button {
             x: 8
             y: 8
-            width: 96
-            height: 32
+            width: root.navWidth
+            height: root.navHeight
+            fontSize: root.ctrlFont
             text: "< Menu"
             onClicked: gallery.showMenu()
         }
@@ -595,15 +621,16 @@ Firmir.Gui.Window {
     Item {
         anchors {
             fill: parent
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
         }
         visible: gallery.page == 7
 
         Button {
             x: 8
             y: 8
-            width: 96
-            height: 32
+            width: root.navWidth
+            height: root.navHeight
+            fontSize: root.ctrlFont
             text: "< Menu"
             onClicked: gallery.showMenu()
         }
@@ -664,15 +691,16 @@ Firmir.Gui.Window {
     Item {
         anchors {
             fill: parent
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
         }
         visible: gallery.page == 8
 
         Button {
             x: 8
             y: 8
-            width: 96
-            height: 32
+            width: root.navWidth
+            height: root.navHeight
+            fontSize: root.ctrlFont
             text: "< Menu"
             onClicked: gallery.showMenu()
         }
@@ -710,15 +738,16 @@ Firmir.Gui.Window {
     Item {
         anchors {
             fill: parent
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
         }
         visible: gallery.page == 9
 
         Button {
             x: 8
             y: 8
-            width: 96
-            height: 32
+            width: root.navWidth
+            height: root.navHeight
+            fontSize: root.ctrlFont
             text: "< Menu"
             onClicked: gallery.showMenu()
         }
@@ -765,15 +794,16 @@ Firmir.Gui.Window {
     Item {
         anchors {
             fill: parent
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
         }
         visible: gallery.page == 10
 
         Button {
             x: 8
             y: 8
-            width: 96
-            height: 32
+            width: root.navWidth
+            height: root.navHeight
+            fontSize: root.ctrlFont
             text: "< Menu"
             onClicked: gallery.showMenu()
         }
@@ -827,15 +857,16 @@ Firmir.Gui.Window {
     Item {
         anchors {
             fill: parent
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
         }
         visible: gallery.page == 11
 
         Button {
             x: 8
             y: 8
-            width: 96
-            height: 32
+            width: root.navWidth
+            height: root.navHeight
+            fontSize: root.ctrlFont
             text: "< Menu"
             onClicked: gallery.showMenu()
         }
@@ -876,15 +907,16 @@ Firmir.Gui.Window {
     Item {
         anchors {
             fill: parent
-            topMargin: 46
+            topMargin: root.ctrlHeight + 5 * root.mm
         }
         visible: gallery.page == 12
 
         Button {
             x: 8
             y: 8
-            width: 96
-            height: 32
+            width: root.navWidth
+            height: root.navHeight
+            fontSize: root.ctrlFont
             text: "< Menu"
             onClicked: gallery.showMenu()
         }
