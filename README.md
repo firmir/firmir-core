@@ -299,6 +299,52 @@ headless-ввод (события реальных устройств без э�
 fallback'а и без проверки устройства) и перекрывают список. Неизвестное имя в
 списке даёт предупреждение `unknown backend in FIRMIR_GUI_BACKENDS`.
 
+### evdev
+
+Input-бэкенд `evdev` читает `/dev/input/event*` напрямую (raw ioctl'ы, без
+libinput) и следит за hotplug через inotify. Диагностика включается переменной
+`FIRMIR_EVDEV_DEBUG`:
+
+```sh
+FIRMIR_EVDEV_DEBUG=1 ./app       # список устройств: путь, name, phys, тип
+                                 # (touchscreen/mouse/keyboard), оси и их диапазоны
+FIRMIR_EVDEV_DEBUG=events ./app  # ... и каждое прочитанное событие
+```
+
+Строка на устройство выглядит так:
+
+```
+[gui.evdev] /dev/input/event2 "Goodix Capacitive TouchScreen" phys=... \
+    type touchscreen EV_KEY,EV_ABS abs-x 53 [0..1199] abs-y 54 [0..1999] \
+    resolution 12 13 direct multi-touch btn-touch
+```
+
+Тачскрин отдаёт координаты в своих единицах, а не в пикселях, поэтому бэкенд
+масштабирует их на размер основного экрана (его сообщает Platform через
+`InputBackend::setScreenSize`) и при необходимости поворачивает/зеркалит.
+Диапазоны берутся из `EVIOCGABS`. Ориентация по умолчанию — `auto`: если
+соотношение сторон дигитайзера не совпадает с экраном (портретный экран и
+landscape-дигитайзер), оси меняются местами, что и даёт «тачскрин повёрнут на
+90°». Остальное задаётся явно:
+
+```sh
+FIRMIR_EVDEV_TOUCH_ROTATION=auto|0|90|180|270   # default auto
+FIRMIR_EVDEV_TOUCH_FLIP=none|x|y|both           # default none
+FIRMIR_EVDEV_TOUCH_DEVICE=/dev/input/event2     # только этот узел — дигитайзер
+```
+
+Что получилось, видно в логе при первом касании (и при смене размера экрана):
+
+```
+[gui.evdev] /dev/input/event2 "Goodix ..." touch x[0..1199] y[0..1999] \
+    mapped to 1200 2000 rotation 0 (auto) - if taps land elsewhere, set ...
+```
+
+Если после смены ориентации нажатия зеркальны, помогает
+`FIRMIR_EVDEV_TOUCH_FLIP=x|y|both`, если повёрнуты на 90° в другую сторону —
+`FIRMIR_EVDEV_TOUCH_ROTATION=270`. Геометрия отображения считается в
+`plugins/gui/evdev/touchmapping.hpp` и покрыта `tests/gui/test_evdev_touch.cpp`.
+
 ### eglfs
 
 `eglfs` — полноэкранный бэкенд без композитора: сам плагин
@@ -319,9 +365,19 @@ FIRMIR_EGLFS_KMS_DEVICE=/dev/dri/card0 \        # default; альтернати�
 ./build/examples/gui/firmir-example-gui-animation
 ```
 
-Интеграция `kms` требует DRM master (свободная VT или CAP_SYS_ADMIN). Окно
-всегда занимает весь вывод: кадр другого размера растягивается на режим (в
-логе — `stretching to fullscreen`), как это делает eglfs.
+Интеграция `kms` требует DRM master (свободная VT или CAP_SYS_ADMIN). Размер
+окна не «растягивается»: окно получает размер вывода — при показе бэкенд
+сообщает окну размер режима (`output size WxH given to the window`), окно
+меняет геометрию, и приложение (Firml-bindings на `width`/`height`) раскладывает
+контент под него. Кадр рисуется 1:1. Если приложение всё же просит другой
+размер (`Window::resize()`), окно его сохраняет: при наличии режима ровно
+такого размера вывод переключается на него (`window size WxH - switched the
+output mode to match`), иначе кадр рисуется 1:1 по центру вывода (`drawn 1:1 at
+...`, поля чёрные), а кадр больше вывода — уменьшается до вписывания с
+сохранением пропорций. `FIRMIR_GUI_KMS_SCALING=stretch` возвращает прежнее
+поведение (растянуть кадр на весь вывод). Геометрия окна → режим/позиция
+считается в `firmir/gui/detail/kmslayout.hpp` (`kmsFindMode()`,
+`kmsFrameRect()`), покрыто `tests/gui/test_kms_layout.cpp`.
 ABI подплагинов описан в `<firmir/gui/eglfsintegration.hpp>`: интеграция
 экспортирует `firmir_eglfs_create_integration()` и
 `firmir_eglfs_integration_abi()`.
@@ -338,6 +394,43 @@ kernel требует буфер под каждое ненулевое поле
 `FIRMIR_RENDER_PLUGIN_PATH` (по умолчанию `build/plugins/render`), выбор —
 `FIRMIR_RENDER_BACKEND` (по умолчанию — первый из `vulkan`, `opengl`,
 `soft`, который загрузился и смог создать device).
+
+Бэкенд `opengl` выбирает EGL-дисплей под окружение: при наличии
+`DISPLAY`/`WAYLAND_DISPLAY` — обычный default display, иначе GPU берётся через
+DRM-узел (платформа gbm, затем device) или surfaceless. Поэтому он
+инициализируется и на голой консоли (eglfs), где
+`eglInitialize(EGL_DEFAULT_DISPLAY)` падает с `XDG_RUNTIME_DIR is invalid or
+not set`. Выбранный вариант виден в логе: `render.opengl: EGL display: <...>`.
+
+### Ввод: указатель и тач
+
+Мышь и тач идут одним путём: input-бэкенд → `Platform::routeInput` →
+`Window::dispatchMouse`/`Window::dispatchTouch` → item под точкой и вверх по
+родителям, пока кто-нибудь не сделает `event.accepted = true`.
+
+Нажатие (мышиный `Press` или touch `Begin`) забирает указатель: элемент,
+принявший его, получает все последующие `Move`/`Update` и `Release`/`End` —
+даже если палец или курсор уже вышел за его границы. То же на уровне окна:
+`Release`/`End` вне геометрии окна не теряется, а уходит в окно, принявшее
+нажатие. Поэтому кнопка не остаётся «зажатой», если отпустить палец в стороне:
+`pressed` сбрасывается, клик не срабатывает (release был вне кнопки), а
+подсветка нажатия снимается сразу, как только палец ушёл с кнопки.
+
+Для тача учитывается `TouchPoint::id`: второй палец обслуживается сам по себе
+и не отбирает захват у первого (в окне хранится один захваченный контакт).
+Захват живёт до `End`/`Release` или до удаления item'а.
+
+### Анимации
+
+Все анимации потока тикают от одного общего такта (`AnimationFrameDriver`,
+интервал 8 мс), а не от таймера на каждую анимацию. Такт открывает «батч»
+обновлений сцены: окно просят отрисовать один раз, когда все свойства такта
+уже записаны. Без этого `x` и `y`, анимируемые двумя отдельными анимациями,
+попадали в разные кадры — диагональное движение выглядело лесенкой
+(дёргалось). Такт намеренно чаще частоты обновления экрана (60–120 Гц):
+значения считаются от стенных часов, поэтому каждый показанный кадр берёт
+свежую позицию, а более редкий такт давал бы кадры с двойным шагом.
+Длительность анимации при этом точная: прогресс = прошло / duration.
 
 ## Тестовое покрытие
 

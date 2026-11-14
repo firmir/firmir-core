@@ -131,6 +131,8 @@ public:
     Item* focusItem = nullptr;
     Item* hoverItem = nullptr;   // deepest item under the cursor (moves)
     Item* mouseGrabber = nullptr; // item that accepted the current press
+    Item* touchGrabber = nullptr; // item that accepted the current contact
+    int touchGrabberId = 0;       // TouchPoint::id of that contact
 };
 
 void Window::Impl::renderFrame() {
@@ -235,6 +237,7 @@ Window::Window(Screen* screen, Object* parent)
 }
 
 Window::~Window() {
+    detail::forgetBatchedWindow(this);
     Platform::instance()->removeWindow(this);
     d->renderThread->stop();
     d->renderThread->quit();
@@ -457,12 +460,17 @@ void Window::dispatchMouse(MouseEvent& event) {
     }
 }
 
-/// Clears the grabber/hover pointers when the pointed-at item dies (e.g. a
-/// Repeater rebuild deleting the delegate under the cursor).
+/// Clears the grabbers/hover pointer when the pointed-at item dies (e.g. a
+/// Repeater rebuild deleting the delegate under the cursor, or the button
+/// itself going away mid-drag).
 void Window::watchGrabbedItem(Item* item) {
-    item->connect(this, Object::signalDestroyed, [this] {
-        d->mouseGrabber = nullptr;
-        d->hoverItem = nullptr;
+    item->connect(this, Object::signalDestroyed, [this, item] {
+        if (d->mouseGrabber == item)
+            d->mouseGrabber = nullptr;
+        if (d->hoverItem == item)
+            d->hoverItem = nullptr;
+        if (d->touchGrabber == item)
+            d->touchGrabber = nullptr;
     });
 }
 
@@ -470,19 +478,44 @@ void Window::dispatchTouch(TouchEvent& event) {
     std::lock_guard<std::recursive_mutex> sceneLock(d->sceneMutex);
     if (event.points.empty() || !d->content)
         return;
-    Item* target =
-        d->content->itemAt(event.points[0].pos.x, event.points[0].pos.y);
+    const int id = event.points.front().id;
+    // Same grab semantics as the mouse: the item that accepts Begin keeps
+    // receiving this contact (Update/End) after the finger leaves its
+    // geometry, so dragging off a button and releasing there still clears
+    // its pressed state instead of leaving it stuck down.
+    const bool grabbed =
+        d->touchGrabber && d->touchGrabberId == id;
+    Item* target = nullptr;
+    if (event.action != TouchEvent::Action::Begin && grabbed)
+        target = d->touchGrabber;
+    else
+        target = d->content->itemAt(event.points.front().pos.x,
+                                    event.points.front().pos.y);
     if (event.action == TouchEvent::Action::Begin && target &&
         (static_cast<int>(target->focusPolicy()) &
          static_cast<int>(FocusPolicy::ClickFocus)))
         setFocusItem(target);
+    Item* acceptedBy = nullptr;
     while (target && !event.accepted) {
         TouchEvent local = event;
         for (auto& point : local.points)
             point.pos = target->mapFromScene(point.pos);
         target->touchEvent(local);
         event.accepted = local.accepted;
+        acceptedBy = event.accepted ? target : nullptr;
         target = target->parentItem();
+    }
+    // A second finger (different id) leaves the current grab alone: its
+    // contact is hit-tested on its own, and the grabbed one keeps its End.
+    if (event.action == TouchEvent::Action::Begin) {
+        if (!d->touchGrabber) {
+            d->touchGrabber = acceptedBy;
+            d->touchGrabberId = id;
+            if (d->touchGrabber)
+                watchGrabbedItem(d->touchGrabber);
+        }
+    } else if (event.action == TouchEvent::Action::End && grabbed) {
+        d->touchGrabber = nullptr;
     }
 }
 
@@ -528,9 +561,45 @@ std::recursive_mutex& sceneMutex(Window* window) {
     return window->d->sceneMutex;
 }
 
+namespace {
+
+// Frame batching (see beginFrameBatch): a thread-local depth counter plus the
+// windows that asked for a frame while the batch was open.
+thread_local int frameBatchDepth = 0;
+thread_local std::vector<Window*> frameBatchWindows;
+
+} // namespace
+
+void beginFrameBatch() { ++frameBatchDepth; }
+
+void endFrameBatch() {
+    if (frameBatchDepth == 0 || --frameBatchDepth > 0)
+        return;
+    std::vector<Window*> windows;
+    windows.swap(frameBatchWindows);
+    for (Window* window : windows)
+        if (window->d->renderThread)
+            window->d->renderThread->requestFrame();
+}
+
+void forgetBatchedWindow(Window* window) {
+    frameBatchWindows.erase(
+        std::remove(frameBatchWindows.begin(), frameBatchWindows.end(), window),
+        frameBatchWindows.end());
+}
+
 void scheduleRender(Window* window) {
-    if (window->d->renderThread)
-        window->d->renderThread->requestFrame();
+    if (!window->d->renderThread)
+        return;
+    if (frameBatchDepth > 0) {
+        // Collect instead of waking the render thread; the batch guarantees
+        // that every property written during this tick is in the frame.
+        if (std::find(frameBatchWindows.begin(), frameBatchWindows.end(),
+                      window) == frameBatchWindows.end())
+            frameBatchWindows.push_back(window);
+        return;
+    }
+    window->d->renderThread->requestFrame();
 }
 
 void clearFocusItem(Window* window, Item* item) {

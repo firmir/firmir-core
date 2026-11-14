@@ -18,6 +18,9 @@ namespace detail {
 std::recursive_mutex& sceneMutex(Window* window);
 void scheduleRender(Window* window);
 void clearFocusItem(Window* window, Item* item);
+void beginFrameBatch();
+void endFrameBatch();
+void forgetBatchedWindow(Window* window);
 } // namespace detail
 
 /**
@@ -118,6 +121,7 @@ private:
     friend class Platform;
     friend std::recursive_mutex& detail::sceneMutex(Window*);
     friend void detail::scheduleRender(Window*);
+    friend void detail::endFrameBatch();
     friend void detail::clearFocusItem(Window*, Item*);
 };
 

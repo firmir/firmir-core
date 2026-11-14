@@ -15,6 +15,9 @@ public:
     RasterizedText label;
     std::uint64_t labelGeneration = 0;
     bool pressed = false;
+    /// The pointer is still over the button while it is pressed: the
+    /// pressed look follows the pointer, so dragging off un-highlights it.
+    bool inside = true;
     bool checked = false;
     bool checkable = false;
 };
@@ -123,7 +126,7 @@ void AbstractButton::drawLabel(Painter& painter, float x, float y, Color color) 
 void AbstractButton::paint(Painter& painter) {
     const Theme* theme = Theme::instance();
     const Color background = !isEnabled() ? Color::rgb(70, 74, 80)
-        : d->pressed ? theme->highlightDimmerColor()
+        : d->pressed && d->inside ? theme->highlightDimmerColor()
         : d->checked ? theme->highlightColor()
                     : theme->darkSecondaryColor().lighter(1.5);
     const float radius = static_cast<float>(theme->controlRadius());
@@ -133,9 +136,21 @@ void AbstractButton::paint(Painter& painter) {
 }
 void AbstractButton::mouseEvent(MouseEvent& event) {
     if (event.action == MouseEvent::Action::Press && event.button == 1) {
+        d->inside = true;
         setPressed(true); event.accepted = true;
+    } else if (event.action == MouseEvent::Action::Move && d->pressed) {
+        // The press winner keeps receiving moves (window grab), so track the
+        // pointer: dragging off the button drops the pressed look while the
+        // release outside cancels the click. The move is not accepted - a
+        // parent (e.g. a scrolling container) still sees it.
+        const bool inside =
+            RectF{0, 0, width(), height()}.contains(event.pos.x, event.pos.y);
+        if (inside != d->inside) {
+            d->inside = inside;
+            update();
+        }
     } else if (event.action == MouseEvent::Action::Release && d->pressed) {
-        setPressed(false); event.accepted = true;
+        setPressed(false); d->inside = true; event.accepted = true;
         if (RectF{0, 0, width(), height()}.contains(event.pos.x, event.pos.y)) click();
     }
 }

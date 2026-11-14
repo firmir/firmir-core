@@ -75,6 +75,10 @@ public:
     virtual ~InputBackend() = default;
     /// Invoked (from any thread) for every input event.
     std::function<void(const InputEvent& event)> eventCallback;
+    /// Size of the primary screen in pixels, pushed by Platform when the
+    /// screens change. Backends that read absolute devices (evdev
+    /// touchscreens) report device coordinates and scale them to this size.
+    virtual void setScreenSize(const Size& size) { (void)size; }
 };
 
 using CreateDisplayFunc = DisplayBackend* (*)();

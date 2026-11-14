@@ -47,9 +47,15 @@ if(FIRMIR_BUILD_LIB_GUI AND TARGET firmir-gui-headless)
     list(APPEND TEST_SOURCES gui/test_gui.cpp gui/test_abstract_data_list.cpp gui/test_listmodel.cpp gui/test_editabletext.cpp gui/test_mousearea.cpp
         gui/test_positioners.cpp gui/test_backend_selection.cpp)
     if(FIRMIR_TEST_DRM_HEADERS)
-        list(APPEND TEST_SOURCES gui/test_drm_enumeration.cpp)
+        # gui/test_drm_enumeration.cpp and gui/test_kms_layout.cpp also only need
+        # the uapi headers (enumeration and window->mode geometry helpers).
+        list(APPEND TEST_SOURCES gui/test_drm_enumeration.cpp
+            gui/test_kms_layout.cpp)
     endif()
     list(APPEND TEST_LIBS firmir-gui firmir-gui-headless)
+    # gui/test_evdev_touch.cpp covers the digitizer → screen mapping of the evdev
+    # backend (plugins/gui/evdev/touchmapping.hpp); header-only, no device.
+    list(APPEND TEST_SOURCES gui/test_evdev_touch.cpp)
 elseif(FIRMIR_BUILD_LIB_GUI)
     message(STATUS "firmir-gui tests require the headless plugin; skipping them")
 endif()

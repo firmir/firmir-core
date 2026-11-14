@@ -14,6 +14,12 @@ if(FIRMIR_BUILD_PLUGIN_RENDER_OPENGL)
     find_path(GLES2_INCLUDE_DIR GLES2/gl2.h)
     find_library(EGL_LIBRARY EGL)
     find_library(GLES2_LIBRARY GLESv2)
+    # libgbm is optional: it lets the backend reach the GPU through a DRM node
+    # on a bare console / eglfs, where EGL_DEFAULT_DISPLAY has no platform.
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(FIRMIR_RENDER_GBM QUIET IMPORTED_TARGET gbm)
+    endif()
     if(EGL_INCLUDE_DIR AND GLES2_INCLUDE_DIR AND EGL_LIBRARY AND GLES2_LIBRARY)
         add_subdirectory(opengl)
     else()

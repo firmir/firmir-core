@@ -66,6 +66,9 @@ struct DrmOutput {
     std::uint32_t crtcId = 0;
     std::uint32_t encoderId = 0;
     drm_mode_modeinfo mode{};
+    /// Every mode the connector reports, preferred first. A window that asks for
+    /// a different size than the preferred mode can be given one of these.
+    std::vector<drm_mode_modeinfo> modes;
     std::string name;
     /// Pre-eglfs CRTC state, restored when the window goes away.
     drm_mode_crtc savedCrtc{};
@@ -307,6 +310,7 @@ inline DrmEnumerationResult enumerateDrmOutputs(int fd,
         output.crtcId = chosenCrtc;
         output.encoderId = chosenEncoder;
         output.mode = modes.front(); // the preferred mode comes first
+        output.modes = modes;
         output.name = "connector-" + std::to_string(connectorId);
         output.savedCrtc.crtc_id = chosenCrtc;
         ioctlFn(fd, DRM_IOCTL_MODE_GETCRTC, &output.savedCrtc);

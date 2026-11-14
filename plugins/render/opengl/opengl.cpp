@@ -16,12 +16,18 @@
 #include <EGL/eglext.h>
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
+#ifdef FIRMIR_RENDER_HAVE_GBM
+#include <gbm.h>
+#endif
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <memory>
 #include <string>
+#include <unistd.h>
 #include <vector>
 
 using namespace Firmir::Render;
@@ -157,10 +163,19 @@ public:
     bool hasDmaBufModifiers() const { return m_hasDmaBufModifiers; }
 
 private:
+    bool initDisplay();
+    bool useDisplay(EGLDisplay display, const char* what);
+
     DeviceDesc m_desc;
     EGLDisplay m_display = EGL_NO_DISPLAY;
     EGLSurface m_surface = EGL_NO_SURFACE;
     EGLContext m_context = EGL_NO_CONTEXT;
+    // Owned resources of the display chosen by initDisplay(): the DRM node and,
+    // when the gbm platform is used, the gbm device created from it.
+    int m_platformFd = -1;
+#ifdef FIRMIR_RENDER_HAVE_GBM
+    gbm_device* m_gbmDevice = nullptr;
+#endif
     // Probed at init: EGL_EXT_image_dma_buf_import (+modifiers) and
     // GL_OES_EGL_image_external.
     bool m_hasDmaBuf = false;
@@ -792,17 +807,101 @@ private:
 
 // --------------------------------- device -----------------------------------
 
+/// Initializes @p display and adopts it; the first one that works wins.
+bool GlDevice::useDisplay(EGLDisplay display, const char* what) {
+    if (display == EGL_NO_DISPLAY)
+        return false;
+    if (eglInitialize(display, nullptr, nullptr) != EGL_TRUE)
+        return false;
+    m_display = display;
+    cLogInfo(lcGl()) << "EGL display:" << what;
+    return true;
+}
+
+/// Picks an EGL display that works in the current environment.
+///
+/// A desktop session has X11 or Wayland, and EGL_DEFAULT_DISPLAY dispatches to
+/// it. On a bare console / eglfs there is no window system at all: the default
+/// display cannot be initialized ("XDG_RUNTIME_DIR is invalid or not set"), so
+/// the GPU is driven through a DRM node instead — the gbm platform (same path
+/// the eglfs KMS integration uses), the device platform, or Mesa's surfaceless
+/// platform. All of them support the pbuffer this backend renders into.
+bool GlDevice::initDisplay() {
+    const bool windowSystem =
+        std::getenv("DISPLAY") != nullptr || std::getenv("WAYLAND_DISPLAY") != nullptr;
+    auto getPlatformDisplay =
+        reinterpret_cast<PFNEGLGETPLATFORMDISPLAYEXTPROC>(
+            eglGetProcAddress("eglGetPlatformDisplayEXT"));
+
+    if (windowSystem &&
+        useDisplay(eglGetDisplay(EGL_DEFAULT_DISPLAY), "default"))
+        return true;
+
+    if (getPlatformDisplay) {
+#ifdef FIRMIR_RENDER_HAVE_GBM
+#ifdef EGL_PLATFORM_GBM_KHR
+        for (const char* node : {"/dev/dri/card0", "/dev/dri/card1",
+                                 "/dev/dri/card2"}) {
+            const int fd = ::open(node, O_RDWR | O_CLOEXEC);
+            if (fd < 0)
+                continue;
+            gbm_device* device = gbm_create_device(fd);
+            if (!device) {
+                ::close(fd);
+                continue;
+            }
+            EGLDisplay display = getPlatformDisplay(
+                EGL_PLATFORM_GBM_KHR,
+                reinterpret_cast<EGLNativeDisplayType>(device), nullptr);
+            if (useDisplay(display, node)) {
+                m_gbmDevice = device;
+                m_platformFd = fd;
+                return true;
+            }
+            gbm_device_destroy(device);
+            ::close(fd);
+        }
+#endif
+#endif
+#ifdef EGL_PLATFORM_DEVICE_EXT
+        for (const char* node : {"/dev/dri/renderD128", "/dev/dri/renderD129",
+                                 "/dev/dri/card0", "/dev/dri/card1"}) {
+            const int fd = ::open(node, O_RDWR | O_CLOEXEC);
+            if (fd < 0)
+                continue;
+            EGLDisplay display = getPlatformDisplay(
+                EGL_PLATFORM_DEVICE_EXT,
+                reinterpret_cast<EGLNativeDisplayType>(
+                    static_cast<std::intptr_t>(fd)),
+                nullptr);
+            if (useDisplay(display, node)) {
+                m_platformFd = fd;
+                return true;
+            }
+            ::close(fd);
+        }
+#endif
+#ifdef EGL_PLATFORM_SURFACELESS_MESA
+        if (useDisplay(getPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA,
+                                          EGL_DEFAULT_DISPLAY, nullptr),
+                       "surfaceless"))
+            return true;
+#endif
+    }
+
+    // Last resort: the default display even without a window system (drivers
+    // with an fbdev/own platform may still accept it).
+    if (!windowSystem && useDisplay(eglGetDisplay(EGL_DEFAULT_DISPLAY), "default"))
+        return true;
+
+    cLogWarning(lcGl())
+        << "no usable EGL display (tried default, gbm, device and surfaceless)";
+    return false;
+}
+
 GlDevice::GlDevice(const DeviceDesc& desc) : m_desc(desc) {
-    m_display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-    if (m_display == EGL_NO_DISPLAY) {
-        cLogWarning(lcGl()) << "eglGetDisplay failed";
+    if (!initDisplay())
         return;
-    }
-    if (eglInitialize(m_display, nullptr, nullptr) != EGL_TRUE) {
-        cLogWarning(lcGl()) << "eglInitialize failed";
-        m_display = EGL_NO_DISPLAY;
-        return;
-    }
     eglBindAPI(EGL_OPENGL_ES_API);
     const EGLint configAttributes[] = {
         EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
@@ -855,6 +954,12 @@ GlDevice::~GlDevice() {
             eglDestroyContext(m_display, m_context);
         eglTerminate(m_display);
     }
+#ifdef FIRMIR_RENDER_HAVE_GBM
+    if (m_gbmDevice)
+        gbm_device_destroy(m_gbmDevice);
+#endif
+    if (m_platformFd >= 0)
+        ::close(m_platformFd);
 }
 
 void GlDevice::makeCurrent() {

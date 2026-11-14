@@ -37,6 +37,18 @@ public:
     std::uint64_t generation = 0;
     int fontSize = 16;
     bool pressed = false;
+    /// The pointer is still over the button while it is pressed (the
+    /// pressed look follows it, like in AbstractButton).
+    bool inside = true;
+    /// Tracks a pressed drag: returns true when the inside/outside state
+    /// changed and the button needs a repaint.
+    bool updateInside(Button* q, float x, float y) {
+        const bool over = RectF{0, 0, q->width(), q->height()}.contains(x, y);
+        if (over == inside)
+            return false;
+        inside = over;
+        return true;
+    }
 };
 
 Button::Button(Object* parent) : Item(parent), d(std::make_unique<Impl>()) {
@@ -130,7 +142,7 @@ void Button::click() { emitSignal(signalClicked); }
 
 void Button::paint(Painter& painter) {
     painter.fillRect(RectF{0, 0, width(), height()},
-                     d->pressed ? d->color.darker(1.5) : d->color);
+                     d->pressed && d->inside ? d->color.darker(1.5) : d->color);
     if (d->bitmap.valid) {
         painter.drawRgba(RectF{(width() - d->bitmap.width) / 2,
                                (height() - d->bitmap.height) / 2,
@@ -150,12 +162,22 @@ void Button::paint(Painter& painter) {
 void Button::mouseEvent(MouseEvent& event) {
     if (event.action == MouseEvent::Action::Press && event.button == 1) {
         event.accepted = true;
+        d->inside = true;
         setPressed(true);
+        return;
+    }
+    if (event.action == MouseEvent::Action::Move && d->pressed) {
+        // The press winner keeps receiving moves, so a drag off the button
+        // drops the pressed look (the release outside then cancels the
+        // click). Not accepted: a parent scroller still sees the move.
+        if (d->updateInside(this, event.pos.x, event.pos.y))
+            update();
         return;
     }
     if (event.action == MouseEvent::Action::Release && d->pressed) {
         event.accepted = true;
         setPressed(false);
+        d->inside = true;
         if (RectF{0, 0, width(), height()}.contains(event.pos.x, event.pos.y))
             click();
     }
@@ -164,10 +186,17 @@ void Button::mouseEvent(MouseEvent& event) {
 void Button::touchEvent(TouchEvent& event) {
     if (event.action == TouchEvent::Action::Begin) {
         event.accepted = true;
+        d->inside = true;
         setPressed(true);
+    } else if (event.action == TouchEvent::Action::Update && d->pressed) {
+        if (!event.points.empty() &&
+            d->updateInside(this, event.points[0].pos.x,
+                            event.points[0].pos.y))
+            update();
     } else if (event.action == TouchEvent::Action::End && d->pressed) {
         event.accepted = true;
         setPressed(false);
+        d->inside = true;
         if (!event.points.empty() &&
             RectF{0, 0, width(), height()}.contains(event.points[0].pos.x,
                                                     event.points[0].pos.y))

@@ -12,6 +12,7 @@
 // (default /dev/dri/card0).
 
 #include <firmir/gui/detail/drmenumeration.hpp>
+#include <firmir/gui/detail/kmslayout.hpp>
 #include <firmir/gui/eglfsintegration.hpp>
 #include <firmir/log.hpp>
 
@@ -21,6 +22,7 @@
 #include <gbm.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
@@ -81,14 +83,41 @@ public:
     ~KmsWindow() override;
 
     void setTitle(const std::string&) override {}
-    void setGeometry(const Rect& geometry) override { m_geometry = geometry; }
-    void setVisible(bool visible) override { m_visible = visible; }
+    /// Window geometry, called from the GUI thread. The window normally ends up
+    /// at the output size (see reportOutputSize()), so this usually carries the
+    /// mode size; a size the application sets itself is honoured as well (see
+    /// applyRequestedSize()).
+    void setGeometry(const Rect& geometry) override {
+        m_geometry = geometry;
+        m_requestedWidth = geometry.width;
+        m_requestedHeight = geometry.height;
+    }
+    void setVisible(bool visible) override {
+        m_visible = visible;
+        if (visible)
+            reportOutputSize();
+    }
     void present(const std::uint32_t* pixels, const Size& size) override;
 
 private:
+    /// eglfs has no window manager: a shown window *is* the output, so the size
+    /// of the output is reported to the window instead of scaling a smaller
+    /// frame up to it. The application lays its content out for that size.
+    void reportOutputSize();
     bool initSurface(gbm_device* gbmDevice);
     bool initGl();
     bool makeCurrent();
+    void releaseCurrent();
+    /// Mode-sets the output to the window's requested size when the connector
+    /// has a matching mode. Called from present() (render thread).
+    void applyRequestedSize();
+    /// Recreates the GBM/EGL surface with @p mode and schedules a mode set.
+    bool switchMode(const drm_mode_modeinfo& mode);
+    /// The mode set did not take: restores the previous mode and surface.
+    void rollbackModeSwitch();
+    /// Frees the surface replaced by the last switchMode(), which is off screen
+    /// by now. Called from present().
+    void releaseRetiredSurface();
     std::uint32_t addFramebuffer(gbm_bo* bo);
     void removeFramebuffer(std::uint32_t fbId);
     bool setCrtc(std::uint32_t fbId);
@@ -100,6 +129,7 @@ private:
     EGLConfig m_eglConfig = nullptr;
     EGLSurface m_eglSurface = EGL_NO_SURFACE;
     EGLContext m_eglContext = EGL_NO_CONTEXT;
+    gbm_device* m_gbmDevice = nullptr;
     gbm_surface* m_gbmSurface = nullptr;
     GLuint m_program = 0;
     GLuint m_texture = 0;
@@ -108,12 +138,30 @@ private:
     Size m_size;
     /// Size of the frame currently stored in m_texture.
     Size m_textureSize;
-    // Buffer being scanned out: released after the next successful flip.
+    /// Buffer being scanned out: released after the next successful flip.
     gbm_bo* m_displayedBo = nullptr;
     std::uint32_t m_displayedFb = 0;
     bool m_modesetDone = false;
-    bool m_sizeMismatchLogged = false;
     bool m_presentFailedLogged = false;
+    /// Size the window asked for through setGeometry() (GUI thread).
+    std::atomic<int> m_requestedWidth{0};
+    std::atomic<int> m_requestedHeight{0};
+    /// Whether the output size was already reported to the window.
+    bool m_sizeReported = false;
+    /// FIRMIR_GUI_KMS_SCALING=stretch: fill the output instead of drawing the
+    /// frame 1:1 in the middle of it.
+    bool m_stretch = false;
+    bool m_geometryLogged = false;
+    /// Surface replaced by switchMode(): still being scanned out until the new
+    /// mode set goes through, so it is destroyed on the next present().
+    gbm_surface* m_retiredSurface = nullptr;
+    gbm_bo* m_retiredBo = nullptr;
+    std::uint32_t m_retiredFb = 0;
+    drm_mode_modeinfo m_retiredMode{};
+    /// Size whose mode set failed: never retried (the frame is drawn 1:1).
+    int m_rejectedWidth = 0;
+    int m_rejectedHeight = 0;
+    bool m_modesetFailedLogged = false;
     Rect m_geometry;
     bool m_visible = false;
 };
@@ -227,26 +275,39 @@ KmsWindow::KmsWindow(int fd, EGLDisplay eglDisplay, EGLConfig eglConfig,
     : m_fd(fd),
       m_eglDisplay(eglDisplay),
       m_eglConfig(eglConfig),
+      m_gbmDevice(gbmDevice),
       m_output(std::move(output)) {
     m_size = {m_output.mode.hdisplay, m_output.mode.vdisplay};
+    const char* scaling = std::getenv("FIRMIR_GUI_KMS_SCALING");
+    m_stretch = scaling && std::strcmp(scaling, "stretch") == 0;
     if (!initSurface(gbmDevice))
         return;
     initGl();
+    // The window is created on the GUI thread, but frames are uploaded from the
+    // window's render thread (present()). An EGL context can only be current in
+    // one thread at a time, so the context used for the one-time GL setup is
+    // released here — otherwise every present() fails with EGL_BAD_ACCESS.
+    releaseCurrent();
 }
 
 KmsWindow::~KmsWindow() {
-    if (m_eglContext != EGL_NO_CONTEXT && m_eglSurface != EGL_NO_SURFACE)
-        eglMakeCurrent(m_eglDisplay, m_eglSurface, m_eglSurface, m_eglContext);
-    if (m_program)
-        glDeleteProgram(m_program);
-    if (m_texture)
-        glDeleteTextures(1, &m_texture);
-    if (m_vertexBuffer)
-        glDeleteBuffers(1, &m_vertexBuffer);
-    if (m_eglDisplay != EGL_NO_DISPLAY && m_eglContext != EGL_NO_CONTEXT)
-        eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE,
-                       EGL_NO_CONTEXT);
+    // GL objects can only be deleted with the context current; after this the
+    // EGL objects go away.
+    const bool hasContext = makeCurrent();
+    if (hasContext) {
+        if (m_program)
+            glDeleteProgram(m_program);
+        if (m_texture)
+            glDeleteTextures(1, &m_texture);
+        if (m_vertexBuffer)
+            glDeleteBuffers(1, &m_vertexBuffer);
+        m_program = 0;
+        m_texture = 0;
+        m_vertexBuffer = 0;
+    }
+    releaseCurrent();
     releaseDisplayedBuffer();
+    releaseRetiredSurface();
     if (m_eglSurface != EGL_NO_SURFACE)
         eglDestroySurface(m_eglDisplay, m_eglSurface);
     if (m_eglContext != EGL_NO_CONTEXT)
@@ -332,6 +393,15 @@ bool KmsWindow::makeCurrent() {
     return true;
 }
 
+void KmsWindow::releaseCurrent() {
+    if (m_eglDisplay == EGL_NO_DISPLAY)
+        return;
+    if (eglGetCurrentContext() != m_eglContext)
+        return;
+    eglMakeCurrent(m_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE,
+                   EGL_NO_CONTEXT);
+}
+
 
 std::uint32_t KmsWindow::addFramebuffer(gbm_bo* bo) {
     drm_mode_fb_cmd2 fb{};
@@ -361,8 +431,15 @@ bool KmsWindow::setCrtc(std::uint32_t fbId) {
     crtc.count_connectors = 1;
     crtc.mode = m_output.mode;
     crtc.mode_valid = 1;
-    if (drmIoctl(m_fd, DRM_IOCTL_MODE_SETCRTC, &crtc) != 0)
+    if (drmIoctl(m_fd, DRM_IOCTL_MODE_SETCRTC, &crtc) != 0) {
+        if (!m_modesetFailedLogged) {
+            cLogWarning(lcKms()) << "SETCRTC" << crtc.mode.hdisplay
+                                 << crtc.mode.vdisplay << "failed:"
+                                 << std::strerror(errno);
+            m_modesetFailedLogged = true;
+        }
         return false;
+    }
     m_modesetDone = true;
     return true;
 }
@@ -394,33 +471,189 @@ void KmsWindow::releaseDisplayedBuffer() {
     m_displayedFb = 0;
 }
 
+/// eglfs has no window manager, so a shown window *is* the output: the window is
+/// told the size of the mode it is displayed on (Window::geometryCallback) and
+/// the application lays its content out for it. Scaling a window that asked for
+/// another size up to the full screen is what this replaces.
+void KmsWindow::reportOutputSize() {
+    if (m_sizeReported || !geometryCallback || m_size.width <= 0 ||
+        m_size.height <= 0)
+        return;
+    m_sizeReported = true;
+    cLogInfo(lcKms()) << "output size" << m_size.width << m_size.height
+                      << "given to the window";
+    geometryCallback(Rect{0, 0, m_size.width, m_size.height});
+}
+
+/// The window asked for a size that is not the current mode: give it a mode of
+/// its own if the connector has one. Without such a mode the output keeps its
+/// mode and the frame is placed 1:1 by kmsFrameRect() — the window keeps the
+/// size it asked for instead of being stretched over the whole screen.
+void KmsWindow::applyRequestedSize() {
+    const int width = m_requestedWidth.load();
+    const int height = m_requestedHeight.load();
+    if (width <= 0 || height <= 0)
+        return; // the window has not asked for a size yet
+    if (width == m_size.width && height == m_size.height)
+        return; // already the size of the output
+    if (width == m_rejectedWidth && height == m_rejectedHeight)
+        return; // the output refused that mode before
+    const drm_mode_modeinfo* mode =
+        Firmir::Gui::detail::kmsFindMode(m_output.modes, width, height);
+    if (!mode)
+        return;
+    if (switchMode(*mode))
+        m_geometryLogged = false;
+}
+
+bool KmsWindow::switchMode(const drm_mode_modeinfo& mode) {
+    if (!m_gbmDevice)
+        return false;
+    gbm_surface* surface = gbm_surface_create(
+        m_gbmDevice, mode.hdisplay, mode.vdisplay, GBM_FORMAT_XRGB8888,
+        GBM_BO_USE_SCANOUT | GBM_BO_USE_RENDERING);
+    if (!surface) {
+        cLogWarning(lcKms()) << "gbm_surface_create failed for the window size"
+                             << mode.hdisplay << mode.vdisplay;
+        return false;
+    }
+    releaseCurrent();
+    const EGLSurface previousEglSurface = m_eglSurface;
+    m_eglSurface = eglCreateWindowSurface(
+        m_eglDisplay, m_eglConfig,
+        reinterpret_cast<EGLNativeWindowType>(surface), nullptr);
+    if (m_eglSurface == EGL_NO_SURFACE) {
+        cLogWarning(lcKms()) << "eglCreateWindowSurface failed:"
+                             << eglErrorString();
+        m_eglSurface = previousEglSurface;
+        gbm_surface_destroy(surface);
+        return false;
+    }
+    if (previousEglSurface != EGL_NO_SURFACE)
+        eglDestroySurface(m_eglDisplay, previousEglSurface);
+
+    // The old buffer is still being scanned out until the SETCRTC below puts the
+    // new one on the CRTC, so it is retired rather than destroyed here.
+    m_retiredSurface = m_gbmSurface;
+    m_retiredBo = m_displayedBo;
+    m_retiredFb = m_displayedFb;
+    m_retiredMode = m_output.mode;
+    m_displayedBo = nullptr;
+    m_displayedFb = 0;
+    m_gbmSurface = surface;
+    m_output.mode = mode;
+    m_size = {mode.hdisplay, mode.vdisplay};
+    // The frame may be larger than the texture: let present() reallocate it.
+    m_textureSize = {0, 0};
+    // The CRTC has to take both the new mode and the new buffer: force SETCRTC.
+    m_modesetDone = false;
+    cLogInfo(lcKms()) << "window size" << m_size.width << m_size.height
+                      << "- switched the output mode to match";
+    return true;
+}
+
+void KmsWindow::releaseRetiredSurface() {
+    if (!m_retiredSurface)
+        return;
+    removeFramebuffer(m_retiredFb);
+    if (m_retiredBo)
+        gbm_surface_release_buffer(m_retiredSurface, m_retiredBo);
+    gbm_surface_destroy(m_retiredSurface);
+    m_retiredSurface = nullptr;
+    m_retiredBo = nullptr;
+    m_retiredFb = 0;
+}
+
+/// SetCRTC refused the requested mode (a CRTC cannot always drive every mode its
+/// connector reports). Nothing was destroyed yet, so the previous mode, surface
+/// and buffer come back, and that size is not tried again: the window falls back
+/// to being drawn 1:1 in the middle of the output.
+void KmsWindow::rollbackModeSwitch() {
+    if (!m_retiredSurface)
+        return;
+    m_rejectedWidth = m_size.width;
+    m_rejectedHeight = m_size.height;
+    const drm_mode_modeinfo rejected = m_output.mode;
+
+    releaseCurrent();
+    if (m_eglSurface != EGL_NO_SURFACE)
+        eglDestroySurface(m_eglDisplay, m_eglSurface);
+    if (m_gbmSurface)
+        gbm_surface_destroy(m_gbmSurface);
+
+    m_gbmSurface = m_retiredSurface;
+    m_retiredSurface = nullptr;
+    m_eglSurface = eglCreateWindowSurface(
+        m_eglDisplay, m_eglConfig,
+        reinterpret_cast<EGLNativeWindowType>(m_gbmSurface), nullptr);
+    if (m_eglSurface == EGL_NO_SURFACE)
+        cLogWarning(lcKms()) << "eglCreateWindowSurface failed on rollback:"
+                             << eglErrorString();
+    m_displayedBo = m_retiredBo;
+    m_displayedFb = m_retiredFb;
+    m_retiredBo = nullptr;
+    m_retiredFb = 0;
+    m_output.mode = m_retiredMode;
+    m_size = {m_output.mode.hdisplay, m_output.mode.vdisplay};
+    m_textureSize = {0, 0};
+    // The old mode is still on the CRTC, nothing to re-set.
+    m_modesetDone = true;
+    m_geometryLogged = false;
+    cLogInfo(lcKms()) << "mode" << rejected.hdisplay << rejected.vdisplay
+                      << "cannot be set for the window size - staying at"
+                      << m_size.width << m_size.height
+                      << "and drawing the frame 1:1";
+}
+
 void KmsWindow::present(const std::uint32_t* pixels, const Size& size) {
     if (!m_visible || !m_gbmSurface || m_eglSurface == EGL_NO_SURFACE ||
         !m_program || !m_texture || !m_vertexBuffer)
         return;
     if (size.width <= 0 || size.height <= 0)
         return;
+    // A surface replaced by the previous switchMode() is off screen now.
+    if (m_displayedFb)
+        releaseRetiredSurface();
+    // A window may ask for another size at any time; follow it (mode set, or
+    // 1:1 placement, see kmslayout.hpp) before touching the surface.
+    applyRequestedSize();
     if (!makeCurrent())
         return;
 
     if (size.width != m_textureSize.width ||
         size.height != m_textureSize.height) {
-        // eglfs has no window manager: a window that is not exactly the mode
-        // size is stretched over the whole output instead of being dropped,
-        // otherwise a non-fullscreen window would leave the screen black.
         glBindTexture(GL_TEXTURE_2D, m_texture);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, size.width, size.height, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
         m_textureSize = size;
-        if (!m_sizeMismatchLogged) {
+    }
+
+    // eglfs has no window manager: the frame is shown 1:1 in the middle of the
+    // output, never blown up to fill it (the application lays its content out
+    // for the size it asked for). Only a frame larger than the output is scaled,
+    // and then only down. FIRMIR_GUI_KMS_SCALING=stretch fills the output.
+    const Firmir::Gui::detail::PixelRect frame =
+        m_stretch ? Firmir::Gui::detail::PixelRect{0, 0, m_size.width,
+                                                   m_size.height}
+                  : Firmir::Gui::detail::kmsFrameRect(
+                        m_size.width, m_size.height, size.width, size.height);
+    if (!m_geometryLogged &&
+        (size.width != m_size.width || size.height != m_size.height)) {
+        m_geometryLogged = true;
+        if (m_stretch) {
             cLogInfo(lcKms()) << "window size" << size.width << size.height
-                              << "does not match the mode" << m_size.width
-                              << m_size.height << "- stretching to fullscreen";
-            m_sizeMismatchLogged = true;
+                              << "stretched over the" << m_size.width
+                              << m_size.height
+                              << "output (FIRMIR_GUI_KMS_SCALING=stretch)";
+        } else {
+            cLogInfo(lcKms()) << "window size" << size.width << size.height
+                              << "drawn 1:1 at" << frame.x << frame.y
+                              << "in the" << m_size.width << m_size.height
+                              << "output (no mode of that size)";
         }
     }
 
-    glViewport(0, 0, m_size.width, m_size.height);
+    glViewport(frame.x, frame.y, frame.width, frame.height);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, m_texture);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
@@ -439,6 +672,7 @@ void KmsWindow::present(const std::uint32_t* pixels, const Size& size) {
             cLogWarning(lcKms()) << "eglSwapBuffers failed:" << eglErrorString();
             m_presentFailedLogged = true;
         }
+        releaseCurrent();
         return;
     }
     gbm_bo* bo = gbm_surface_lock_front_buffer(m_gbmSurface);
@@ -447,11 +681,13 @@ void KmsWindow::present(const std::uint32_t* pixels, const Size& size) {
             cLogWarning(lcKms()) << "gbm_surface_lock_front_buffer failed";
             m_presentFailedLogged = true;
         }
+        releaseCurrent();
         return;
     }
     const std::uint32_t fbId = addFramebuffer(bo);
     if (!fbId) {
         gbm_surface_release_buffer(m_gbmSurface, bo);
+        releaseCurrent();
         return;
     }
 
@@ -467,7 +703,14 @@ void KmsWindow::present(const std::uint32_t* pixels, const Size& size) {
     } else {
         removeFramebuffer(fbId);
         gbm_surface_release_buffer(m_gbmSurface, bo);
+        // A mode set for the window's size did not take: the previous buffer is
+        // still on the CRTC, so put its mode and surface back.
+        if (m_retiredSurface && !m_modesetDone)
+            rollbackModeSwitch();
     }
+    // Nothing is drawn between frames, and the render thread of another window
+    // may become current in the meantime, so never keep the context bound.
+    releaseCurrent();
 }
 
 namespace {

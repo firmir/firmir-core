@@ -124,6 +124,9 @@ public:
                              bool added);
     void routeInput(Platform* q, const InputEvent& event);
     PlatformScreen* backendFor(Screen* screen) const;
+    /// Tells the input backend the size of the primary screen (absolute
+    /// devices such as evdev touchscreens are scaled to it).
+    void notifyInputScreenSize();
 
     void* displayHandle = nullptr;
     void* inputHandle = nullptr;
@@ -131,6 +134,11 @@ public:
     InputBackend* input = nullptr;
     std::vector<std::pair<PlatformScreen*, Screen*>> screenMap;
     std::vector<Window*> windows;
+    /// Window that accepted the current mouse press / touch contact: moves
+    /// and the release keep going there even outside its geometry (drag).
+    /// GUI thread only, cleared by removeWindow().
+    Window* mouseWindow = nullptr;
+    Window* touchWindow = nullptr;
     mutable std::mutex mutex; // guards screenMap and windows
 };
 
@@ -251,6 +259,7 @@ void Platform::Impl::handleScreenChanged(Platform* q,
         screenMap.emplace_back(backendScreen, screen);
         lock.unlock();
         q->emitSignal(Platform::signalScreenAdded, screen);
+        notifyInputScreenSize();
         return;
     }
     for (auto it = screenMap.begin(); it != screenMap.end(); ++it) {
@@ -262,8 +271,22 @@ void Platform::Impl::handleScreenChanged(Platform* q,
         screen->emitSignal(Screen::signalRemoved);
         q->emitSignal(Platform::signalScreenRemoved, screen);
         delete screen;
+        notifyInputScreenSize();
         return;
     }
+}
+
+void Platform::Impl::notifyInputScreenSize() {
+    if (!input)
+        return;
+    Size size;
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        if (!screenMap.empty())
+            size = screenMap.front().first->size();
+    }
+    // Outside the lock: the backend logs and may call back.
+    input->setScreenSize(size);
 }
 
 void Platform::Impl::routeInput(Platform*, const InputEvent& event) {
@@ -275,35 +298,73 @@ void Platform::Impl::routeInput(Platform*, const InputEvent& event) {
     switch (event.type) {
     case InputEvent::Type::Mouse: {
         // Topmost (last registered) visible window containing the pointer.
-        for (auto it = targets.rbegin(); it != targets.rend(); ++it) {
-            Window* w = *it;
-            if (!w->isVisible() || !w->geometry().contains(event.mouse.pos.x,
-                                                           event.mouse.pos.y))
-                continue;
-            MouseEvent local = event.mouse;
-            local.pos.x -= w->geometry().x;
-            local.pos.y -= w->geometry().y;
-            w->dispatchMouse(local);
-            return;
+        // While a button is held the press winner keeps the pointer, so a
+        // drag that leaves the window still gets its release (and cannot
+        // leave an item stuck in the pressed state).
+        Window* target = nullptr;
+        const bool drag =
+            event.mouse.action == MouseEvent::Action::Move ||
+            event.mouse.action == MouseEvent::Action::Release;
+        if (drag && mouseWindow &&
+            std::find(targets.begin(), targets.end(), mouseWindow) !=
+                targets.end())
+            target = mouseWindow;
+        if (!target) {
+            for (auto it = targets.rbegin(); it != targets.rend(); ++it) {
+                Window* w = *it;
+                if (!w->isVisible() ||
+                    !w->geometry().contains(event.mouse.pos.x,
+                                            event.mouse.pos.y))
+                    continue;
+                target = w;
+                break;
+            }
         }
+        if (event.mouse.action == MouseEvent::Action::Press)
+            mouseWindow = target;
+        else if (event.mouse.action == MouseEvent::Action::Release)
+            mouseWindow = nullptr;
+        if (!target)
+            break;
+        MouseEvent local = event.mouse;
+        local.pos.x -= target->geometry().x;
+        local.pos.y -= target->geometry().y;
+        target->dispatchMouse(local);
         break;
     }
     case InputEvent::Type::Touch: {
         if (event.touch.points.empty())
             return;
-        const Point& pos = event.touch.points[0].pos;
-        for (auto it = targets.rbegin(); it != targets.rend(); ++it) {
-            Window* w = *it;
-            if (!w->isVisible() || !w->geometry().contains(pos.x, pos.y))
-                continue;
-            TouchEvent local = event.touch;
-            for (auto& point : local.points) {
-                point.pos.x -= w->geometry().x;
-                point.pos.y -= w->geometry().y;
+        // Same window-level grab as for the mouse: Update/End go to the
+        // window that accepted Begin even when the finger slides out of it.
+        const bool drag = event.touch.action != TouchEvent::Action::Begin;
+        Window* target = nullptr;
+        if (drag && touchWindow &&
+            std::find(targets.begin(), targets.end(), touchWindow) !=
+                targets.end())
+            target = touchWindow;
+        if (!target) {
+            const Point& pos = event.touch.points[0].pos;
+            for (auto it = targets.rbegin(); it != targets.rend(); ++it) {
+                Window* w = *it;
+                if (!w->isVisible() || !w->geometry().contains(pos.x, pos.y))
+                    continue;
+                target = w;
+                break;
             }
-            w->dispatchTouch(local);
-            return;
         }
+        if (event.touch.action == TouchEvent::Action::Begin)
+            touchWindow = target;
+        else if (event.touch.action == TouchEvent::Action::End)
+            touchWindow = nullptr;
+        if (!target)
+            break;
+        TouchEvent local = event.touch;
+        for (auto& point : local.points) {
+            point.pos.x -= target->geometry().x;
+            point.pos.y -= target->geometry().y;
+        }
+        target->dispatchTouch(local);
         break;
     }
     case InputEvent::Type::Key: {
@@ -390,6 +451,10 @@ void Platform::removeWindow(Window* window) {
     auto& windows = d->windows;
     windows.erase(std::remove(windows.begin(), windows.end(), window),
                   windows.end());
+    if (d->mouseWindow == window)
+        d->mouseWindow = nullptr;
+    if (d->touchWindow == window)
+        d->touchWindow = nullptr;
 }
 
 PlatformWindow* Platform::createPlatformWindow(Screen* screen) {

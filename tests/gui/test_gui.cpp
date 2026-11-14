@@ -3,6 +3,7 @@
 #include "test_framework.hpp"
 
 #include <firmir/gui/animation.hpp>
+#include <firmir/gui/button.hpp>
 #include <firmir/gui/flickable.hpp>
 #include <firmir/gui/item.hpp>
 #include <firmir/gui/editabletext.hpp>
@@ -487,6 +488,166 @@ TEST_CASE(gui_input_touch) {
 
     firmir_gui_headless_remove_screen("TOUCH-1");
 }
+
+TEST_CASE(gui_button_item_touch_drag_release_outside) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("BTN-ITEM", 400, 300);
+    Screen* screen = Platform::instance()->screen("BTN-ITEM");
+    Window window(screen);
+    window.setGeometry(Rect{0, 0, 400, 300});
+    window.show();
+
+    // Gui::Button is what Firml's Button item wraps (calculator keys).
+    auto* button = window.createItem<Button>(window.contentItem());
+    // Text first: it drives the implicit size, which would shrink an
+    // explicitly set geometry (no explicitWidth/Height flags).
+    button->setText("1");
+    button->setGeometry(20, 20, 100, 50);
+
+    int clicks = 0;
+    button->connect<>(button, Button::signalClicked, [&clicks] { ++clicks; },
+                      ConnectionMode::Direct);
+
+    // Press, drag off the key, release outside: released, no click.
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::Begin), 1, 40, 40);
+    CHECK(button->isPressed());
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::Update), 1, 300, 250);
+    CHECK(button->isPressed());
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::End), 1, 300, 250);
+    CHECK(!button->isPressed());
+    CHECK_EQ(clicks, 0);
+
+    // Tap: clicks. Drag out and back in: clicks too.
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::Begin), 2, 40, 40);
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::End), 2, 40, 40);
+    CHECK_EQ(clicks, 1);
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::Begin), 3, 40, 40);
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::Update), 3, 300, 250);
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::Update), 3, 60, 50);
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::End), 3, 60, 50);
+    CHECK(!button->isPressed());
+    CHECK_EQ(clicks, 2);
+
+    firmir_gui_headless_remove_screen("BTN-ITEM");
+}
+
+TEST_CASE(gui_button_item_mouse_drag_release_outside) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("BTN-ITEM-2", 400, 300);
+    Screen* screen = Platform::instance()->screen("BTN-ITEM-2");
+    Window window(screen);
+    window.setGeometry(Rect{0, 0, 400, 300});
+    window.show();
+
+    auto* button = window.createItem<Button>(window.contentItem());
+    button->setGeometry(20, 20, 100, 50);
+
+    int clicks = 0;
+    button->connect<>(button, Button::signalClicked, [&clicks] { ++clicks; },
+                      ConnectionMode::Direct);
+
+    firmir_gui_headless_inject_mouse(
+        static_cast<int>(MouseEvent::Action::Press), 40, 40, 1);
+    CHECK(button->isPressed());
+    firmir_gui_headless_inject_mouse(
+        static_cast<int>(MouseEvent::Action::Move), 300, 250, 1);
+    firmir_gui_headless_inject_mouse(
+        static_cast<int>(MouseEvent::Action::Release), 300, 250, 1);
+    CHECK(!button->isPressed());
+    CHECK_EQ(clicks, 0);
+
+    firmir_gui_headless_remove_screen("BTN-ITEM-2");
+}
+
+#ifdef FIRMIR_TEST_HAVE_CONTROLS
+TEST_CASE(gui_button_touch_drag_release_outside) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("BTN-DRAG", 400, 300);
+    Screen* screen = Platform::instance()->screen("BTN-DRAG");
+    Window window(screen);
+    window.setGeometry(Rect{0, 0, 400, 300});
+    window.show();
+
+    auto* button = window.createItem<Controls::Button>(window.contentItem());
+    button->setGeometry(20, 20, 100, 50);
+    button->setText("7");
+
+    int clicks = 0;
+    button->connect(button, Controls::AbstractButton::signalClicked,
+                    [&clicks] { ++clicks; });
+
+    // Press on the button, slide the finger off it, release outside: the
+    // contact is still delivered to the button, its pressed state is
+    // cleared and no click is emitted.
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::Begin), 1, 40, 40);
+    CHECK(button->isPressed());
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::Update), 1, 300, 250);
+    CHECK(button->isPressed());
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::End), 1, 300, 250);
+    CHECK(!button->isPressed());
+    CHECK_EQ(clicks, 0);
+
+    // A plain tap still clicks; a drag that returns inside also clicks.
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::Begin), 2, 40, 40);
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::End), 2, 40, 40);
+    CHECK_EQ(clicks, 1);
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::Begin), 3, 40, 40);
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::Update), 3, 300, 250);
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::Update), 3, 60, 50);
+    firmir_gui_headless_inject_touch(
+        static_cast<int>(TouchEvent::Action::End), 3, 60, 50);
+    CHECK(!button->isPressed());
+    CHECK_EQ(clicks, 2);
+
+    firmir_gui_headless_remove_screen("BTN-DRAG");
+}
+
+TEST_CASE(gui_button_mouse_drag_release_outside_window) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("BTN-DRAG-2", 400, 300);
+    Screen* screen = Platform::instance()->screen("BTN-DRAG-2");
+    Window window(screen);
+    window.setGeometry(Rect{0, 0, 200, 150});
+    window.show();
+
+    auto* button = window.createItem<Controls::Button>(window.contentItem());
+    button->setGeometry(20, 20, 100, 50);
+
+    int clicks = 0;
+    button->connect(button, Controls::AbstractButton::signalClicked,
+                    [&clicks] { ++clicks; });
+
+    // The pointer leaves the window while the button is held.
+    firmir_gui_headless_inject_mouse(
+        static_cast<int>(MouseEvent::Action::Press), 40, 40, 1);
+    CHECK(button->isPressed());
+    firmir_gui_headless_inject_mouse(
+        static_cast<int>(MouseEvent::Action::Move), 380, 280, 1);
+    firmir_gui_headless_inject_mouse(
+        static_cast<int>(MouseEvent::Action::Release), 380, 280, 1);
+    CHECK(!button->isPressed());
+    CHECK_EQ(clicks, 0);
+
+    firmir_gui_headless_remove_screen("BTN-DRAG-2");
+}
+#endif // FIRMIR_TEST_HAVE_CONTROLS
 
 TEST_CASE(gui_window_screen_removed_hides_window) {
     ensurePlatform();
@@ -1491,4 +1652,72 @@ TEST_CASE(gui_theme_config_file) {
     std::remove(path.c_str());
     std::remove((std::filesystem::temp_directory_path() / "firmir-test-theme-partial.json").string().c_str());
     std::remove((std::filesystem::temp_directory_path() / "firmir-test-theme-bad.json").string().c_str());
+}
+
+
+// Regression: a scene animated in two axes must change both axes in the same
+// frame. With one timer per animation the render thread received x and y in
+// alternating frames, so a diagonal move looked like a staircase (visibly
+// jerky on the display).
+TEST_CASE(gui_animation_two_axes_stay_in_sync) {
+    ensurePlatform();
+    firmir_gui_headless_add_screen("ANIM-SYNC", 400, 300);
+    Screen* screen = Platform::instance()->screen("ANIM-SYNC");
+    Window window(screen);
+    window.setGeometry(Rect{0, 0, 400, 300});
+    auto* rect = window.createItem<Rectangle>(window.contentItem());
+    rect->setGeometry(40, 40, 100, 75);
+    rect->setColor(Color::rgb(255, 0, 0));
+    window.show();
+
+    struct Frame {
+        float x, y;
+    };
+    std::vector<Frame> frames;
+    window.connect<>(&window, Window::signalFrameRendered,
+                     [&frames, rect] {
+                         frames.push_back({rect->x(), rect->y()});
+                     },
+                     ConnectionMode::Direct);
+
+    PropertyAnimation ax(rect, "x");
+    ax.setTo(300);
+    ax.setDuration(std::chrono::milliseconds(400));
+    PropertyAnimation ay(rect, "y");
+    ay.setTo(225);
+    ay.setDuration(std::chrono::milliseconds(400));
+    ax.start();
+    ay.start();
+
+    Timer stopTimer;
+    stopTimer.setSingleShot(true);
+    stopTimer.setInterval(std::chrono::milliseconds(250));
+    stopTimer.connect(&stopTimer, "timeout",
+                      [] { Thread::mainThread()->quit(); });
+    stopTimer.start();
+    Thread::mainThread()->exec();
+    ax.stop();
+    ay.stop();
+
+    int both = 0;
+    int split = 0;
+    int moved = 0;
+    for (std::size_t i = 1; i < frames.size(); ++i) {
+        const bool dx = frames[i].x != frames[i - 1].x;
+        const bool dy = frames[i].y != frames[i - 1].y;
+        if (dx || dy)
+            ++moved;
+        if (dx && dy)
+            ++both;
+        else if (dx || dy)
+            ++split;
+    }
+    // ~15 frames in 250 ms at the ~60 Hz animation clock; a machine under
+    // load may render fewer. What matters: the axes never land in separate
+    // frames (one allowance for the very first frame of the run).
+    CHECK(both >= 5);
+    CHECK(split <= 1);
+    CHECK(moved == both + split);
+
+    firmir_gui_headless_remove_screen("ANIM-SYNC");
 }

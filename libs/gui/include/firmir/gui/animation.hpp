@@ -25,8 +25,9 @@ double applyEasing(Easing easing, double t);
  * Concrete animations: PropertyAnimation (numeric), NumberAnimation,
  * ColorAnimation, PauseAnimation and the SequentialAnimation /
  * ParallelAnimation containers (children run one after another / together).
- * start() drives the animation on the owner thread's event loop; natural
- * completion emits the "finished" signal.
+ * start() registers the animation with the owner thread's shared frame clock
+ * (one clock for the whole scene, see advance()); natural completion emits
+ * the "finished" signal.
  */
 class Animation : public Object {
 public:
@@ -41,6 +42,17 @@ public:
     void start();
     /// Stops the animation without emitting "finished".
     void stop();
+
+    /**
+     * @brief Advances the animation to the current time.
+     *
+     * Called by the shared frame driver once per frame for every running
+     * animation; all animations of a thread therefore advance in the same
+     * instant, so a scene that moves several properties per frame (x and y
+     * of a diagonal move) changes them together. Public for the driver and
+     * for tests that want deterministic stepping.
+     */
+    virtual void advance();
 
     /// Direct child animations (for the container animations), in creation
     /// order. Add children (parent them) before start().
@@ -64,10 +76,12 @@ private:
 /**
  * @brief Animates a numeric property of an Item towards a target value.
  *
- * The animation is timer-driven (~60 fps) on the owner thread's event loop
- * and writes through Object::setPropertyDirect(), so behaviors, anchors and
- * propertyChanged subscribers follow every step. When `from` is unset the
- * current property value at start() is used (Behavior semantics).
+ * The animation advances on the thread's shared animation clock (see
+ * Animation::advance), which runs faster than the display refresh, so every
+ * rendered frame carries fresh values. It writes through
+ * Object::setPropertyDirect(), so behaviors, anchors and propertyChanged
+ * subscribers follow every step. When `from` is unset the current property
+ * value at start() is used (Behavior semantics).
  */
 class PropertyAnimation : public Animation {
 public:
@@ -90,13 +104,12 @@ public:
     void setEasing(Easing easing);
     Easing easing() const;
 
+    void advance() override;
+
 protected:
     void onStart() override;
-    void onStop() override;
 
 private:
-    void tick();
-
     class Impl;
     std::unique_ptr<Impl> d;
 };
@@ -125,13 +138,12 @@ public:
     void setEasing(Easing easing);
     Easing easing() const;
 
+    void advance() override;
+
 protected:
     void onStart() override;
-    void onStop() override;
 
 private:
-    void tick();
-
     class Impl;
     std::unique_ptr<Impl> d;
 };

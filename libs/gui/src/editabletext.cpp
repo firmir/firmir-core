@@ -483,7 +483,11 @@ void EditableText::updateCursor() {
     // bitmap-font approximation of Painter::textSize.
     const std::string bytes = d->value.toStdString();
     const std::vector<float> positions = caretPositions(bytes, d->text.font());
-    const int ordinal = boundaryOrdinal(bytes, d->cursorByte);
+    // caretPositions() describes the first line only, while the ordinal counts
+    // boundaries over the whole text: after a newline it would index past the
+    // end (the caret is hidden in multiline mode anyway, see below).
+    const int ordinal = std::clamp(boundaryOrdinal(bytes, d->cursorByte), 0,
+                                   static_cast<int>(positions.size()) - 1);
     d->cursor.setX(kTextPadding + kBitmapPad +
                    positions[static_cast<std::size_t>(ordinal)]);
     d->cursor.setVisible(hasFocus() && !d->multiline);

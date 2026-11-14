@@ -1,6 +1,7 @@
 #include <firmir/gui/animation.hpp>
 
 #include "detail/color_convert.hpp"
+#include "detail/window_internal.hpp"
 
 #include <firmir/gui/item.hpp>
 #include <firmir/timer.hpp>
@@ -52,6 +53,94 @@ Color propertyAsColor(Object* object, const std::string& property) {
     return detail::anyToColor(object->getProperty(property));
 }
 
+/// Interval of the shared animation clock. Deliberately faster than common
+/// display refresh rates (60–120 Hz): positions are computed from the wall
+/// clock, so a clock that outruns the display means every presented frame
+/// shows the freshest position, while a slower clock (16 ms on a 60 Hz panel)
+/// makes a frame occasionally advance two ticks at once — a visible hitch.
+/// The extra ticks only cost a few property writes: the render thread
+/// coalesces frame requests and the display backend paces presentation.
+constexpr auto kFrameInterval = std::chrono::milliseconds(8);
+
+/**
+ * Shared frame driver: one timer per thread advances every running animation.
+ *
+ * Driving all animations from a single clock (instead of one timer per
+ * animation) keeps the properties of a frame consistent: with independent
+ * timers an item animated in x and y got a frame with only x changed
+ * followed by a frame with only y, which reads as a jerky, stair-stepping
+ * diagonal move. The driver also opens a frame batch around the tick, so a
+ * window is rendered once per tick with every property already applied.
+ */
+class AnimationFrameDriver {
+public:
+    static AnimationFrameDriver& instance() {
+        // Intentionally leaked (like Platform::instance): the clock lives as
+        // long as the thread, so animations destroyed late never touch a
+        // half-destroyed driver.
+        static thread_local AnimationFrameDriver* driver =
+            new AnimationFrameDriver;
+        return *driver;
+    }
+
+    void add(Animation* animation) {
+        if (std::find(d->animations.begin(), d->animations.end(), animation) !=
+            d->animations.end())
+            return;
+        d->animations.push_back(animation);
+        ensureTimer().start();
+    }
+
+    void remove(Animation* animation) {
+        auto& list = d->animations;
+        list.erase(std::remove(list.begin(), list.end(), animation),
+                   list.end());
+        if (list.empty() && d->timer)
+            d->timer->stop();
+    }
+
+private:
+    Timer& ensureTimer() {
+        if (!d->timer) {
+            // No parent: the driver owns it for the lifetime of the thread's
+            // event loop (animations outlive individual windows).
+            d->timer = new Timer;
+            d->timer->setInterval(kFrameInterval);
+            d->timer->connect(d->timer, "timeout", [this] { tick(); },
+                              ConnectionMode::Direct);
+        }
+        return *d->timer;
+    }
+
+    void tick() {
+        // Snapshot: finishing, stopping or destroying an animation mutates
+        // the list (a callback may even delete items during the tick).
+        const std::vector<Animation*> snapshot = d->animations;
+        detail::beginFrameBatch();
+        for (Animation* animation : snapshot) {
+            auto& list = d->animations;
+            if (std::find(list.begin(), list.end(), animation) == list.end())
+                continue; // gone since the snapshot: only compare, never deref
+            if (animation->running())
+                animation->advance();
+        }
+        detail::endFrameBatch();
+        auto& list = d->animations;
+        list.erase(std::remove_if(list.begin(), list.end(),
+                                  [](Animation* a) { return !a->running(); }),
+                   list.end());
+        if (list.empty())
+            d->timer->stop();
+    }
+
+    class Data {
+    public:
+        std::vector<Animation*> animations;
+        Timer* timer = nullptr;
+    };
+    std::unique_ptr<Data> d = std::make_unique<Data>();
+};
+
 } // namespace
 
 // ------------------------------- Animation --------------------------------
@@ -62,7 +151,7 @@ public:
 };
 
 Animation::Animation(Object* parent) : Object(parent), d(std::make_unique<Impl>()) {}
-Animation::~Animation() = default;
+Animation::~Animation() { AnimationFrameDriver::instance().remove(this); }
 
 bool Animation::running() const { return d->running; }
 
@@ -70,15 +159,26 @@ void Animation::start() {
     if (d->running)
         return;
     d->running = true;
+    // The start value write is part of the frame: keep it in a batch so the
+    // first frame of the animation is not rendered half-applied.
+    detail::beginFrameBatch();
     onStart();
+    detail::endFrameBatch();
+    // onStart() may finish() immediately (no target/property): only a still
+    // running animation joins the frame driver.
+    if (d->running)
+        AnimationFrameDriver::instance().add(this);
 }
 
 void Animation::stop() {
     if (!d->running)
         return;
     d->running = false;
+    AnimationFrameDriver::instance().remove(this);
     onStop();
 }
+
+void Animation::advance() {}
 
 std::vector<Animation*> Animation::childAnimations() const {
     std::vector<Animation*> result;
@@ -95,6 +195,7 @@ void Animation::finish() {
     if (!d->running)
         return;
     d->running = false;
+    AnimationFrameDriver::instance().remove(this);
     emitSignal(signalFinished);
 }
 
@@ -110,18 +211,13 @@ public:
     std::chrono::milliseconds duration{250};
     Easing easing = Easing::Linear;
 
-    Timer* timer = nullptr; // child
     Connection targetDestroyed;
     std::chrono::steady_clock::time_point started;
     double startValue = 0;
 };
 
 PropertyAnimation::PropertyAnimation(Object* parent)
-    : Animation(parent), d(std::make_unique<Impl>()) {
-    d->timer = new Timer(this);
-    d->timer->setInterval(std::chrono::milliseconds(16));
-    d->timer->connect(this, "timeout", [this] { tick(); }, ConnectionMode::Direct);
-}
+    : Animation(parent), d(std::make_unique<Impl>()) {}
 
 PropertyAnimation::PropertyAnimation(Item* target, std::string property,
                                      Object* parent)
@@ -168,20 +264,16 @@ void PropertyAnimation::onStart() {
     }
     d->startValue = d->hasFrom ? d->from : propertyAsDouble(d->target, d->property);
     d->started = std::chrono::steady_clock::now();
-    tick();
-    d->timer->start();
+    advance();
 }
 
-void PropertyAnimation::onStop() { d->timer->stop(); }
-
-void PropertyAnimation::tick() {
+void PropertyAnimation::advance() {
     if (!running())
         return;
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - d->started);
     const double t = static_cast<double>(elapsed.count()) / d->duration.count();
     if (t >= 1.0) {
-        d->timer->stop();
         d->target->setPropertyDirect(d->property, std::any(d->to));
         finish();
         return;
@@ -201,18 +293,13 @@ public:
     std::chrono::milliseconds duration{250};
     Easing easing = Easing::Linear;
 
-    Timer* timer = nullptr; // child
     Connection targetDestroyed;
     std::chrono::steady_clock::time_point started;
     Color startValue;
 };
 
 ColorAnimation::ColorAnimation(Object* parent)
-    : Animation(parent), d(std::make_unique<Impl>()) {
-    d->timer = new Timer(this);
-    d->timer->setInterval(std::chrono::milliseconds(16));
-    d->timer->connect(this, "timeout", [this] { tick(); }, ConnectionMode::Direct);
-}
+    : Animation(parent), d(std::make_unique<Impl>()) {}
 
 ColorAnimation::~ColorAnimation() { d->targetDestroyed.disconnect(); }
 
@@ -246,20 +333,16 @@ void ColorAnimation::onStart() {
     }
     d->startValue = propertyAsColor(d->target, d->property);
     d->started = std::chrono::steady_clock::now();
-    tick();
-    d->timer->start();
+    advance();
 }
 
-void ColorAnimation::onStop() { d->timer->stop(); }
-
-void ColorAnimation::tick() {
+void ColorAnimation::advance() {
     if (!running())
         return;
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - d->started);
     const double t = static_cast<double>(elapsed.count()) / d->duration.count();
     if (t >= 1.0) {
-        d->timer->stop();
         d->target->setPropertyDirect(d->property, std::any(d->to));
         finish();
         return;
