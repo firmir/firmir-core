@@ -20,6 +20,13 @@ public:
     /// Drops a binding (called when the client resource is destroyed).
     void removeResource(wl_resource* resource);
     void setKeymap(int fd, std::uint32_t size);
+    /// Installs the default xkb keymap (compiled with xkbcommon from the
+    /// XKB_DEFAULT_* environment: rules/model/layout/variant/options) and
+    /// enables key repeat (25 chars/s after 600 ms), so a compositor needs
+    /// no xkbcommon code of its own. The keymap is replayed to every client
+    /// that binds a keyboard, now and later.
+    /// @return false when xkbcommon could not build a keymap.
+    bool setDefaultKeymap();
     /// Keyboard repeat rate (chars/sec) and delay (ms); rate 0 disables
     /// repeat. Replayed to every bound resource (version >= 4) and to all
     /// future bindings.

@@ -22,6 +22,7 @@ Vulkan/OpenGL, FreeType/Fontconfig/HarfBuzz, PNG/JPEG и базовую libwayla
 | linux/input.h | `linux-libc-dev` | GUI-плагин evdev (опционально) |
 | drm/drm.h | `libdrm-dev` | GUI-плагин drm и kms-интеграция eglfs (опционально) |
 | wayland-client/server | `libwayland-dev` | firmir-wayland-client/server/compositor и GUI-плагин |
+| xkbcommon | `libxkbcommon-dev` | keymap в `firmir-wayland-compositor` (`setDefaultKeymap()`) и GUI-плагин wayland |
 | wayland-scanner + protocols | `libwayland-bin`, `wayland-protocols` | C/C++ protocol generation, xdg-shell/viewporter/decoration/output |
 | lcov + genhtml | `lcov` | отчёт о покрытии (см. «Тестовое покрытие») |
 | gcovr | — | альтернативный отчёт о покрытии (опционально) |
@@ -109,6 +110,24 @@ WAYLAND_DISPLAY=wayland-0 FIRMIR_GUI_DISPLAY=wayland \
   FIRMIR_RENDER_BACKEND=vulkan \
   ./build/examples/gui/controls-gallery/firmir-example-gui-controls-gallery
 ```
+
+Сокет создаётся в `/run/display/wayland-0` (каталог создаётся сам — на голой
+KMS-консоли `XDG_RUNTIME_DIR` обычно не задан); если имя занято живым
+композитором, берётся `wayland-1`, `wayland-2` и т.д. Переопределение:
+`FIRMIR_WAYLAND_SOCKET_DIR=<каталог>`, `FIRMIR_WAYLAND_SOCKET=<имя или
+абсолютный путь>`. `addSocketAuto()` возвращает путь (абсолютный, если сокет
+лежит вне `XDG_RUNTIME_DIR`), поэтому клиенту достаточно подставить вывод:
+
+```sh
+WAYLAND_DISPLAY=/run/display/wayland-0 FIRMIR_GUI_DISPLAY=wayland <приложение>
+```
+
+`WaylandGuiItem` (в `firmir-wayland-compositor`) сам пересылает мышь, палец
+(`wl_touch`) и клавиши в `wl_pointer`/`wl_touch`/`wl_keyboard` своего клиента:
+достаточно `setView()` + `setSeat()`, а нажатие/фокус приходят сигналом
+`signalActivated`. GUI-плагин wayland принимает `wl_touch` (down/up/motion/
+cancel) и отдаёт его как `TouchEvent`, поэтому кнопки клиента работают и от
+пальца.
 
 Для неблокирующего D-Bus вызова используйте `DBusConnection::asyncCall()`:
 возвращённый `DBusMessage*` принадлежит соединению, а в его сигнале

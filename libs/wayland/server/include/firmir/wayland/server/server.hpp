@@ -18,6 +18,21 @@ public:
     bool valid() const;
     wl_display* handle() const;
     wl_event_loop* eventLoop() const;
+    /// Creates the compositor socket: @c /run/display/wayland-0, then
+    /// wayland-1 … wayland-31 while a live compositor holds the previous
+    /// name (a stale socket file is replaced). The directory is created on
+    /// demand — a bare KMS console has no XDG_RUNTIME_DIR.
+    ///
+    /// Environment overrides:
+    ///  - @c FIRMIR_WAYLAND_SOCKET_DIR: socket directory (default
+    ///    @c /run/display);
+    ///  - @c FIRMIR_WAYLAND_SOCKET: exact socket name, or an absolute path
+    ///    used verbatim (no automatic numbering; a busy name is an error,
+    ///    not a fallback).
+    ///
+    /// @return the socket path (absolute when it does not live in
+    /// XDG_RUNTIME_DIR, i.e. the value to put into WAYLAND_DISPLAY), or an
+    /// empty string on failure.
     std::string addSocketAuto();
     int run();
     void terminate();

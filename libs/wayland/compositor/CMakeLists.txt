@@ -3,6 +3,10 @@ if(NOT FIRMIR_BUILD_LIB_WAYLAND_COMPOSITOR)
 endif()
 set_source_files_properties(${XDG_PROTOCOL_C} PROPERTIES GENERATED TRUE)
 
+# WaylandKeyboard::setDefaultKeymap() builds the wl_keyboard keymap with
+# xkbcommon, so compositors do not depend on it themselves.
+pkg_check_modules(XKBCOMMON REQUIRED IMPORTED_TARGET xkbcommon)
+
 set(VIEWPORTER_XML ${WAYLAND_PROTOCOLS_DIR}/stable/viewporter/viewporter.xml)
 set(DECORATION_XML ${WAYLAND_PROTOCOLS_DIR}/unstable/xdg-decoration/xdg-decoration-unstable-v1.xml)
 set(XDG_OUTPUT_XML ${WAYLAND_PROTOCOLS_DIR}/unstable/xdg-output/xdg-output-unstable-v1.xml)
@@ -39,8 +43,9 @@ add_library(firmir-wayland-compositor SHARED
 add_dependencies(firmir-wayland-compositor firmir-wayland-client-protocols)
 target_include_directories(firmir-wayland-compositor PUBLIC include ${GENERATED_DIR}
     ${WAYLAND_SERVER_INCLUDE_DIRS})
-target_link_libraries(firmir-wayland-compositor PUBLIC firmir-wayland-server firmir-gui
-    firmir-wayland-protocols)
+target_link_libraries(firmir-wayland-compositor
+    PUBLIC firmir-wayland-server firmir-gui firmir-wayland-protocols
+    PRIVATE PkgConfig::XKBCOMMON)
 
 firmir_install_library(firmir-wayland-compositor MODULE wayland-compositor
     REQUIRES firmir-wayland-server firmir-gui)

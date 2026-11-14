@@ -20,6 +20,8 @@ int main() {
     seat->setCapabilities(WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD |
                           WL_SEAT_CAPABILITY_TOUCH);
     seat->initialize(&compositor);
+    // Default xkb keymap + key repeat; without a keymap clients type nothing.
+    seat->keyboard()->setDefaultKeymap();
     auto* viewporter = new WaylandViewporter(&compositor);
     viewporter->initialize(&compositor);
     auto* decoration = new WaylandXdgDecorationManagerV1(&compositor);

@@ -337,6 +337,20 @@ public:
         eventCallback(event);
     }
 
+    /// wl_touch -> TouchEvent: a touchscreen reports one contact per event
+    /// (the evdev backend does the same), and Platform routes the window from
+    /// points.front().
+    void emitTouch(TouchEvent::Action action, int id, float x, float y) {
+        if (!eventCallback)
+            return;
+        InputEvent event;
+        event.type = InputEvent::Type::Touch;
+        event.touch.action = action;
+        event.touch.points.push_back(
+            {id, Point{x, y}, action != TouchEvent::Action::End});
+        eventCallback(event);
+    }
+
     void emitKey(bool pressed, std::uint32_t wlKey) {
         if (!eventCallback)
             return;
@@ -563,10 +577,19 @@ private:
                                 std::uint32_t state);
     static void onPointerAxis(void* data, wl_pointer*, std::uint32_t,
                               std::uint32_t axis, wl_fixed_t value);
+    static void onTouchDown(void* data, wl_touch*, std::uint32_t,
+                            std::uint32_t time, wl_surface*, std::int32_t id,
+                            wl_fixed_t x, wl_fixed_t y);
+    static void onTouchUp(void* data, wl_touch*, std::uint32_t,
+                          std::uint32_t time, std::int32_t id);
+    static void onTouchMotion(void* data, wl_touch*, std::uint32_t,
+                              std::int32_t id, wl_fixed_t x, wl_fixed_t y);
+    static void onTouchCancel(void* data, wl_touch*);
 
     static const xdg_wm_base_listener wmBaseListener;
     static const wl_seat_listener seatListener;
     static const wl_pointer_listener pointerListener;
+    static const wl_touch_listener touchListener;
 
     std::unique_ptr<Firmir::Wayland::Client::Display> m_clientDisplay;
     std::unique_ptr<Firmir::Wayland::Client::Registry> m_clientRegistry;
@@ -580,10 +603,14 @@ private:
     wl_seat* m_seat = nullptr;
     wl_pointer* m_pointer = nullptr;
     wl_keyboard* m_keyboard = nullptr;
+    wl_touch* m_touch = nullptr;
     xkb_context* m_xkbContext = nullptr;
     xkb_keymap* m_xkbKeymap = nullptr;
     xkb_state* m_xkbState = nullptr;
     Point m_pointerPos{0, 0}; // last pointer position (window coordinates)
+    /// Active touch contacts (wl_touch id -> last position, window
+    /// coordinates); wl_touch.up carries no coordinates.
+    std::vector<std::pair<std::int32_t, Point>> m_touches;
 
     friend class WaylandWindow;
     friend class WaylandScreen;
@@ -637,6 +664,8 @@ WaylandBackend::~WaylandBackend() {
             wl_keyboard_release(m_keyboard);
         if (m_pointer)
             wl_pointer_release(m_pointer);
+        if (m_touch)
+            wl_touch_release(m_touch);
         if (m_seat)
             wl_seat_destroy(m_seat);
         if (m_xkbState)
@@ -706,6 +735,14 @@ void WaylandBackend::onSeatCapabilities(void* data, wl_seat*,
     } else if (!hasKeyboard && self->m_keyboard) {
         wl_keyboard_release(self->m_keyboard);
         self->m_keyboard = nullptr;
+    }
+    const bool hasTouch = capabilities & WL_SEAT_CAPABILITY_TOUCH;
+    if (hasTouch && !self->m_touch) {
+        self->m_touch = wl_seat_get_touch(self->m_seat);
+        wl_touch_add_listener(self->m_touch, &touchListener, self);
+    } else if (!hasTouch && self->m_touch) {
+        wl_touch_release(self->m_touch);
+        self->m_touch = nullptr;
     }
 }
 
@@ -782,6 +819,72 @@ const wl_pointer_listener WaylandBackend::pointerListener = {
     [](void*, wl_pointer*, std::uint32_t, std::int32_t) {},  // axis_discrete
     [](void*, wl_pointer*, std::uint32_t, std::int32_t) {},  // axis_value120
     [](void*, wl_pointer*, std::uint32_t, std::uint32_t) {}, // axis_relative_direction
+};
+
+// ---- touch (wl_touch) ----
+// Contacts are tracked so up()/cancel() can report the last position: wl_touch
+// carries no coordinates on up, and Platform routes an End by window.
+
+void WaylandBackend::onTouchDown(void* data, wl_touch*, std::uint32_t,
+                                 std::uint32_t, wl_surface*, std::int32_t id,
+                                 wl_fixed_t x, wl_fixed_t y) {
+    auto* self = static_cast<WaylandBackend*>(data);
+    const Point pos{static_cast<float>(wl_fixed_to_double(x)),
+                    static_cast<float>(wl_fixed_to_double(y))};
+    bool known = false;
+    for (auto& contact : self->m_touches) {
+        if (contact.first != id) continue;
+        contact.second = pos;
+        known = true;
+    }
+    if (!known) self->m_touches.emplace_back(id, pos);
+    self->emitTouch(TouchEvent::Action::Begin, id, pos.x, pos.y);
+}
+
+void WaylandBackend::onTouchUp(void* data, wl_touch*, std::uint32_t,
+                               std::uint32_t, std::int32_t id) {
+    auto* self = static_cast<WaylandBackend*>(data);
+    Point pos{0.0f, 0.0f};
+    for (auto it = self->m_touches.begin(); it != self->m_touches.end(); ++it) {
+        if (it->first != id) continue;
+        pos = it->second;
+        self->m_touches.erase(it);
+        break;
+    }
+    self->emitTouch(TouchEvent::Action::End, id, pos.x, pos.y);
+}
+
+void WaylandBackend::onTouchMotion(void* data, wl_touch*, std::uint32_t,
+                                   std::int32_t id, wl_fixed_t x, wl_fixed_t y) {
+    auto* self = static_cast<WaylandBackend*>(data);
+    const Point pos{static_cast<float>(wl_fixed_to_double(x)),
+                    static_cast<float>(wl_fixed_to_double(y))};
+    for (auto& contact : self->m_touches) {
+        if (contact.first != id) continue;
+        contact.second = pos;
+        break;
+    }
+    self->emitTouch(TouchEvent::Action::Update, id, pos.x, pos.y);
+}
+
+void WaylandBackend::onTouchCancel(void* data, wl_touch*) {
+    auto* self = static_cast<WaylandBackend*>(data);
+    // The compositor took the contacts away (grab change): finish them all so
+    // no item is left in the pressed state.
+    for (const auto& contact : self->m_touches)
+        self->emitTouch(TouchEvent::Action::End, contact.first,
+                        contact.second.x, contact.second.y);
+    self->m_touches.clear();
+}
+
+const wl_touch_listener WaylandBackend::touchListener = {
+    onTouchDown,
+    onTouchUp,
+    onTouchMotion,
+    [](void*, wl_touch*) {},                        // frame
+    onTouchCancel,
+    [](void*, wl_touch*, std::int32_t, wl_fixed_t, wl_fixed_t) {}, // shape
+    [](void*, wl_touch*, std::int32_t, wl_fixed_t) {},             // orientation
 };
 
 void WaylandBackend::onGlobalRemove(void* data, wl_registry*,

@@ -1,6 +1,11 @@
 #include <firmir/wayland/compositor/input.hpp>
 #include <wayland-server.h>
+
+#include <xkbcommon/xkbcommon.h>
+
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <vector>
 #include <sys/mman.h>
@@ -255,6 +260,40 @@ void WaylandKeyboard::setKeymap(int fd, std::uint32_t size) {
         }
         ::close(copy);
     }
+}
+bool WaylandKeyboard::setDefaultKeymap() {
+    xkb_context* context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+    if (!context) return false;
+    // No explicit rules: honour XKB_DEFAULT_RULES / MODEL / LAYOUT /
+    // VARIANT / OPTIONS from the environment.
+    xkb_keymap* keymap =
+        xkb_keymap_new_from_names(context, nullptr, XKB_KEYMAP_COMPILE_NO_FLAGS);
+    bool installed = false;
+    if (keymap) {
+        char* text = xkb_keymap_get_as_string(keymap, XKB_KEYMAP_FORMAT_TEXT_V1);
+        if (text) {
+            const std::size_t size = std::strlen(text) + 1;
+            const int fd = memfd_create("firmir-keymap", MFD_CLOEXEC);
+            if (fd >= 0) {
+                std::size_t offset = 0;
+                while (offset < size) {
+                    const ssize_t chunk = ::write(fd, text + offset, size - offset);
+                    if (chunk <= 0) break;
+                    offset += static_cast<std::size_t>(chunk);
+                }
+                if (offset == size) {
+                    setKeymap(fd, static_cast<std::uint32_t>(size));
+                    installed = true;
+                }
+                ::close(fd);
+            }
+            std::free(text);
+        }
+        xkb_keymap_unref(keymap);
+    }
+    xkb_context_unref(context);
+    if (installed) setRepeatInfo(25, 600);
+    return installed;
 }
 void WaylandKeyboard::enter(WaylandSurface* surface, const std::vector<std::uint32_t>& keys) {
     wl_resource* target = resourceForSurface(d->resources, surface);

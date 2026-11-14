@@ -1470,14 +1470,21 @@ TEST_CASE(gui_editabletext_click_on_text_focuses_edit) {
         firmir_gui_headless_inject_key(false, 30, "");
         CHECK_EQ(edit->text().toStdString(), std::string("aexisting text"));
 
-        // A click past the text end moves the caret to the end.
+        // A click past the text end moves the caret to the end. The sample is
+        // short so the click stays past the end whatever glyph metrics the
+        // font database reports: a host without usable fonts (the rpmbuild
+        // chroot) falls back to ~2x wider bitmap glyphs, and a fixed pixel x
+        // would land inside a long text instead — the caret would then go to
+        // the glyph under the click, which is correct behaviour, not a bug.
+        edit->setText(String("ab"));
         firmir_gui_headless_inject_mouse(
             static_cast<int>(MouseEvent::Action::Press), 175, 15, 1);
         firmir_gui_headless_inject_mouse(
             static_cast<int>(MouseEvent::Action::Release), 175, 15, 1);
+        CHECK_EQ(edit->cursorPosition(), 2);
         firmir_gui_headless_inject_key(true, 48, "b");
         firmir_gui_headless_inject_key(false, 48, "");
-        CHECK_EQ(edit->text().toStdString(), std::string("aexisting textb"));
+        CHECK_EQ(edit->text().toStdString(), std::string("abb"));
 
         window.hide();
     }
@@ -1511,9 +1518,13 @@ TEST_CASE(gui_editabletext_cursor_tracks_rendered_text) {
         CHECK(cursor != nullptr);
         if (textItem && cursor) {
             // Caret x = text padding (10) + the bitmap's 1px left pad + the
-            // shaped advance (implicitWidth = ceil(advance) + 2).
+            // shaped advance (implicitWidth = ceil(advance) + 2). Without a
+            // usable font (rpmbuild chroot) the text is drawn with the bitmap
+            // font, whose implicitWidth carries no +2 raster padding, so the
+            // caret may sit up to 2px right of it — the 2x-glyph error this
+            // test guards against is ~80px, so the tolerance stays tight.
             const float textRight = 11.0f + textItem->implicitWidth() - 2.0f;
-            CHECK(std::fabs(cursor->x() - textRight) < 1.5f);
+            CHECK(std::fabs(cursor->x() - textRight) < 2.5f);
         }
 
         window.hide();

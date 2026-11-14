@@ -74,14 +74,39 @@ public:
     Frame grab(WaylandSurface* surface) const;
 };
 
+class WaylandSeat;
+
 class WaylandGuiItem : public Gui::Item {
 public:
     explicit WaylandGuiItem(Object* parent = nullptr);
     ~WaylandGuiItem() override;
     WaylandView* view() const;
     void setView(WaylandView* view);
+    /// Seat that receives the pointer/keyboard input collected by this item.
+    /// Without one the item is paint-only.
+    WaylandSeat* seat() const;
+    void setSeat(WaylandSeat* seat);
+    /// Cuts the item off from its (possibly dying) surface: the paint stops
+    /// and no further input is forwarded. Takes the scene lock so an
+    /// in-flight render never observes a stale surface.
+    void detachSurface();
+    /// Emitted (no arguments) on a pointer press and when the item gains
+    /// focus — the embedding compositor raises/activates its window here.
+    static constexpr auto signalActivated = "activated";
 protected:
     void paint(Gui::Painter& painter) override;
+    /// Pointer input -> wl_pointer of the view's surface (enter/motion/
+    /// button/axis). Item coordinates are scaled to surface coordinates, so
+    /// a stretched item (maximized/fullscreen) stays correct, and a pressed
+    /// button keeps the implicit grab until its release.
+    void mouseEvent(Gui::MouseEvent& event) override;
+    /// Keyboard input -> wl_keyboard of the focused surface.
+    void keyEvent(Gui::KeyEvent& event) override;
+    /// Touch input -> wl_touch of the view's surface. Only the contacts that
+    /// began on this item are forwarded; they keep sending motion/up after
+    /// the finger slides outside (a touch has no leave event).
+    void touchEvent(Gui::TouchEvent& event) override;
+    void focusInEvent() override;
 private:
     class Impl;
     std::unique_ptr<Impl> d;
