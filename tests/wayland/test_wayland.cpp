@@ -288,6 +288,93 @@ TEST_CASE(wayland_client_buffer_backend_selection) {
     ::unsetenv("FIRMIR_WAYLAND_CLIENT_PLUGIN_PATH");
 }
 
+// A client that disconnects must leave clients() and lose its surfaces: a
+// compositor that hosts apps which come and go otherwise kept a WaylandClient —
+// and every resource it had bound — for each connection it had ever served, so a
+// long-running session grew with every app that was opened and closed.
+//
+// Everything runs on one thread: the compositor's objects are owned by the
+// thread that created them, and dispatch is called in between client requests
+// instead of from a server thread.
+TEST_CASE(wayland_disconnected_client_is_forgotten) {
+    using namespace Wayland::Compositor;
+    SocketEnvironmentGuard guard;
+    resetSocketDir();
+    ::setenv("FIRMIR_WAYLAND_SOCKET_DIR", kTestSocketDir, 1);
+
+    WaylandCompositor compositor;
+    CHECK(compositor.create());
+    auto* legacy = new WaylandWlShell(&compositor);
+    CHECK(legacy->initialize(&compositor));
+    const std::string socket = compositor.addSocketAuto();
+    CHECK(!socket.empty());
+    if (socket.empty())
+        return;
+    CHECK(compositor.clients().empty());
+    CHECK(compositor.surfaces().empty());
+
+    // Sends what the client queued so far to the server and processes it (plus
+    // whatever the server replied) so the next step starts from a clean state.
+    // Several rounds: the first one accepts a new connection, the next ones read
+    // what that client already sent.
+    const auto flushToServer = [&] {
+        for (int round = 0; round < 4; ++round)
+            compositor.dispatch(5);
+        if (compositor.display())
+            compositor.display()->flushClients();
+    };
+
+    {
+        Wayland::Client::Display display(socket.c_str());
+        CHECK(display.valid());
+        if (!display.valid())
+            return;
+        auto registry = display.createRegistry();
+        std::uint32_t compositorName = 0;
+        std::uint32_t shellName = 0;
+        registry->setGlobalHandler([&](std::uint32_t name, const char* interface,
+                                       std::uint32_t version) {
+            (void)version;
+            if (std::strcmp(interface, wl_compositor_interface.name) == 0)
+                compositorName = name;
+            else if (std::strcmp(interface, wl_shell_interface.name) == 0)
+                shellName = name;
+        });
+        // get_registry -> globals: the reply is queued before the client reads
+        // it, so the client-side dispatch below cannot block.
+        display.flush();
+        flushToServer();
+        display.dispatch();
+        CHECK(compositorName != 0);
+        CHECK(shellName != 0);
+        if (!compositorName || !shellName)
+            return;
+
+        auto wlCompositor = Wayland::Client::Compositor::bind(*registry, compositorName, 4);
+        auto shell = Wayland::Client::Shell::bind(*registry, shellName, 1);
+        auto surface = wlCompositor.createSurface();
+        auto shellSurface = shell.getShellSurface(surface.handle());
+        shellSurface.setToplevel();
+        display.flush();
+        flushToServer();
+
+        CHECK_EQ(compositor.clients().size(), std::size_t(1));
+        CHECK_EQ(compositor.surfaces().size(), std::size_t(1));
+        CHECK_EQ(legacy->shellSurfaces().size(), std::size_t(1));
+    } // the client connection ends here
+
+    // The disconnect is queued in the server's socket: process it and the client
+    // and its surface must be gone.
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        compositor.dispatch(10);
+        if (compositor.clients().empty() && compositor.surfaces().empty())
+            break;
+    }
+    CHECK(compositor.clients().empty());
+    CHECK(compositor.surfaces().empty());
+    CHECK(legacy->shellSurfaces().empty());
+}
+
 // End to end: the loader dlopen()s the shm client backend, the plugin allocates
 // a wl_shm buffer over a real compositor connection, and the pixels it hands
 // out are the compositor's frame memory.

@@ -19,10 +19,16 @@ namespace Gui {
 /**
  * @brief Per-render-device resources shared by Painters.
  *
- * Owns the compiled pipelines, the dynamic vertex buffer and the glyph atlas
- * texture. A window holds one instance for its render device; it must
- * outlive every command buffer submission recorded through its Painters
- * (the recorded commands reference these resources).
+ * Owns the compiled pipelines, the dynamic vertex buffer, the glyph atlas
+ * texture and the per-item texture/shader caches. A window holds one instance
+ * for its render device; it must outlive every command buffer submission
+ * recorded through its Painters (the recorded commands reference these
+ * resources).
+ *
+ * The per-item caches (Painter::drawRgba/drawShader) are aged by paint passes:
+ * an entry no pass used for a couple of passes is dropped, so an item that is
+ * gone (a closed client window) does not keep its texture — and the device
+ * memory behind it — until the process exits.
  */
 class RenderResources {
 public:
@@ -33,6 +39,11 @@ public:
     RenderResources& operator=(const RenderResources&) = delete;
 
     Render::RenderDevice* device() const;
+
+    /// Number of RGBA textures currently held for items (diagnostics/tests).
+    std::size_t cachedTextureCount() const;
+    /// Number of custom shader pipelines currently held (diagnostics/tests).
+    std::size_t cachedShaderCount() const;
 
 private:
     class Impl;

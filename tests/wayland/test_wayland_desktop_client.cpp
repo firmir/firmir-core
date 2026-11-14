@@ -215,6 +215,45 @@ static void registryGlobal(void* data, wl_registry* registry, std::uint32_t name
 static void registryGlobalRemove(void*, wl_registry*, std::uint32_t) {}
 static const wl_registry_listener registryListener = {registryGlobal, registryGlobalRemove};
 
+/// Destroys the proxies registryGlobal() created. libwayland frees a proxy only
+/// when it is destroyed — disconnecting the display does not — so a client that
+/// binds globals has to release them, otherwise a leak checker reports the
+/// difference.
+static void releaseGlobals(Client& client) {
+    if (client.wmBase) {
+        xdg_wm_base_destroy(client.wmBase);
+        client.wmBase = nullptr;
+    }
+    if (client.seat) {
+        wl_seat_release(client.seat);
+        client.seat = nullptr;
+    }
+    if (client.shm) {
+        wl_shm_destroy(client.shm);
+        client.shm = nullptr;
+    }
+    if (client.compositor) {
+        wl_compositor_destroy(client.compositor);
+        client.compositor = nullptr;
+    }
+    if (client.output) {
+        wl_output_release(client.output);
+        client.output = nullptr;
+    }
+    if (client.decoration) {
+        zxdg_decoration_manager_v1_destroy(client.decoration);
+        client.decoration = nullptr;
+    }
+    if (client.outputManager) {
+        zxdg_output_manager_v1_destroy(client.outputManager);
+        client.outputManager = nullptr;
+    }
+    if (client.viewporter) {
+        wp_viewporter_destroy(client.viewporter);
+        client.viewporter = nullptr;
+    }
+}
+
 namespace {
 
 /// Roundtrip that fails the test on a protocol error: a fatal error here means
@@ -293,10 +332,11 @@ void runDesktopClient(const std::string& socket, Client& client) {
         // Cursor buffer out of a shared pool, before any window exists.
         wl_shm_pool* pool = nullptr;
         wl_buffer* cursor = makeBuffer(client.shm, &pool, 16, 16, WL_SHM_FORMAT_ARGB8888, 0);
+        wl_surface* cursorSurface = nullptr;
         CHECK(cursor != nullptr);
         if (cursor) {
             wl_shm_pool_destroy(pool);
-            wl_surface* cursorSurface = wl_compositor_create_surface(client.compositor);
+            cursorSurface = wl_compositor_create_surface(client.compositor);
             wl_surface_attach(cursorSurface, cursor, 0, 0);
             wl_surface_damage(cursorSurface, 0, 0, 16, 16);
             wl_surface_commit(cursorSurface);
@@ -358,6 +398,7 @@ void runDesktopClient(const std::string& socket, Client& client) {
         CHECK(roundtrip(client, "window teardown"));
         if (cursor) wl_buffer_destroy(cursor);
         wl_pointer_release(pointer);
+        if (cursorSurface) wl_surface_destroy(cursorSurface);
         wl_keyboard_release(keyboard);
         wl_touch_release(touch);
         if (extraOutput) zxdg_output_v1_destroy(extraOutput);
@@ -494,6 +535,7 @@ void runFrameClient(const std::string& socket, Client& client, std::atomic<bool>
     wl_buffer_destroy(buffer);
     wl_shm_pool_destroy(pool);
     wl_registry_destroy(registry);
+    releaseGlobals(client);
     wl_display_disconnect(client.display);
 }
 
@@ -652,6 +694,7 @@ void runClickClient(const std::string& socket, ClickClient& state) {
     wl_shm_pool_destroy(pool);
     wl_pointer_destroy(pointer);
     wl_registry_destroy(registry);
+    releaseGlobals(client);
     wl_display_disconnect(client.display);
 }
 

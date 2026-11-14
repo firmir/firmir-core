@@ -84,6 +84,14 @@ public:
     const std::vector<WaylandResource>& resources() const;
     void addResource(wl_resource* resource);
 private:
+    friend struct CompositorGlobal;
+
+    /// Starts watching the connection: when the client goes away (it exits or
+    /// the compositor disconnects it) the object deletes itself and leaves
+    /// WaylandCompositor::clients(). Called when the client first binds
+    /// wl_compositor, i.e. once per connection.
+    void watchClient();
+
     class Impl;
     std::unique_ptr<Impl> d;
 };

@@ -213,6 +213,11 @@ int main() {
         ++failures;
     }
 
+    // The tree was built without a parent, so the driver owns it: deleting the
+    // root frees the items, the model and the repeater.
+    delete o.root;
+    o.root = nullptr;
+
     if (failures)
         std::printf("%d check(s) failed\n", failures);
     return failures ? 1 : 0;

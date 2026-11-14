@@ -279,6 +279,7 @@ public:
         if (!key || !pixels || width <= 0 || height <= 0)
             return nullptr;
         auto& entry = rgbaTextures_[key];
+        entry.lastUsed = pass;
         const std::size_t bytes = static_cast<std::size_t>(width) * height * 4;
         if (!entry.texture || entry.width != width || entry.height != height) {
             TextureDesc desc;
@@ -306,6 +307,7 @@ public:
         if (!key || device->backendName() == "soft" || device->backendName() == "null")
             return fallback;
         auto& entry = shaderEffects_[key];
+        entry.lastUsed = pass;
         if (entry.pipeline && entry.body == body)
             return entry.pipeline.get();
         entry.body = body;
@@ -366,6 +368,9 @@ public:
         std::string body;
         std::unique_ptr<RenderShader> fragment;
         std::unique_ptr<RenderPipeline> pipeline;
+        /// Pass stamp of the last frame this entry was asked for; see
+        /// beginPass()/endPass().
+        std::uint64_t lastUsed = 0;
     };
     std::map<const void*, ShaderEffectEntry> shaderEffects_;
     struct RgbaEntry {
@@ -373,8 +378,46 @@ public:
         std::uint64_t generation = 0;
         int width = 0;
         int height = 0;
+        /// Pass stamp of the last frame this entry was asked for.
+        std::uint64_t lastUsed = 0;
     };
     std::map<const void*, RgbaEntry> rgbaTextures_;
+
+    /// Current paint pass. Every Painter bumps it, so the caches below can age
+    /// their entries.
+    std::uint64_t pass = 0;
+    /// Passes an unused entry survives. The backends submit synchronously
+    /// (vkQueueWaitIdle / CPU rasterizer), so one pass would be enough today;
+    /// the second one keeps an asynchronous backend from seeing a texture
+    /// destroyed while a submitted command still samples it.
+    static constexpr std::uint64_t kCacheGracePasses = 2;
+
+    void beginPass() { ++pass; }
+
+    /// Drops the entries no pass has used for kCacheGracePasses. Called when a
+    /// Painter goes away, i.e. after the pass's commands are recorded: entries
+    /// used *in* this pass are kept (the recorded draws still reference them),
+    /// entries from older passes are safe to destroy. Without this the caches
+    /// kept one texture per item that ever painted — a compositor that hosted
+    /// windows one after another kept a client-sized texture per window, and
+    /// its RSS grew with every app that was opened and closed.
+    void endPass() {
+        const auto expired = [this](std::uint64_t lastUsed) {
+            return pass > lastUsed + kCacheGracePasses;
+        };
+        for (auto it = rgbaTextures_.begin(); it != rgbaTextures_.end();) {
+            if (expired(it->second.lastUsed))
+                it = rgbaTextures_.erase(it);
+            else
+                ++it;
+        }
+        for (auto it = shaderEffects_.begin(); it != shaderEffects_.end();) {
+            if (expired(it->second.lastUsed))
+                it = shaderEffects_.erase(it);
+            else
+                ++it;
+        }
+    }
 
     RenderDevice* device;
     std::unique_ptr<RenderShader> vertexShader;
@@ -392,6 +435,12 @@ RenderResources::RenderResources(Render::RenderDevice* device)
 RenderResources::~RenderResources() = default;
 
 Render::RenderDevice* RenderResources::device() const { return d->device; }
+std::size_t RenderResources::cachedTextureCount() const {
+    return d->rgbaTextures_.size();
+}
+std::size_t RenderResources::cachedShaderCount() const {
+    return d->shaderEffects_.size();
+}
 
 class Painter::Impl {
 public:
@@ -470,8 +519,16 @@ public:
 Painter::Painter(RenderResources& resources,
                  Render::RenderCommandBuffer* commands,
                  Render::RenderTarget* target)
-    : d(std::make_unique<Impl>(*resources.d, commands, target)) {}
-Painter::~Painter() = default;
+    : d(std::make_unique<Impl>(*resources.d, commands, target)) {
+    // Age the per-item caches: see RenderResources::Impl::endPass().
+    d->resources.beginPass();
+}
+Painter::~Painter() {
+    // Prune the caches the pass no longer uses (only if this painter still owns
+    // a pass: a moved-from painter has none).
+    if (d)
+        d->resources.endPass();
+}
 Painter::Painter(Painter&&) noexcept = default;
 Painter& Painter::operator=(Painter&&) noexcept = default;
 

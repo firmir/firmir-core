@@ -22,6 +22,15 @@ class WaylandClient::Impl {
 public:
     Server::Client client;
     std::vector<WaylandResource> resources;
+    /// wl_client has no destroy signal of its own for the compositor's side, so
+    /// a listener is registered per connection: it deletes the WaylandClient
+    /// (and drops it from WaylandCompositor::clients()) when the connection
+    /// ends. Without it the client list — and every resource it referenced —
+    /// grew with each client that ever connected.
+    wl_listener destroyListener{};
+    bool watching = false;
+    WaylandClient* owner = nullptr;
+    WaylandCompositor* compositor = nullptr;
 };
 
 class WaylandOutput::Impl {
@@ -81,8 +90,18 @@ bool WaylandCompositorExtension::initialize(WaylandCompositor* compositor) {
 WaylandClient::WaylandClient(wl_client* client, Object* parent)
     : WaylandObject(parent), d(std::make_unique<Impl>()) {
     d->client = Server::Client(client);
+    d->owner = this;
 }
-WaylandClient::~WaylandClient() = default;
+WaylandClient::~WaylandClient() {
+    if (d->watching) {
+        // Still connected (the compositor object is being torn down, or the
+        // app keeps a client object alive by itself): stop watching so the
+        // listener never fires on freed memory. libwayland unlinks a listener
+        // itself when it does fire, hence the flag.
+        wl_list_remove(&d->destroyListener.link);
+        d->watching = false;
+    }
+}
 wl_client* WaylandClient::handle() const { return d->client.handle(); }
 void WaylandClient::credentials(pid_t& pid, uid_t& uid, gid_t& gid) const {
     d->client.credentials(pid, uid, gid);
@@ -277,6 +296,21 @@ struct CompositorGlobal {
     inline static const struct wl_compositor_interface compositorImplementation = {
         createSurface, createRegion
     };
+    /// The connection ended: delete this client's WaylandClient and drop it from
+    /// clients(). libwayland has already unlinked the listener, so it must not
+    /// be removed again (the destructor checks the flag).
+    static void clientDestroyed(wl_listener* listener, void*) {
+        WaylandClient::Impl* impl = wl_container_of(listener, impl, destroyListener);
+        impl->watching = false;
+        WaylandClient* object = impl->owner;
+        WaylandCompositor* compositor = impl->compositor;
+        if (compositor) {
+            auto& clients = compositor->d->clients;
+            clients.erase(std::remove(clients.begin(), clients.end(), object),
+                          clients.end());
+        }
+        delete object;
+    }
     static void bind(wl_client* client, void* data, std::uint32_t version, std::uint32_t id) {
         auto* compositor = static_cast<WaylandCompositor*>(data);
         wl_resource* resource = wl_resource_create(client, &wl_compositor_interface,
@@ -289,10 +323,20 @@ struct CompositorGlobal {
         if (!object) {
             object = new WaylandClient(client, compositor);
             compositor->d->clients.push_back(object);
+            object->d->compositor = compositor;
+            object->watchClient();
         }
         object->addResource(resource);
     }
 };
+
+void WaylandClient::watchClient() {
+    if (d->watching || !d->client.handle())
+        return;
+    d->destroyListener.notify = &CompositorGlobal::clientDestroyed;
+    wl_client_add_destroy_listener(d->client.handle(), &d->destroyListener);
+    d->watching = true;
+}
 
 WaylandCompositor::WaylandCompositor(Object* parent)
     : WaylandObject(parent), d(std::make_unique<Impl>()) {

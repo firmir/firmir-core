@@ -1390,6 +1390,59 @@ TEST_CASE(gui_painter_draws_text_glyphs) {
     CHECK_EQ(cpu->pixels()[7 * 32 + 7], 0xFF000000u);
 }
 
+// The per-item texture cache is aged by paint passes: the content texture of an
+// item that no longer paints (a closed client window) must be dropped instead of
+// living until the process exits. Without the aging a compositor that hosted
+// windows one after another kept a client-sized texture — and the device memory
+// behind it — per window, and its RSS grew with every app opened and closed.
+TEST_CASE(gui_painter_texture_cache_forgets_dead_items) {
+    auto device = Render::Render::createDevice("soft");
+    CHECK(device != nullptr);
+    if (!device)
+        return;
+    RenderResources resources(device.get());
+    std::unique_ptr<Render::RenderTarget> target(
+        device->createRenderTarget({4, 4, Render::TextureFormat::Rgba8, false}));
+    std::unique_ptr<Render::RenderCommandBuffer> commands(
+        device->createCommandBuffer());
+    CHECK(target && commands);
+    if (!target || !commands)
+        return;
+    const std::uint32_t pixels[2 * 2] = {0xFF102030u, 0xFF405060u, 0xFF708090u,
+                                         0xFFA0B0C0u};
+    // One paint pass. @p deadKey plays the window that is about to close (a new
+    // one every pass), @p liveKey the window that stays.
+    const auto paint = [&](const void* deadKey, const void* liveKey) {
+        commands->begin();
+        Render::ClearValue clear; // opaque black
+        clear.a = 1;
+        commands->beginRenderPass(target.get(), clear);
+        {
+            Painter painter(resources, commands.get(), target.get());
+            if (deadKey)
+                painter.drawRgba(RectF{0, 0, 4, 4}, pixels, 2, 2, deadKey, 1);
+            if (liveKey)
+                painter.drawRgba(RectF{0, 0, 4, 4}, pixels, 2, 2, liveKey, 1);
+        }
+        commands->endRenderPass();
+        commands->end();
+        device->submit(commands.get());
+    };
+
+    int liveKey = 0;
+    for (std::uintptr_t window = 0; window < 50; ++window) {
+        paint(reinterpret_cast<const void*>(0x10000 + window * 8), &liveKey);
+        // The live texture plus the grace window of recently used ones: the
+        // history of dead windows must not accumulate.
+        CHECK(resources.cachedTextureCount() <= 4);
+    }
+    // Three passes with the live item only: every dead window's texture goes.
+    paint(nullptr, &liveKey);
+    paint(nullptr, &liveKey);
+    paint(nullptr, &liveKey);
+    CHECK_EQ(resources.cachedTextureCount(), std::size_t(1));
+}
+
 TEST_CASE(gui_rectangle_rounded_border_pixels) {
     auto device = Render::Render::createDevice("soft");
     CHECK(device != nullptr);

@@ -358,6 +358,21 @@ if(FIRMIR_BUILD_TESTS)
         else()
             add_test(NAME firmlc.m6.app COMMAND $<TARGET_FILE:firmlc_m6_app>)
         endif()
+        # These run a generated UI app: they exercise GUI logic, not the GPU
+        # backend (firmir.tests covers the render backends). Render on the CPU so
+        # the outcome does not depend on the machine's graphics driver — a Vulkan
+        # driver keeps its init state allocated at exit and a leak checker then
+        # reports that as our leak.
+        foreach(firml_test IN ITEMS firmlc.e2e.app firmlc.e2e.repeater
+                                  firmlc.handlers.app firmlc.component.app
+                                  firmlc.connections.app firmlc.function.app
+                                  firmlc.window.app firmlc.calc.app
+                                  firmlc.m6.app)
+            if(TEST ${firml_test})
+                set_tests_properties(${firml_test} PROPERTIES
+                    ENVIRONMENT "FIRMIR_RENDER_BACKEND=soft")
+            endif()
+        endforeach()
     endif()
 
     # The e2e test binaries link firmir-gui; sandboxed build environments

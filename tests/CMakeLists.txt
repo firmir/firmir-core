@@ -288,30 +288,42 @@ else()
     add_test(NAME firmir.tests COMMAND $<TARGET_FILE:tests>)
 endif()
 
+# Environment for the suite. All variables go into a single
+# set_tests_properties() call: ENVIRONMENT replaces the property value, so a
+# second call would silently drop whatever the first one set.
+set(FIRMIR_TEST_ENVIRONMENT "")
 # ffmpeg's transitive dependencies (libavutil/libbluray/libopenmpt/...)
 # keep global init state allocated at exit; LSan suppressions keep the suite
 # green without hiding leaks in Firmir's own code.
 if(FIRMIR_SANITIZER STREQUAL "address")
-    set_tests_properties(firmir.tests PROPERTIES
-        ENVIRONMENT "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan-thirdparty.supp")
+    list(APPEND FIRMIR_TEST_ENVIRONMENT
+        "LSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/lsan-thirdparty.supp")
 endif()
-
+# Instrumented builds are an order of magnitude slower, and the GUI tests that
+# sample animation frames notice: a large llvmpipe frame takes ~100 ms under ASan,
+# so an animation never produces the frames they count. The render backends have
+# their own tests (firmir.vulkan below, plus the software-renderer pixel tests).
+if(NOT FIRMIR_SANITIZER STREQUAL "")
+    list(APPEND FIRMIR_TEST_ENVIRONMENT "FIRMIR_RENDER_BACKEND=soft")
+endif()
 # Mesa's Vulkan worker cache survives the loader itself (two native allocations
 # outside Firmir ownership). Keep LSan for the full suite and isolate only the
 # Vulkan pixel test with leak detection disabled; ASan/UBSan remain active.
 if(FIRMIR_SANITIZER STREQUAL "address" AND TARGET firmir-render-vulkan)
-    set_tests_properties(firmir.tests PROPERTIES
-        ENVIRONMENT "FIRMIR_TEST_SKIP_FILTER=render_vulkan")
+    list(APPEND FIRMIR_TEST_ENVIRONMENT "FIRMIR_TEST_SKIP_FILTER=render_vulkan")
     add_test(NAME firmir.vulkan COMMAND $<TARGET_FILE:tests>)
     set_tests_properties(firmir.vulkan PROPERTIES
         ENVIRONMENT "FIRMIR_TEST_FILTER=render_vulkan;ASAN_OPTIONS=detect_leaks=0")
 endif()
 if(FIRMIR_SANITIZER STREQUAL "thread" AND TARGET firmir-render-vulkan)
-    set_tests_properties(firmir.tests PROPERTIES
-        ENVIRONMENT "FIRMIR_TEST_SKIP_FILTER=render_vulkan")
+    list(APPEND FIRMIR_TEST_ENVIRONMENT "FIRMIR_TEST_SKIP_FILTER=render_vulkan")
     add_test(NAME firmir.vulkan COMMAND setarch -R $<TARGET_FILE:tests>)
     set_tests_properties(firmir.vulkan PROPERTIES
         ENVIRONMENT "FIRMIR_TEST_FILTER=render_vulkan;TSAN_OPTIONS=suppressions=${CMAKE_CURRENT_SOURCE_DIR}/tsan-lavapipe.supp")
+endif()
+if(NOT FIRMIR_TEST_ENVIRONMENT STREQUAL "")
+    set_tests_properties(firmir.tests PROPERTIES
+        ENVIRONMENT "${FIRMIR_TEST_ENVIRONMENT}")
 endif()
 
 # The test binary, the libraries it links and the plugins it loads carry an
