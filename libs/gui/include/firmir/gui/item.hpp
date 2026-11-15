@@ -196,6 +196,21 @@ public:
     /// transformOrigin as an item-local point.
     Point transformOriginPoint() const;
 
+    /**
+     * @brief Delivers a touch event to this item, and up its parents when it
+     *        does not accept it.
+     *
+     * Positions in @p event are window (scene) coordinates and are mapped to
+     * every item on the way; this is the propagation the window does for the
+     * item a touch hit. An item that decides after the contact began that it
+     * belongs to another item (a window that only wants clicks handing a swipe
+     * to what is under it) delivers the whole contact with this call. The
+     * window's grab for the contact is left alone, so the caller keeps getting
+     * the contact and stays the one deciding where it goes.
+     * Returns true when some item accepted the event.
+     */
+    bool sendTouchEvent(TouchEvent& event);
+
     /// The window this item belongs to, or nullptr when not attached.
     Window* window() const;
 

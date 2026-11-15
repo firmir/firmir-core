@@ -665,6 +665,20 @@ Item* Item::itemAt(float x, float y) const {
                : nullptr;
 }
 
+bool Item::sendTouchEvent(TouchEvent& event) {
+    TouchEvent carried = event;
+    for (Item* target = this; target && !carried.accepted;
+         target = target->parentItem()) {
+        TouchEvent local = carried;
+        for (auto& point : local.points)
+            point.pos = target->mapFromScene(point.pos);
+        target->touchEvent(local);
+        carried.accepted = local.accepted;
+    }
+    event.accepted = carried.accepted;
+    return carried.accepted;
+}
+
 Point Item::transformOriginPoint() const {
     const int index = static_cast<int>(d->transformOrigin);
     const float fx = static_cast<float>(index % 3) * 0.5f;

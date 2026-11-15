@@ -189,6 +189,8 @@ public:
     bool dumped = false;
     /// The copy path was logged once for this window.
     bool reportedCopy = false;
+    /// Picture clipping radius in pixels (see setCornerRadius()).
+    float cornerRadius = 0.0f;
 };
 
 class WaylandGuiShellSurfaceItem::Impl {
@@ -435,6 +437,18 @@ WaylandGuiItem::WaylandGuiItem(Object* parent)
 WaylandGuiItem::~WaylandGuiItem() = default;
 WaylandView* WaylandGuiItem::view() const { return d->view; }
 void WaylandGuiItem::setView(WaylandView* view) { d->view = view; update(); }
+float WaylandGuiItem::cornerRadius() const { return d->cornerRadius; }
+void WaylandGuiItem::setCornerRadius(float radius) {
+    const float clamped = radius > 0.0f ? radius : 0.0f;
+    if (d->cornerRadius == clamped)
+        return;
+    {
+        // The render thread reads the radius while painting the picture.
+        auto lock = lockScene();
+        d->cornerRadius = clamped;
+    }
+    update();
+}
 WaylandSeat* WaylandGuiItem::seat() const { return d->seat; }
 void WaylandGuiItem::setSeat(WaylandSeat* seat) { d->seat = seat; }
 void WaylandGuiItem::detachSurface() {
@@ -694,11 +708,11 @@ void WaylandGuiItem::paint(Gui::Painter& painter) {
             if (desc.height > 0 && implicitHeight() != desc.height)
                 setImplicitHeight(desc.height);
             d->reportedEmptyFrame = false;
-            painter.drawTexture(
+            painter.drawRoundedTexture(
                 Gui::RectF{0, 0,
                            width() > 0 ? width() : static_cast<float>(desc.width),
                            height() > 0 ? height() : static_cast<float>(desc.height)},
-                texture);
+                d->cornerRadius, texture);
             return;
         }
     }
@@ -750,9 +764,11 @@ void WaylandGuiItem::paint(Gui::Painter& painter) {
     if (frame.pixels.empty()) return;
     if (implicitWidth() != frame.width) setImplicitWidth(frame.width);
     if (implicitHeight() != frame.height) setImplicitHeight(frame.height);
-    painter.drawRgba(Gui::RectF{0, 0, width() > 0 ? width() : static_cast<float>(frame.width),
-                                height() > 0 ? height() : static_cast<float>(frame.height)},
-                     frame.pixels.data(), frame.width, frame.height, this, d->generation);
+    painter.drawRoundedRgba(Gui::RectF{0, 0,
+                                       width() > 0 ? width() : static_cast<float>(frame.width),
+                                       height() > 0 ? height() : static_cast<float>(frame.height)},
+                            d->cornerRadius, frame.pixels.data(), frame.width,
+                            frame.height, this, d->generation);
 }
 WaylandGuiItem* WaylandGuiShellIntegration::createItem(WaylandView* view, Object* parent) {
     auto* item = new WaylandGuiItem(parent);

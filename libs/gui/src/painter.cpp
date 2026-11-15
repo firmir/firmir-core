@@ -2,6 +2,7 @@
 
 #include "detail/font8x8.h"
 #include "detail/rounded_rect.hpp"
+#include "detail/rounded_bands.hpp"
 
 #include <firmir/render/device.hpp>
 #ifdef FIRMIR_HAVE_SHADERC
@@ -737,7 +738,7 @@ void Painter::drawText(float x, float y, const std::string& text, Color color,
 
 void Painter::drawRgba(const RectF& target, const void* rgba, int imageWidth,
                        int imageHeight, const void* cacheKey,
-                       std::uint64_t generation, Color tint) {
+                       std::uint64_t generation, Color tint, const RectF& source) {
     if (!rgba || target.width <= 0 || target.height <= 0)
         return;
     Render::RenderTexture* texture = d->resources.rgbaTexture(
@@ -750,15 +751,22 @@ void Painter::drawRgba(const RectF& target, const void* rgba, int imageWidth,
         return;
     const std::uint8_t color[4] = {tint.r, tint.g, tint.b,
                                    static_cast<std::uint8_t>(alpha)};
+    float u0 = 0, v0 = 0, u1 = 1, v1 = 1;
+    if (source.width > 0 && source.height > 0 && imageWidth > 0 && imageHeight > 0) {
+        u0 = source.x / static_cast<float>(imageWidth);
+        v0 = source.y / static_cast<float>(imageHeight);
+        u1 = (source.x + source.width) / static_cast<float>(imageWidth);
+        v1 = (source.y + source.height) / static_cast<float>(imageHeight);
+    }
     Point q[4];
     Impl::mapRect(state, target.x, target.y, target.width, target.height, q);
     const TextVertex vertices[6] = {
-        {q[0].x, q[0].y, {color[0], color[1], color[2], color[3]}, 0, 0},
-        {q[1].x, q[1].y, {color[0], color[1], color[2], color[3]}, 1, 0},
-        {q[2].x, q[2].y, {color[0], color[1], color[2], color[3]}, 1, 1},
-        {q[0].x, q[0].y, {color[0], color[1], color[2], color[3]}, 0, 0},
-        {q[2].x, q[2].y, {color[0], color[1], color[2], color[3]}, 1, 1},
-        {q[3].x, q[3].y, {color[0], color[1], color[2], color[3]}, 0, 1},
+        {q[0].x, q[0].y, {color[0], color[1], color[2], color[3]}, u0, v0},
+        {q[1].x, q[1].y, {color[0], color[1], color[2], color[3]}, u1, v0},
+        {q[2].x, q[2].y, {color[0], color[1], color[2], color[3]}, u1, v1},
+        {q[0].x, q[0].y, {color[0], color[1], color[2], color[3]}, u0, v0},
+        {q[2].x, q[2].y, {color[0], color[1], color[2], color[3]}, u1, v1},
+        {q[3].x, q[3].y, {color[0], color[1], color[2], color[3]}, u0, v1},
     };
     d->emitQuad(vertices, d->resources.pipeline(true, true), texture);
 }
@@ -832,6 +840,59 @@ bool Painter::drawTexture(const RectF& target, Render::RenderTexture* texture,
     };
     d->emitQuad(vertices, pipeline, texture);
     return true;
+}
+
+bool Painter::drawRoundedTexture(const RectF& rect, float radius,
+                                 Render::RenderTexture* texture, Color tint) {
+    if (!texture)
+        return false;
+    if (radius < 1.0f)
+        return drawTexture(rect, texture, RectF(), tint); // square corners
+    if (rect.width <= 0.0f || rect.height <= 0.0f)
+        return true;
+    // The picture is cut into the slices of the rounded rectangle, each one
+    // sampling the part of the texture that belongs to it: the corners end up
+    // outside the arcs and are never drawn.
+    const auto& desc = texture->desc();
+    bool drawn = true;
+    detail::forEachRoundedBand(rect.width, rect.height, radius,
+                               [&](const detail::RoundedBand& band) {
+        const float inset = band.inset * rect.width;
+        const RectF target{rect.x + inset, rect.y + band.top * rect.height,
+                           rect.width - 2.0f * inset, band.height * rect.height};
+        RectF source;
+        if (desc.width > 0 && desc.height > 0) {
+            source = RectF{band.inset * desc.width, band.top * desc.height,
+                           (1.0f - 2.0f * band.inset) * desc.width,
+                           band.height * desc.height};
+        }
+        if (!drawTexture(target, texture, source, tint))
+            drawn = false;
+    });
+    return drawn;
+}
+
+void Painter::drawRoundedRgba(const RectF& rect, float radius, const void* rgba,
+                              int imageWidth, int imageHeight, const void* cacheKey,
+                              std::uint64_t generation, Color tint) {
+    if (radius < 1.0f || rect.width <= 0.0f || rect.height <= 0.0f) {
+        drawRgba(rect, rgba, imageWidth, imageHeight, cacheKey, generation, tint);
+        return;
+    }
+    detail::forEachRoundedBand(rect.width, rect.height, radius,
+                               [&](const detail::RoundedBand& band) {
+        const float inset = band.inset * rect.width;
+        const RectF target{rect.x + inset, rect.y + band.top * rect.height,
+                           rect.width - 2.0f * inset, band.height * rect.height};
+        RectF source;
+        if (imageWidth > 0 && imageHeight > 0) {
+            source = RectF{band.inset * imageWidth, band.top * imageHeight,
+                           (1.0f - 2.0f * band.inset) * imageWidth,
+                           band.height * imageHeight};
+        }
+        drawRgba(target, rgba, imageWidth, imageHeight, cacheKey, generation, tint,
+                 source);
+    });
 }
 
 Render::RenderDevice* Painter::device() const { return d->resources.device; }

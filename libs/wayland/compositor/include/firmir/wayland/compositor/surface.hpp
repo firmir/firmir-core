@@ -146,6 +146,11 @@ public:
      * reused instead of copying the buffer again while the client dies.
      */
     WaylandSurfaceGrabber::Frame takeFrame();
+    /// Radius in pixels the picture is clipped to (0 = square corners). A
+    /// client surface has no shape of its own, so a launcher that gives a window
+    /// rounded corners sets this.
+    float cornerRadius() const;
+    void setCornerRadius(float radius);
     /// Emitted (no arguments) on a pointer press and when the item gains
     /// focus — the embedding compositor raises/activates its window here.
     static constexpr auto signalActivated = "activated";

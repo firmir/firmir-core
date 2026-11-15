@@ -76,6 +76,31 @@ private:
 std::atomic<bool> ColorItem::paintedOffMainThread{false};
 std::thread::id ColorItem::mainThreadId;
 
+/// Counts the touch contacts it is sent and accepts them, like a widget that
+/// takes every contact that reaches it.
+class TouchCounter : public Item {
+public:
+    explicit TouchCounter(Object* parent = nullptr) : Item(parent) {}
+
+    int begins = 0;
+    int updates = 0;
+    int ends = 0;
+    /// False makes it behave like an item that lets the contact through to its
+    /// parents.
+    bool accept = true;
+
+protected:
+    void touchEvent(TouchEvent& event) override {
+        switch (event.action) {
+        case TouchEvent::Action::Begin: ++begins; break;
+        case TouchEvent::Action::Update: ++updates; break;
+        case TouchEvent::Action::End: ++ends; break;
+        }
+        if (accept)
+            event.accepted = true;
+    }
+};
+
 /// Records the geometry each frame is actually painted with (the render thread
 /// runs paint() under the scene lock, so the pairs show what the frame shows,
 /// regardless of what happens on screen afterwards).
@@ -1353,6 +1378,147 @@ TEST_CASE(gui_painter_draw_texture_subrect) {
     CHECK_EQ(cpu->pixels()[3 * 8 + 1], 0xFFFF0000u); // stretched left half
 }
 
+TEST_CASE(gui_painter_draws_rounded_pictures) {
+    // Both picture paths (a device texture and CPU pixels) have to leave the
+    // area outside the corner arcs untouched: a launcher that gives a window
+    // rounded corners must see what is behind the window there, not the client's
+    // square corner.
+    auto device = Render::Render::createDevice("soft");
+    CHECK(device != nullptr);
+    if (!device)
+        return;
+    RenderResources resources(device.get());
+    std::unique_ptr<Render::RenderTarget> target(
+        device->createRenderTarget({24, 16, Render::TextureFormat::Rgba8, false}));
+    std::unique_ptr<Render::RenderCommandBuffer> commands(
+        device->createCommandBuffer());
+    CHECK(target && commands);
+    if (!target || !commands)
+        return;
+
+    // 8x4 picture: left half red, right half green, so a squashed sample shows.
+    Render::TextureDesc textureDesc;
+    textureDesc.width = 8;
+    textureDesc.height = 4;
+    textureDesc.format = Render::TextureFormat::Rgba8;
+    std::unique_ptr<Render::RenderTexture> texture(device->createTexture(textureDesc));
+    CHECK(texture != nullptr);
+    if (!texture)
+        return;
+    std::uint32_t picture[32];
+    for (int y = 0; y < 4; ++y)
+        for (int x = 0; x < 8; ++x)
+            picture[y * 8 + x] = x < 4 ? 0xFF0000FFu : 0xFF00FF00u;
+    CHECK(texture->write(picture, sizeof(picture)));
+
+    commands->begin();
+    Render::ClearValue clear; // opaque black
+    clear.a = 1;
+    commands->beginRenderPass(target.get(), clear);
+    {
+        Painter painter(resources, commands.get(), target.get());
+        CHECK(painter.drawRoundedTexture(RectF{0, 0, 16, 16}, 6, texture.get()));
+        // The same picture from CPU pixels, next to it.
+        painter.drawRoundedRgba(RectF{16, 0, 8, 8}, 3, picture, 8, 4, &picture, 1);
+    }
+    commands->endRenderPass();
+    commands->end();
+    device->submit(commands.get());
+    const auto* cpu = dynamic_cast<Render::CpuRenderTarget*>(target.get());
+    CHECK(cpu != nullptr);
+    if (!cpu)
+        return;
+    const std::uint32_t* px = cpu->pixels(); // 0xAARRGGBB, 24 wide
+    CHECK_EQ(px[0 * 24 + 0], 0xFF000000u);   // corner: outside the arc
+    CHECK_EQ(px[15 * 24 + 15], 0xFF000000u); // opposite corner
+    CHECK_EQ(px[8 * 24 + 6], 0xFFFF0000u);   // middle: left half is red
+    CHECK_EQ(px[8 * 24 + 10], 0xFF00FF00u);  // middle: right half is green
+    CHECK_EQ(px[0 * 24 + 5], 0xFFFF0000u);   // top edge: the arc clears the middle
+    CHECK_EQ(px[7 * 24 + 0], 0xFFFF0000u);   // side edge below the arc
+    CHECK_EQ(px[0 * 24 + 16], 0xFF000000u);  // CPU picture: corner cut as well
+    CHECK_EQ(px[4 * 24 + 18], 0xFFFF0000u);  // CPU picture: red half, not squashed
+    CHECK_EQ(px[4 * 24 + 22], 0xFF00FF00u);  // CPU picture: green half
+    // radius 0 keeps the square corners.
+    {
+        commands->begin();
+        commands->beginRenderPass(target.get(), clear);
+        Painter painter(resources, commands.get(), target.get());
+        painter.drawRoundedRgba(RectF{0, 0, 8, 8}, 0, picture, 8, 4, &picture, 2);
+        commands->endRenderPass();
+        commands->end();
+        device->submit(commands.get());
+    }
+    const auto* second = dynamic_cast<Render::CpuRenderTarget*>(target.get());
+    CHECK(second != nullptr);
+    if (second)
+        CHECK_EQ(second->pixels()[0], 0xFFFF0000u); // square corner painted
+}
+
+TEST_CASE(gui_painter_rounded_picture_has_no_gaps) {
+    // The staircase must cover the rounded rectangle completely: every row is
+    // one contiguous run of the picture, and the run never gets narrower on the
+    // way to the middle — a band left out would show as a see-through line.
+    auto device = Render::Render::createDevice("soft");
+    CHECK(device != nullptr);
+    if (!device)
+        return;
+    RenderResources resources(device.get());
+    constexpr int size = 64;
+    std::unique_ptr<Render::RenderTarget> target(
+        device->createRenderTarget({size, size, Render::TextureFormat::Rgba8, false}));
+    std::unique_ptr<Render::RenderCommandBuffer> commands(
+        device->createCommandBuffer());
+    CHECK(target && commands);
+    if (!target || !commands)
+        return;
+    // Opaque red; the soft target stores 0xAARRGGBB, so it reads back as
+    // 0xFFFF0000 (the texture data is RGBA8 bytes).
+    std::vector<std::uint32_t> picture(size * size, 0xFF0000FFu);
+    commands->begin();
+    Render::ClearValue clear; // opaque black
+    clear.a = 1;
+    commands->beginRenderPass(target.get(), clear);
+    {
+        Painter painter(resources, commands.get(), target.get());
+        painter.drawRoundedRgba(RectF{0, 0, size, size}, 20, picture.data(), size,
+                                size, picture.data(), 1);
+    }
+    commands->endRenderPass();
+    commands->end();
+    device->submit(commands.get());
+    const auto* cpu = dynamic_cast<Render::CpuRenderTarget*>(target.get());
+    CHECK(cpu != nullptr);
+    if (!cpu)
+        return;
+    const std::uint32_t* px = cpu->pixels();
+    int previousWidth = -1;
+    int middleWidth = 0;
+    for (int y = 0; y < size; ++y) {
+        int first = -1, last = -1, count = 0;
+        for (int x = 0; x < size; ++x) {
+            if (px[y * size + x] != 0xFFFF0000u)
+                continue;
+            if (first < 0)
+                first = x;
+            last = x;
+            ++count;
+        }
+        CHECK(count > 0);                  // no empty row
+        CHECK_EQ(count, last - first + 1); // one run, no gaps
+        // The picture widens down to the middle row and narrows again below it.
+        if (previousWidth > 0 && y <= size / 2)
+            CHECK(count >= previousWidth);
+        if (previousWidth > 0 && y > size / 2)
+            CHECK(count <= previousWidth);
+        if (y == size / 2)
+            middleWidth = count;
+        previousWidth = count;
+    }
+    CHECK_EQ(middleWidth, size); // the middle rows span the whole picture
+    // The corners really are cut: the first row is a short run.
+    CHECK_EQ(px[0], 0xFF000000u);
+}
+
 TEST_CASE(gui_painter_draws_text_glyphs) {
     auto device = Render::Render::createDevice("soft");
     CHECK(device != nullptr);
@@ -2290,4 +2456,48 @@ TEST_CASE(gui_item_hit_test_respects_clip) {
     // Without clip the overhang keeps receiving the clicks it paints in.
     clipped->setClip(false);
     CHECK(root.itemAt(50.0f, 95.0f) == overhang);
+}
+
+// An item that decides after a contact began that it belongs somewhere else
+// hands the whole contact over with sendTouchEvent(): the event goes to that
+// item and up its parents, exactly like the window's own propagation, while the
+// window's grab stays where it was.
+TEST_CASE(gui_item_contact_can_be_handed_to_another_item) {
+    TouchCounter root;
+    root.setGeometry(0, 0, 100, 100);
+
+    auto* below = new TouchCounter(&root);
+    below->setGeometry(0, 0, 60, 60);
+
+    auto* above = new TouchCounter(&root);
+    above->setGeometry(0, 0, 100, 100); // takes the whole area, added last
+
+    CHECK(root.itemAt(50.0f, 50.0f) == above);
+    CHECK(root.itemAt(80.0f, 80.0f) == above);
+
+    // Positions are scene coordinates and are mapped on the way down.
+    TouchEvent event;
+    event.action = TouchEvent::Action::Begin;
+    event.points.push_back(TouchPoint{1, Point{50.0f, 50.0f}, true});
+    CHECK(below->sendTouchEvent(event));
+    CHECK_EQ(below->begins, 1);
+    CHECK_EQ(above->begins, 0);
+    CHECK_EQ(root.begins, 0); // accepted by the target: no propagation
+
+    // An item that does not take it passes it to its parent, exactly like the
+    // window's own dispatch does.
+    below->accept = false;
+    event = TouchEvent();
+    event.action = TouchEvent::Action::End;
+    event.points.push_back(TouchPoint{1, Point{50.0f, 50.0f}, false});
+    CHECK(below->sendTouchEvent(event));
+    CHECK_EQ(below->ends, 1);
+    CHECK_EQ(root.ends, 1);
+    CHECK(event.accepted);
+
+    // Nothing takes it: the event comes back unaccepted.
+    root.accept = false;
+    event.accepted = false;
+    CHECK(!below->sendTouchEvent(event));
+    CHECK(!event.accepted);
 }

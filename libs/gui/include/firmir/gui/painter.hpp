@@ -158,9 +158,12 @@ public:
                   int scale = 1);
     /// Draws an RGBA8 bitmap. cacheKey identifies the owning item and
     /// generation invalidates the device-lifetime texture after CPU changes.
+    /// @p source selects the sub-rectangle to sample, in image pixels; an empty
+    /// rect (the default) samples the whole image.
     void drawRgba(const RectF& target, const void* rgba, int imageWidth,
                   int imageHeight, const void* cacheKey, std::uint64_t generation,
-                  Color tint = Color::rgb(255, 255, 255));
+                  Color tint = Color::rgb(255, 255, 255),
+                  const RectF& source = RectF());
     /// Draws a quad with a user fragment main body. Available variables follow
     /// the OpenGL path: v_color, v_uv, u_texture, u_textured, gl_FragColor.
     void drawShader(const RectF& target, const std::string& fragmentMain,
@@ -181,6 +184,27 @@ public:
     bool drawTexture(const RectF& target, Render::RenderTexture* texture,
                      const RectF& source = RectF(),
                      Color tint = Color::rgb(255, 255, 255));
+    /**
+     * @brief Draws @p texture into @p rect with corners of @p radius pixels
+     *        cut off.
+     *
+     * The picture outside the corner arcs is not drawn at all, so whatever is
+     * behind the rectangle stays visible there. A clip region can only be
+     * rectangular, so this draws the picture as a staircase of horizontal
+     * slices — one draw per pixel step of the arc, a few dozen at most — each
+     * sampling exactly the part of the texture that belongs to it (the picture
+     * is not scaled or squashed). @p radius 0 is drawTexture().
+     */
+    bool drawRoundedTexture(const RectF& rect, float radius,
+                            Render::RenderTexture* texture,
+                            Color tint = Color::rgb(255, 255, 255));
+    /// drawRgba() with corners of @p radius pixels cut off; see
+    /// drawRoundedTexture(). Used for the CPU-pixel fallback path of a window
+    /// whose client draws through wl_shm.
+    void drawRoundedRgba(const RectF& rect, float radius, const void* rgba,
+                         int imageWidth, int imageHeight, const void* cacheKey,
+                         std::uint64_t generation,
+                         Color tint = Color::rgb(255, 255, 255));
     /// The render device this painter records commands for (needed by
     /// callers that create/import textures to be drawn with drawTexture()).
     Render::RenderDevice* device() const;

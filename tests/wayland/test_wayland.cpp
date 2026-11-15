@@ -223,6 +223,19 @@ TEST_CASE(wayland_gui_item_input_state) {
     CHECK_EQ(view.surface(), nullptr);
 }
 
+// A client surface has no shape of its own: the radius the embedding compositor
+// sets is what clips the picture, and 0 (the default) keeps square corners.
+TEST_CASE(wayland_gui_item_corner_radius) {
+    using namespace Wayland::Compositor;
+    WaylandGuiItem item;
+    CHECK_EQ(item.cornerRadius(), 0.0f);
+    item.setCornerRadius(24.0f);
+    CHECK_EQ(item.cornerRadius(), 24.0f);
+    // A negative radius is not a way to grow the picture: it means square.
+    item.setCornerRadius(-5.0f);
+    CHECK_EQ(item.cornerRadius(), 0.0f);
+}
+
 
 // WaylandBufferRef plus the compositor's buffer backend subsystem: the plugin
 // list is what selects drm_egl over shm, so pin its order and the file names.
