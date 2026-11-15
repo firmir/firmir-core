@@ -9,6 +9,7 @@
 #include <firmir/wayland/compositor/compositor.hpp>
 
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -92,6 +93,25 @@ TEST_CASE(wayland_compositor_core_and_extensions) {
 // wl_output reports the physical panel size, not the pixel mode: a client lays
 // out in millimetres from it. The minimize request is a one-shot the
 // compositor consumes.
+// The buffer backend is bound to the wl_display it was created for: the
+// accelerated one binds EGL to it, which creates a wl_drm global there. If the
+// backend outlived the display, its destructor would unbind through a freed
+// display at process exit (a SIGSEGV inside the driver's Wayland code).
+TEST_CASE(buffer_backend_is_destroyed_with_its_display) {
+    using namespace Wayland::Compositor;
+    auto compositor = std::make_unique<WaylandCompositor>();
+    CHECK(compositor->create());
+    // A backend may be missing in a tree without the plugins; the display-bound
+    // lifetime is what is being checked here, so only run when one was loaded.
+    if (!BufferBackends::selected()) {
+        std::fprintf(stderr, "skipped: no buffer backend plugin\n");
+        return;
+    }
+    CHECK(!BufferBackends::selectedName().empty());
+    compositor.reset();
+    CHECK(BufferBackends::selected() == nullptr);
+}
+
 TEST_CASE(wayland_output_physical_size_and_client_minimize) {
     using namespace Wayland::Compositor;
     WaylandCompositor compositor;

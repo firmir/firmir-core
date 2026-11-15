@@ -110,6 +110,9 @@ enum class YcbcrRange { Limited, Full };
 /// DRM/KMS fourcc codes used by imported video frames (linux/drm_fourcc.h
 /// values, redeclared to keep this header free of platform includes).
 namespace Fourcc {
+constexpr std::uint32_t Argb8 = 0x34325241; // 'AR24' DRM_FORMAT_ARGB8888
+                                            // (memory order B,G,R,A)
+constexpr std::uint32_t Xrgb8 = 0x34325258; // 'XR24' DRM_FORMAT_XRGB8888
 constexpr std::uint32_t Abgr8 = 0x34324241; // 'AB24' DRM_FORMAT_ABGR8888
                                             // (memory order R,G,B,A)
 constexpr std::uint32_t Nv12 = 0x3231564E;  // 'NV12'
@@ -148,6 +151,17 @@ struct DmaBufTextureDesc {
     int planeCount = 0;
     YcbcrModel ycbcrModel = YcbcrModel::Bt709;
     YcbcrRange ycbcrRange = YcbcrRange::Limited;
+    /**
+     * @brief Sampler filter for the imported texture.
+     *
+     * Linear is what a scaled frame (video) wants. A compositor that copies a
+     * client frame into a window of the same size asks for Nearest: the frame is
+     * sampled 1:1, so the filter only costs texture-unit work (and, on a driver
+     * that emulates a filtered external texture, a whole extra pass over the
+     * frame). The import backend may ignore the hint when it has a cheaper
+     * hardware path; it must not ignore it in a way that changes the image.
+     */
+    Filter filter = Filter::Linear;
 };
 
 enum class AddressMode { ClampToEdge, Repeat };

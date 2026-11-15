@@ -54,6 +54,13 @@ struct LoadedBackend {
 std::mutex g_backendsMutex;
 std::vector<LoadedBackend> g_backends;
 
+/// Device creation is serialised across the process: bringing a graphics API up
+/// is not re-entrant (a second thread inside the initialisation of the same EGL
+/// display while the first one is still there hangs on some drivers), and every
+/// window renders on its own thread, so two of them can start at the same
+/// moment — two outputs appearing together do exactly that.
+std::mutex g_deviceMutex;
+
 /// Returns the already-loaded backend or dlopen()s it; nullptr when the plugin
 /// is missing, exports no factory or the factory fails. Caller holds
 /// g_backendsMutex.
@@ -118,6 +125,7 @@ RenderBackend* Render::backend(const std::string& name) {
 
 std::unique_ptr<RenderDevice> Render::createDevice(const std::string& name,
                                                    const DeviceDesc& desc) {
+    std::lock_guard<std::mutex> deviceLock(g_deviceMutex);
     // An explicit backend (the name argument or FIRMIR_RENDER_BACKEND) is used
     // as-is. The default order, however, falls through to the next candidate
     // when a plugin loads but cannot create a device - for example OpenGL

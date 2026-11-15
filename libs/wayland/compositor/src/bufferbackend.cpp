@@ -18,6 +18,33 @@ std::string fileNameOf(const std::string& name) {
 
 std::unique_ptr<BufferBackend> gSelected;
 
+/// A backend is bound to the wl_display it was created for: the accelerated one
+/// binds EGL to it, and that creates a wl_drm global there. The backend has to
+/// go away while the display is still valid — a process-exit destructor runs
+/// after wl_display_destroy(), and the driver's eglUnbindWaylandDisplayWL()
+/// then destroys a global through a display that is already freed.
+wl_listener gDisplayDestroyed = {};
+bool gWatchingDisplay = false;
+
+void displayDestroyed(wl_listener*, void*) {
+    gWatchingDisplay = false;
+    gSelected.reset();
+}
+
+/// Destroys @p backend together with @p display, before the display's own
+/// teardown reaches the globals (wl_display_destroy() emits the destroy signal
+/// first).
+void watchDisplay(wl_display* display) {
+    if (gWatchingDisplay) {
+        // Older libwayland has no wl_listener_remove().
+        wl_list_remove(&gDisplayDestroyed.link);
+        gWatchingDisplay = false;
+    }
+    gDisplayDestroyed.notify = displayDestroyed;
+    wl_display_add_destroy_listener(display, &gDisplayDestroyed);
+    gWatchingDisplay = true;
+}
+
 } // namespace
 
 std::vector<std::string> candidates() {
@@ -105,6 +132,9 @@ BufferBackend* create(wl_display* display) {
         std::fprintf(stderr, "firmir-wayland-compositor: buffer backend '%s'\n",
                      name.c_str());
         gSelected = std::move(backend);
+        // ... and it dies with the display it was created for (see
+        // watchDisplay()).
+        watchDisplay(display);
         break;
     }
     if (!gSelected) {

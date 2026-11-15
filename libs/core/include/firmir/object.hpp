@@ -3,6 +3,7 @@
 #include <firmir/string.hpp>
 
 #include <any>
+#include <atomic>
 #include <chrono>
 #include <functional>
 #include <memory>
@@ -83,8 +84,12 @@ T anyConvert(const std::any& value) {
 /// including plain-Object children such as animations parented to items —
 /// must hold that mutex; otherwise the render thread can snapshot a child
 /// pointer whose object is being freed concurrently.
-inline std::unique_lock<std::recursive_mutex> (*sceneGuardFor)(Object*) noexcept =
-    nullptr;
+using SceneGuardHook = std::unique_lock<std::recursive_mutex> (*)(Object*) noexcept;
+
+/// Atomic: the hook is installed when the first window is created and read by
+/// every object teardown, which may run on another thread (a D-Bus reader
+/// dropping a message, say).
+inline std::atomic<SceneGuardHook> sceneGuardFor{nullptr};
 
 } // namespace detail
 

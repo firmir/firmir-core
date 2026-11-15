@@ -17,8 +17,12 @@
 #include <firmir/thread.hpp>
 #include <firmir/timer.hpp>
 #include <memory>
+#include <atomic>
+#include <csignal>
+#include <cstdio>
 #include <mutex>
 #include <stdexcept>
+#include <vector>
 
 namespace Firmir {
 namespace Gui {
@@ -179,6 +183,69 @@ public:
 
 } // namespace
 
+namespace {
+
+std::atomic<bool>& dumpRequested() {
+    static std::atomic<bool> requested{false};
+    return requested;
+}
+
+/// The handler only raises the flag: a signal must not write files.
+void dumpFrameSignal(int) { dumpRequested().store(true); }
+
+/**
+ * @brief FIRMIR_GUI_DUMP_FRAME=<prefix>: writes "<prefix>-<n>.ppm" for the
+ *        first frame and for the frame after each SIGUSR1.
+ *
+ * A screen that shows the wrong colours raises one question: did the
+ * compositor draw them or did the display turn them into that? A PPM holds the
+ * pixels exactly as the window handed them to the platform (0xAARRGGBB words
+ * become R, G, B bytes), so the two can be compared without trusting any
+ * channel order. `kill -USR1 <pid>` while the window of interest is on screen
+ * takes the picture with the next frame (a screen that never changes draws no
+ * frames, so touch it or let an animation run); nothing is recorded otherwise.
+ */
+void dumpFrame(const std::uint32_t* pixels, const Size& size) {
+    static const char* prefix = [] {
+        const char* value = std::getenv("FIRMIR_GUI_DUMP_FRAME");
+        if (value && *value) {
+            struct sigaction action {};
+            action.sa_handler = dumpFrameSignal;
+            sigemptyset(&action.sa_mask);
+            action.sa_flags = SA_RESTART;
+            sigaction(SIGUSR1, &action, nullptr);
+        }
+        return value;
+    }();
+    static int written = 0;
+    if (!prefix || !*prefix || !pixels || size.width <= 0 || size.height <= 0)
+        return;
+    // The first frame is taken on its own, every later one has to be asked for.
+    if (written > 0 && !dumpRequested().exchange(false))
+        return;
+    char path[512];
+    std::snprintf(path, sizeof(path), "%s-%d.ppm", prefix, written);
+    std::FILE* file = std::fopen(path, "wb");
+    if (!file)
+        return;
+    ++written;
+    std::fprintf(file, "P6\n%d %d\n255\n", size.width, size.height);
+    std::vector<std::uint8_t> rgb(static_cast<std::size_t>(size.width) *
+                                  static_cast<std::size_t>(size.height) * 3);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(size.width) * size.height;
+         ++i) {
+        const std::uint8_t* argb = reinterpret_cast<const std::uint8_t*>(&pixels[i]);
+        rgb[i * 3] = argb[2];
+        rgb[i * 3 + 1] = argb[1];
+        rgb[i * 3 + 2] = argb[0];
+    }
+    std::fwrite(rgb.data(), 1, rgb.size(), file);
+    std::fclose(file);
+    cLogInfo(lcGuiWindow()) << "wrote" << path << "(the frame the window presented)";
+}
+
+} // namespace
+
 class Window::Impl {
 public:
     Impl(Window* q, Screen* screen) : q(q), screen(screen) {
@@ -187,6 +254,7 @@ public:
             keepWarmMs = std::max(0, std::atoi(value));
     }
 
+    void createRenderDevice();
     void renderFrame();
     void keepWarmTick();
 
@@ -250,8 +318,47 @@ void Window::Impl::dropPlatformWindow() {
     Platform::instance()->destroyPlatformWindow(native);
 }
 
+/// Brings the render device up, once. Called before the scene lock is taken:
+/// this is the one driver-bound step of a frame (EGL/Vulkan initialisation,
+/// which on a slow driver takes hundreds of milliseconds and on a wedged one
+/// never returns), and the GUI thread takes the same lock for every layout
+/// change — creating the device inside the lock is what left the compositor
+/// hung at startup, in Window::setGeometry, waiting for the first frame of a
+/// window that had just been shown.
+void Window::Impl::createRenderDevice() {
+    const char* backendName = std::getenv("FIRMIR_RENDER_BACKEND");
+    renderDevice = Render::Render::createDevice(
+        backendName && *backendName ? backendName : "");
+    if (!renderDevice) {
+        if (!renderErrorLogged) {
+            const std::string requested =
+                backendName && *backendName ? backendName : "default";
+            cLogWarning(lcGuiWindow())
+                << ("no render backend available (" + requested +
+                    "); window content is not rendered");
+            renderErrorLogged = true;
+        }
+        return;
+    }
+    renderResources = std::make_unique<RenderResources>(renderDevice.get());
+    renderCommands.reset(renderDevice->createCommandBuffer());
+}
+
 void Window::Impl::renderFrame() {
     const auto frameStart = std::chrono::steady_clock::now();
+    if (!renderDevice) {
+        // Nothing to paint yet (a hidden or not-yet-sized window) must not
+        // bring a GPU up. The check takes the lock only for the read; the
+        // creation below does not (see createRenderDevice).
+        bool paintNeeded = false;
+        {
+            std::lock_guard<std::recursive_mutex> lock(sceneMutex);
+            paintNeeded = visible && geometry.width > 0 && geometry.height > 0;
+        }
+        if (!paintNeeded)
+            return;
+        createRenderDevice();
+    }
     // Only painting takes the scene lock (the tree must not change while it is
     // walked). present() — texture upload, page flip and the vsync wait of the
     // KMS backend — touches no scene state and is the slowest part of a frame,
@@ -280,25 +387,8 @@ void Window::Impl::renderFrame() {
         if (!visible || geometry.width <= 0 || geometry.height <= 0)
             return;
         native = platformWindow;
-        if (!renderDevice) {
-            const char* backendName = std::getenv("FIRMIR_RENDER_BACKEND");
-            renderDevice = Render::Render::createDevice(
-                backendName && *backendName ? backendName : "");
-            if (!renderDevice) {
-                if (!renderErrorLogged) {
-                    const std::string requested =
-                        backendName && *backendName ? backendName : "default";
-                    cLogWarning(lcGuiWindow())
-                        << ("no render backend available (" + requested +
-                            "); window content is not rendered");
-                    renderErrorLogged = true;
-                }
-                return;
-            }
-            renderResources =
-                std::make_unique<RenderResources>(renderDevice.get());
-            renderCommands.reset(renderDevice->createCommandBuffer());
-        }
+        if (!renderDevice)
+            return;
         if (!renderCommands) {
             if (!renderErrorLogged) {
                 cLogWarning(lcGuiWindow())
@@ -358,8 +448,10 @@ void Window::Impl::renderFrame() {
         targetSize = Size{geometry.width, geometry.height};
     }
     const auto painted = std::chrono::steady_clock::now();
-    if (native && target)
+    if (native && target) {
+        dumpFrame(target->pixels(), targetSize);
         native->present(target->pixels(), targetSize);
+    }
     const auto presented = std::chrono::steady_clock::now();
     {
         // Emitted under the lock, as before: handlers are Direct and may read
@@ -386,7 +478,8 @@ Window::Window(Screen* screen, Object* parent)
     : Object(parent), d(std::make_unique<Impl>(this, screen)) {
     // Route the core object-tree teardown/reparenting through the scene
     // mutex so the render thread never observes a mutating tree.
-    Firmir::detail::sceneGuardFor = &sceneGuardForObject;
+    Firmir::detail::sceneGuardFor.store(&sceneGuardForObject,
+                                        std::memory_order_release);
     d->content = new Item(this);
     // Firml-facing properties (bindings/handlers go through setProperty).
     registerProperty<double>("width", &Window::widthProperty,

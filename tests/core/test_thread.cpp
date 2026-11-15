@@ -75,13 +75,18 @@ TEST_CASE(signal_queued_cross_thread) {
     Object sender;
     sender.connect<int>(&receiver, "data",
                         [&](int v) {
-                            received.store(v);
+                            // The value is what the test below waits on, so it is
+                            // stored last: on a slow (emulated) machine the waiter
+                            // can see it before the slot returns, and anything the
+                            // test reads afterwards has to be visible by then.
                             inWorkerThread.store(std::this_thread::get_id() != mainId);
+                            received.store(v);
                         },
                         ConnectionMode::Auto);
 
     sender.emitSignal("data", 99);
     CHECK(testing::waitFor([&] { return received.load() == 99; }));
+    // Sequenced after the store above, so this sees what the slot wrote.
     CHECK(inWorkerThread.load());
 
     worker.quit();

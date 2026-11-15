@@ -198,8 +198,9 @@ Object::~Object() {
     // the render thread walks the tree under that mutex, and it can snapshot
     // a child pointer before childrenMutex serializes the list erase.
     std::unique_lock<std::recursive_mutex> sceneGuard;
-    if (detail::sceneGuardFor)
-        sceneGuard = detail::sceneGuardFor(this);
+    if (const detail::SceneGuardHook guard =
+            detail::sceneGuardFor.load(std::memory_order_acquire))
+        sceneGuard = guard(this);
     emitSignal(signalDestroyed);
     d->alive->store(false);
 
@@ -245,10 +246,11 @@ void Object::setParent(Object* parentObj) {
     // Same scene-lock discipline as ~Object: tree mutations must be
     // serialized against the GUI render thread.
     std::unique_lock<std::recursive_mutex> sceneGuard, newSceneGuard;
-    if (detail::sceneGuardFor) {
-        sceneGuard = detail::sceneGuardFor(this);
+    if (const detail::SceneGuardHook guard =
+            detail::sceneGuardFor.load(std::memory_order_acquire)) {
+        sceneGuard = guard(this);
         if (parentObj)
-            newSceneGuard = detail::sceneGuardFor(parentObj);
+            newSceneGuard = guard(parentObj);
     }
     Object* oldParent = d->parent.load();
     if (oldParent) {

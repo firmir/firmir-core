@@ -8,8 +8,8 @@
 #   <case>.<mode> => success expected; stdout must match byte-for-byte
 #   <case>.warn   => (success only) stderr must match; otherwise stderr must
 #                    be empty
-file(REMOVE_RECURSE "${WORK_DIR}/${CASE}")
-file(MAKE_DIRECTORY "${WORK_DIR}/${CASE}")
+file(REMOVE_RECURSE "${WORK_DIR}/${MODE}-${CASE}")
+file(MAKE_DIRECTORY "${WORK_DIR}/${MODE}-${CASE}")
 separate_arguments(TOOL_WRAPPER)
 
 if(MODE STREQUAL "sema")
@@ -24,15 +24,15 @@ execute_process(
     COMMAND ${TOOL_WRAPPER} "${TOOL}" ${args}
     WORKING_DIRECTORY "${TESTDATA}"
     RESULT_VARIABLE rc
-    OUTPUT_FILE "${WORK_DIR}/${CASE}/out.txt"
-    ERROR_FILE "${WORK_DIR}/${CASE}/err.txt"
+    OUTPUT_FILE "${WORK_DIR}/${MODE}-${CASE}/out.txt"
+    ERROR_FILE "${WORK_DIR}/${MODE}-${CASE}/err.txt"
 )
 
 if(EXISTS "${TESTDATA}/${CASE}.err")
     if(rc EQUAL 0)
         message(FATAL_ERROR "firmlc ${CASE}: expected failure, but the tool succeeded")
     endif()
-    file(READ "${WORK_DIR}/${CASE}/err.txt" actual)
+    file(READ "${WORK_DIR}/${MODE}-${CASE}/err.txt" actual)
     file(READ "${TESTDATA}/${CASE}.err" expected)
     if(NOT actual STREQUAL expected)
         message(FATAL_ERROR "firmlc ${CASE}: error output differs from the snapshot:\n${actual}")
@@ -41,7 +41,7 @@ if(EXISTS "${TESTDATA}/${CASE}.err")
 endif()
 
 if(NOT rc EQUAL 0)
-    file(READ "${WORK_DIR}/${CASE}/err.txt" err)
+    file(READ "${WORK_DIR}/${MODE}-${CASE}/err.txt" err)
     message(FATAL_ERROR "firmlc ${CASE}: expected success, got exit code ${rc}:\n${err}")
 endif()
 
@@ -49,13 +49,13 @@ set(snapshot "${TESTDATA}/${CASE}.${MODE}")
 if(NOT EXISTS "${snapshot}")
     message(FATAL_ERROR "firmlc ${CASE}: missing snapshot file ${snapshot}")
 endif()
-file(READ "${WORK_DIR}/${CASE}/out.txt" actual)
+file(READ "${WORK_DIR}/${MODE}-${CASE}/out.txt" actual)
 file(READ "${snapshot}" expected)
 if(NOT actual STREQUAL expected)
     message(FATAL_ERROR "firmlc ${CASE}: output differs from the snapshot:\n${actual}")
 endif()
 
-file(READ "${WORK_DIR}/${CASE}/err.txt" actualErr)
+file(READ "${WORK_DIR}/${MODE}-${CASE}/err.txt" actualErr)
 if(EXISTS "${TESTDATA}/${CASE}.warn")
     file(READ "${TESTDATA}/${CASE}.warn" expectedErr)
     if(NOT actualErr STREQUAL expectedErr)

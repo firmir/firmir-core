@@ -7,6 +7,12 @@
 #include <cstdint>
 
 namespace Firmir {
+
+namespace Render {
+class RenderDevice;
+class RenderTexture;
+} // namespace Render
+
 namespace Wayland {
 namespace Compositor {
 
@@ -54,6 +60,13 @@ public:
     /// buffer is already gone).
     static constexpr auto signalAboutToBeDestroyed = "aboutToBeDestroyed";
 private:
+    friend class WaylandCompositor;
+
+    /// Drops @p output from the set of outputs this surface already entered
+    /// (called when an output is removed, so a new one reusing the address
+    /// still gets its wl_surface.enter).
+    void forgetOutput(WaylandOutput* output);
+
     class Impl;
     std::unique_ptr<Impl> d;
     // The grabber locks the surface's buffer mutex for the whole pixel copy.
@@ -79,9 +92,22 @@ class WaylandSurfaceGrabber {
 public:
     struct Frame {
         int width = 0, height = 0, stride = 0;
+        /// R,G,B,A bytes, top row first — the layout Painter::drawRgba() takes.
+        /// The buffer backends hand out 0xAARRGGBB values; grab() converts them.
         std::vector<std::uint32_t> pixels;
     };
     Frame grab(WaylandSurface* surface) const;
+    /**
+     * @brief Imports the current buffer of @surface on @p device as a texture.
+     *
+     * A client that draws with the GPU hands its frame over as a dma-buf; the
+     * render device samples it directly, so the frame never passes through the
+     * CPU (Painter::drawTexture() draws the result). Returns nullptr for a
+     * wl_shm buffer, for a backend without a GPU view and for a device that
+     * cannot import dma-bufs — grab() then has the pixels.
+     */
+    std::unique_ptr<Render::RenderTexture> importTexture(WaylandSurface* surface,
+                                                         Render::RenderDevice* device) const;
 };
 
 class WaylandSeat;
@@ -104,6 +130,22 @@ public:
     /// the scene goes away) — a wl_surface destroy can arrive long after the
     /// item is gone, and cannot be answered then.
     void detachSurface();
+    /**
+     * @brief Moves the zero-copy texture of the painted frame out of the item.
+     *
+     * A compositor keeps it as the last picture of a window whose surface is
+     * going away: the texture already holds the frame, so nothing is read back
+     * from the client buffer (a fullscreen frame is ~10 MB of memory traffic).
+     * Empty when the client draws through wl_shm — take the frame instead.
+     */
+    std::unique_ptr<Render::RenderTexture> takeTexture();
+    /**
+     * @brief Moves the frame copied out of the surface (wl_shm fallback).
+     *
+     * Same purpose as takeTexture(): the picture the item already holds is
+     * reused instead of copying the buffer again while the client dies.
+     */
+    WaylandSurfaceGrabber::Frame takeFrame();
     /// Emitted (no arguments) on a pointer press and when the item gains
     /// focus — the embedding compositor raises/activates its window here.
     static constexpr auto signalActivated = "activated";

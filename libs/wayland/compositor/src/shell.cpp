@@ -15,6 +15,8 @@ class WaylandShellSurface::Impl {
 public:
     WaylandResource resource;
     WaylandSurface* surface = nullptr;
+    /// Watches the surface's destruction (see setSurface()).
+    Connection surfaceGone;
     std::string title;
     Size size;
 };
@@ -92,7 +94,21 @@ void WaylandShellSurface::setResource(wl_resource* resource) {
     d->resource = WaylandResource(resource);
 }
 WaylandSurface* WaylandShellSurface::surface() const { return d->surface; }
-void WaylandShellSurface::setSurface(WaylandSurface* surface) { d->surface = surface; }
+void WaylandShellSurface::setSurface(WaylandSurface* surface) {
+    if (d->surface == surface)
+        return;
+    d->surfaceGone.disconnect();
+    d->surface = surface;
+    if (!surface)
+        return;
+    // A role object outlives its wl_surface: libwayland destroys a client's
+    // resources in the order they were created, so the surface goes before the
+    // xdg_toplevel it belongs to, and a client may destroy the surface while
+    // keeping the role. Nothing may use the surface after that, so the pointer
+    // is dropped here — while the surface object is still valid.
+    d->surfaceGone = surface->connect(this, WaylandSurface::signalAboutToBeDestroyed,
+                                      [this] { d->surface = nullptr; });
+}
 std::string WaylandShellSurface::title() const { return d->title; }
 void WaylandShellSurface::setTitle(std::string title) { d->title = std::move(title); }
 Size WaylandShellSurface::size() const { return d->size; }
@@ -299,12 +315,24 @@ struct XdgShellGlobal {
     static void destroyContext(wl_resource* resource) {
         auto* context = static_cast<Context*>(wl_resource_get_user_data(resource));
         if (auto* xdg = dynamic_cast<WaylandXdgSurface*>(context->object)) {
-            // Role resources cannot outlive their xdg_surface: destroying
-            // them here runs their own contexts (unregister + delete).
-            if (xdg->toplevel() && xdg->toplevel()->resource().handle())
-                wl_resource_destroy(xdg->toplevel()->resource().handle());
-            if (xdg->popup() && xdg->popup()->resource().handle())
-                wl_resource_destroy(xdg->popup()->resource().handle());
+            // The client may still hold the xdg_toplevel / xdg_popup proxies: a
+            // resource destroyed here would turn the client's next request on
+            // them into an unknown object, which makes the library drop the
+            // whole connection ("error in client communication"). Detach them
+            // instead — the role objects go away with the surface, the
+            // resources stay valid and ignore everything but destroy.
+            auto* toplevel = xdg->toplevel();
+            auto* popup = xdg->popup();
+            detachRole(toplevel ? toplevel->resource().handle() : nullptr);
+            detachRole(popup ? popup->resource().handle() : nullptr);
+            if (toplevel) {
+                if (context->shell) context->shell->unregisterSurface(toplevel);
+                delete toplevel;
+            }
+            if (popup) {
+                if (context->shell) context->shell->unregisterSurface(popup);
+                delete popup;
+            }
         }
         if (auto* shellSurface = dynamic_cast<WaylandShellSurface*>(context->object)) {
             // Object::signalDestroyed fires from the destructor so observers
@@ -313,6 +341,15 @@ struct XdgShellGlobal {
             delete shellSurface;
         }
         delete context;
+    }
+    /// Makes a role resource inert: its Context holds the pointer to a role
+    /// object that is about to be deleted, so requests reaching it afterwards
+    /// find null and do nothing.
+    static void detachRole(wl_resource* resource) {
+        if (!resource)
+            return;
+        if (auto* role = static_cast<Context*>(wl_resource_get_user_data(resource)))
+            role->object = nullptr;
     }
     static void install(wl_resource* resource, WaylandXdgShell* shell,
                         WaylandShellSurface* object, wl_dispatcher_func_t dispatch) {
@@ -369,6 +406,9 @@ struct XdgShellGlobal {
                 &xdg_popup_interface, wl_resource_get_version(resource), args[0].n);
             popup->setResource(created);
             popup->setSurface(xdg ? xdg->surface() : nullptr);
+            // The positioner is not interpreted yet, but the parent is: the
+            // popup is stacked relative to that window and goes away with it.
+            popup->setParentSurface(findSurface(shell->compositor(), args[1].o));
             if (xdg) xdg->setPopup(popup);
             if (xdg)
                 popup->connect(xdg, Object::signalDestroyed, [xdg, popup] {

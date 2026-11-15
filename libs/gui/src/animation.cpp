@@ -421,6 +421,10 @@ void ColorAnimation::advance() {
 class PauseAnimation::Impl {
 public:
     std::chrono::milliseconds duration{250};
+    /// Owned by the animation rather than Timer::singleShot(): a pause that is
+    /// stopped, or whose animation is destroyed, must not leave an armed timer
+    /// behind - it would outlive the scene it was going to wake.
+    Timer* timer = nullptr;
 };
 
 PauseAnimation::PauseAnimation(Object* parent)
@@ -433,7 +437,18 @@ void PauseAnimation::setDuration(std::chrono::milliseconds duration) {
 std::chrono::milliseconds PauseAnimation::duration() const { return d->duration; }
 
 void PauseAnimation::onStart() {
-    Timer::singleShot(d->duration, this, [this] { finish(); });
+    if (!d->timer) {
+        d->timer = new Timer(this);
+        d->timer->setSingleShot(true);
+        d->timer->connect(d->timer, "timeout", [this] { finish(); },
+                          ConnectionMode::Direct);
+    }
+    d->timer->start(d->duration);
+}
+
+void PauseAnimation::onStop() {
+    if (d->timer)
+        d->timer->stop();
 }
 
 // --------------------------- SequentialAnimation --------------------------

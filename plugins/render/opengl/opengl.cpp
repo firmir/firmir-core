@@ -112,6 +112,10 @@ private:
     GLint m_textureLocation = -1;
 };
 
+/// GL_BGRA is the ES extension token GL_BGRA_EXT (the same value); some GLES2
+/// headers do not spell it at all.
+constexpr GLenum kGlBgra = 0x80E1;
+
 class GlTarget : public CpuRenderTarget {
 public:
     GlTarget(GlDevice* device, const RenderTargetDesc& desc);
@@ -161,6 +165,7 @@ public:
 
     EGLDisplay display() const { return m_display; }
     bool hasDmaBufModifiers() const { return m_hasDmaBufModifiers; }
+    bool readFormatBgra() const { return m_readFormatBgra; }
 
 private:
     bool initDisplay();
@@ -180,6 +185,8 @@ private:
     // GL_OES_EGL_image_external.
     bool m_hasDmaBuf = false;
     bool m_hasDmaBufModifiers = false;
+    /// glReadPixels can produce BGRA bytes (see pixels()).
+    bool m_readFormatBgra = false;
 };
 
 // ------------------------------ GL objects ---------------------------------
@@ -336,8 +343,10 @@ GlTexture* GlTexture::importDmaBuf(GlDevice* device,
         }
     }
     // GPU-side color conversion hints (Mesa honors both when sampling the
-    // external texture).
-    if (desc.fourcc != Fourcc::Abgr8) {
+    // external texture). They describe YUV frames: an RGB fourcc (ARGB/XRGB/
+    // ABGR) is sampled as-is and must not be told it is limited-range video.
+    if (desc.fourcc == Fourcc::Nv12 || desc.fourcc == Fourcc::P010 ||
+        desc.fourcc == Fourcc::P016) {
         attribs.push_back(EGL_YUV_COLOR_SPACE_HINT_EXT);
         attribs.push_back(desc.ycbcrModel == YcbcrModel::Bt601
                               ? EGL_ITU_REC601_EXT
@@ -363,13 +372,16 @@ GlTexture* GlTexture::importDmaBuf(GlDevice* device,
     texture->m_desc.height = desc.height;
     texture->m_target = GL_TEXTURE_EXTERNAL_OES;
     texture->m_eglImage = image;
+    const GLint filter = desc.filter == Filter::Nearest ? GL_NEAREST : GL_LINEAR;
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture->m_id);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S,
-                    GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T,
-                    GL_CLAMP_TO_EDGE);
+    // The client's frame is sampled straight out of its own buffer: the texture
+    // is never uploaded to, so only the filter and the wrap mode matter.
+    glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER,
+                    static_cast<GLfloat>(filter));
+    glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER,
+                    static_cast<GLfloat>(filter));
+    glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameterf(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     imageTarget(GL_TEXTURE_EXTERNAL_OES, image);
     if (glGetError() != GL_NO_ERROR) {
         delete texture;
@@ -564,19 +576,34 @@ void GlTarget::clear(const ClearValue& value) {
 const std::uint32_t* GlTarget::pixels() const {
     m_device->makeCurrent();
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glPixelStorei(GL_PACK_ALIGNMENT, 4);
+    const std::size_t width = static_cast<std::size_t>(m_desc.width);
+    const std::size_t rows = static_cast<std::size_t>(m_desc.height);
+    if (m_device->readFormatBgra()) {
+        // One read, no per-pixel work: the bytes already are 0xAARRGGBB words.
+        glReadPixels(0, 0, m_desc.width, m_desc.height, kGlBgra, GL_UNSIGNED_BYTE,
+                     m_argb.data());
+        // glReadPixels starts at the bottom row, the target at the top: swap the
+        // row halves, whole rows at a time.
+        for (std::size_t y = 0; y < rows / 2; ++y)
+            std::swap_ranges(m_argb.begin() + static_cast<std::ptrdiff_t>(y * width),
+                             m_argb.begin() + static_cast<std::ptrdiff_t>((y + 1) * width),
+                             m_argb.begin() +
+                                 static_cast<std::ptrdiff_t>((rows - 1 - y) * width));
+        return m_argb.data();
+    }
     glReadPixels(0, 0, m_desc.width, m_desc.height, GL_RGBA, GL_UNSIGNED_BYTE,
                  m_rgba.data());
-    for (int y = 0; y < m_desc.height; ++y) {
-        const std::uint8_t* src =
-            m_rgba.data() + static_cast<std::size_t>(m_desc.height - 1 - y) *
-                                m_desc.width * 4;
-        for (int x = 0; x < m_desc.width; ++x) {
-            m_argb[static_cast<std::size_t>(y) * m_desc.width + x] =
-                (static_cast<std::uint32_t>(src[x * 4 + 3]) << 24) |
-                (static_cast<std::uint32_t>(src[x * 4 + 0]) << 16) |
-                (static_cast<std::uint32_t>(src[x * 4 + 1]) << 8) |
-                src[x * 4 + 2];
+    // RGBA bytes: swap red and blue per 32-bit word (one load/store instead of
+    // four byte extractions) and flip the rows on the way out.
+    for (std::size_t y = 0; y < rows; ++y) {
+        const auto* source = reinterpret_cast<const std::uint32_t*>(
+            m_rgba.data() + (rows - 1 - y) * width * 4);
+        std::uint32_t* target = m_argb.data() + y * width;
+        for (std::size_t x = 0; x < width; ++x) {
+            const std::uint32_t pixel = source[x];
+            target[x] = (pixel & 0xff00ff00u) | ((pixel & 0x00ff0000u) >> 16) |
+                        ((pixel & 0x000000ffu) << 16);
         }
     }
     return m_argb.data();
@@ -940,9 +967,18 @@ GlDevice::GlDevice(const DeviceDesc& desc) : m_desc(desc) {
     m_hasDmaBuf =
         hasExtension(eglExts, "EGL_EXT_image_dma_buf_import") &&
         hasExtension(glExts, "GL_OES_EGL_image_external");
+    // Reading the frame back as BGRA writes it in the 0xAARRGGBB order a
+    // CpuRenderTarget is defined in, so pixels() does not have to reorder every
+    // pixel. Core since ES 3.0, an extension on ES 2.
+    const char* version =
+        reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    m_readFormatBgra = (version && version[0] >= '3') ||
+                       hasExtension(glExts, "GL_EXT_read_format_bgra");
     cLogInfo(lcGl()) << "dma-buf import:"
                      << (m_hasDmaBuf ? "supported" : "unsupported")
                      << (m_hasDmaBufModifiers ? " (+modifiers)" : "");
+    cLogInfo(lcGl()) << "frame readback:"
+                     << (m_readFormatBgra ? "BGRA (direct)" : "RGBA (swizzled)");
 }
 
 GlDevice::~GlDevice() {

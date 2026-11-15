@@ -346,40 +346,70 @@ float Item::z() const { return d->z; }
 void Item::setRotation(float degrees) {
     if (d->rotation == degrees)
         return;
+    Window* w = window();
+    if (w)
+        detail::sceneMutex(w).lock();
     d->rotation = degrees;
-    update();
+    if (w) {
+        detail::sceneMutex(w).unlock();
+        update();
+    }
     notifyPropertyChanged("rotation");
 }
 
 void Item::setScale(float scale) {
     if (d->scale == scale)
         return;
+    Window* w = window();
+    if (w)
+        detail::sceneMutex(w).lock();
     d->scale = scale;
-    update();
+    if (w) {
+        detail::sceneMutex(w).unlock();
+        update();
+    }
     notifyPropertyChanged("scale");
 }
 
 void Item::setTransformOrigin(TransformOrigin origin) {
     if (d->transformOrigin == origin)
         return;
+    Window* w = window();
+    if (w)
+        detail::sceneMutex(w).lock();
     d->transformOrigin = origin;
-    update();
+    if (w) {
+        detail::sceneMutex(w).unlock();
+        update();
+    }
     notifyPropertyChanged("transformOrigin");
 }
 
 void Item::setClip(bool clip) {
     if (d->clip == clip)
         return;
+    Window* w = window();
+    if (w)
+        detail::sceneMutex(w).lock();
     d->clip = clip;
-    update();
+    if (w) {
+        detail::sceneMutex(w).unlock();
+        update();
+    }
     notifyPropertyChanged("clip");
 }
 
 void Item::setZ(float z) {
     if (d->z == z)
         return;
+    Window* w = window();
+    if (w)
+        detail::sceneMutex(w).lock();
     d->z = z;
-    update();
+    if (w) {
+        detail::sceneMutex(w).unlock();
+        update();
+    }
     notifyPropertyChanged("z");
 }
 

@@ -159,6 +159,7 @@ public:
 
 protected:
     void onStart() override;
+    void onStop() override;
 
 private:
     class Impl;

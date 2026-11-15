@@ -46,6 +46,8 @@ public:
     WaylandOutputMode currentMode{1280, 720, 60000};
     std::vector<WaylandOutputMode> modes;
     wl_global* global = nullptr;
+    /// wl_output resources the clients bound (see WaylandCompositor::removeOutput).
+    std::vector<wl_resource*> resources;
 };
 
 class WaylandCompositor::Impl {
@@ -112,6 +114,27 @@ void WaylandClient::addResource(wl_resource* resource) {
     d->resources.emplace_back(resource);
 }
 
+void WaylandBufferRef::Impl::destroyed(wl_listener* listener, void*) {
+    Impl* impl = wl_container_of(listener, impl, destroyListener);
+    impl->buffer = nullptr;
+    // libwayland unlinks a destroy listener itself when it fires.
+    impl->watching = false;
+}
+
+WaylandBufferRef::Impl::~Impl() {
+    if (watching && buffer)
+        wl_list_remove(&destroyListener.link);
+}
+
+WaylandBufferRef::WaylandBufferRef(wl_resource* buffer) : d(std::make_shared<Impl>()) {
+    if (!buffer)
+        return;
+    d->buffer = buffer;
+    d->destroyListener.notify = &Impl::destroyed;
+    wl_resource_add_destroy_listener(buffer, &d->destroyListener);
+    d->watching = true;
+}
+
 bool WaylandBufferRef::isShm() const { return d->buffer && wl_shm_buffer_get(d->buffer); }
 Size WaylandBufferRef::size() const {
     wl_shm_buffer* shm = d->buffer ? wl_shm_buffer_get(d->buffer) : nullptr;
@@ -130,6 +153,32 @@ namespace {
 
 void outputRelease(wl_client*, wl_resource* resource) { wl_resource_destroy(resource); }
 const struct wl_output_interface outputImplementation = {outputRelease};
+
+} // namespace
+
+/// Bookkeeping of the wl_output resources a client bound, so that removing an
+/// output can clear their user data before the WaylandOutput is deleted.
+/// WaylandOutput::Impl is private, hence the friend declaration in core.hpp.
+struct OutputBindings {
+    static void add(WaylandOutput* output, wl_resource* resource) {
+        if (output && resource)
+            output->d->resources.push_back(resource);
+    }
+    static void remove(WaylandOutput* output, wl_resource* resource) {
+        if (!output)
+            return;
+        auto& resources = output->d->resources;
+        resources.erase(std::remove(resources.begin(), resources.end(), resource),
+                        resources.end());
+    }
+};
+
+namespace {
+
+void destroyOutputBinding(wl_resource* resource) {
+    OutputBindings::remove(static_cast<WaylandOutput*>(wl_resource_get_user_data(resource)),
+                           resource);
+}
 
 void sendOutputDescription(WaylandOutput* output, wl_resource* resource, int version) {
     // Physical size in millimetres, not the pixel mode: a client derives its
@@ -157,7 +206,9 @@ void bindOutput(wl_client* client, void* data, std::uint32_t version, std::uint3
     const int bounded = std::min(4u, version);
     wl_resource* resource = wl_resource_create(client, &wl_output_interface, bounded, id);
     if (!resource) { wl_client_post_no_memory(client); return; }
-    wl_resource_set_implementation(resource, &outputImplementation, output, nullptr);
+    wl_resource_set_implementation(resource, &outputImplementation, output,
+                                   destroyOutputBinding);
+    OutputBindings::add(output, resource);
     sendOutputDescription(output, resource, bounded);
 }
 
@@ -213,6 +264,11 @@ void WaylandOutput::sendEnter(wl_resource* surfaceResource) const {
 void WaylandOutput::sendLeave(wl_resource* surfaceResource) const {
     if (wl_resource* output = outputResourceFor(surfaceResource, this))
         wl_surface_send_leave(surfaceResource, output);
+}
+void WaylandOutput::detachResources() {
+    for (wl_resource* resource : d->resources)
+        wl_resource_set_user_data(resource, nullptr);
+    d->resources.clear();
 }
 WaylandOutput::~WaylandOutput() { if (d->global) wl_global_destroy(d->global); }
 bool WaylandOutput::initialize(WaylandCompositor* compositor) {
@@ -388,6 +444,24 @@ WaylandOutput* WaylandCompositor::addOutput(Size size) {
     if (!output->initialize(this)) { delete output; return nullptr; }
     d->outputs.push_back(output);
     return output;
+}
+
+void WaylandCompositor::removeOutput(WaylandOutput* output) {
+    if (!output)
+        return;
+    auto& outputs = d->outputs;
+    outputs.erase(std::remove(outputs.begin(), outputs.end(), output), outputs.end());
+    // The surfaces must not remember the pointer: a later output may be
+    // allocated at the same address and would then be skipped by
+    // announceOutputs().
+    for (WaylandSurface* surface : d->surfaces)
+        surface->forgetOutput(output);
+    // A client keeps its wl_output resource, but the object behind it is going
+    // away; clearing the user data makes a late request a no-op instead of a
+    // use-after-free. The protocol has no "output removed" event — the client
+    // notices the removed global.
+    output->detachResources();
+    delete output;
 }
 } // namespace Compositor
 } // namespace Wayland

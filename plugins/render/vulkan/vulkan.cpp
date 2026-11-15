@@ -368,7 +368,11 @@ namespace {
 
 VkFormat vkFormatFromFourcc(std::uint32_t fourcc) {
     switch (fourcc) {
+    // The VkFormat names the memory order, which is why the DRM names differ:
+    // DRM_FORMAT_ABGR8888 stores R,G,B,A and DRM_FORMAT_ARGB8888 stores B,G,R,A.
     case Fourcc::Abgr8: return VK_FORMAT_R8G8B8A8_UNORM;
+    case Fourcc::Argb8:
+    case Fourcc::Xrgb8: return VK_FORMAT_B8G8R8A8_UNORM;
     case Fourcc::Nv12:  return VK_FORMAT_G8_B8R8_2PLANE_420_UNORM;
     case Fourcc::P010:
         return VK_FORMAT_G10X6_B10X6R10X6_2PLANE_420_UNORM_3PACK16;

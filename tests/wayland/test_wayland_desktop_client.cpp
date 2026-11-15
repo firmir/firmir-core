@@ -470,6 +470,9 @@ namespace {
 /// Colour the frame client paints: 0xAARRGGBB, i.e. B, G, R, A in memory for
 /// the ARGB8888 wl_shm format.
 constexpr std::uint32_t kFrameColor = 0xFF3366CCu;
+/// The same colour as a grabbed frame spells it: R, G, B, A bytes, the layout
+/// Painter::drawRgba() takes (see WaylandSurfaceGrabber::Frame).
+constexpr std::uint32_t kFrameColorRgba = 0xFFCC6633u;
 
 wl_buffer* makeColorBuffer(wl_shm* shm, wl_shm_pool** poolOut, int width, int height,
                            std::uint32_t argb) {
@@ -584,7 +587,7 @@ TEST_CASE(wayland_compositor_client_frame_reaches_painter) {
         CHECK(frame.height == 48);
         CHECK(!frame.pixels.empty());
         if (!frame.pixels.empty())
-            CHECK(frame.pixels.front() == kFrameColor);
+            CHECK(frame.pixels.front() == kFrameColorRgba);
     }
     grabbed = true;
     while (!done.load())

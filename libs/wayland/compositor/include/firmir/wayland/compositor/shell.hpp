@@ -87,6 +87,15 @@ public:
     explicit WaylandXdgPopup(Object* parent = nullptr) : WaylandShellSurface(parent) {}
     void sendConfigure(int width, int height) override;
     void sendPopupDone();
+    /// The surface the popup was created for (xdg_surface.get_popup's parent);
+    /// nullptr when unknown. A popup belongs to that window: it is stacked
+    /// relative to it and disappears with it. Not owned — the owner must clear
+    /// it when the parent surface is destroyed.
+    WaylandSurface* parentSurface() const { return m_parentSurface; }
+    void setParentSurface(WaylandSurface* surface) { m_parentSurface = surface; }
+
+private:
+    WaylandSurface* m_parentSurface = nullptr; // not owned
 };
 
 class WaylandXdgToplevel : public WaylandShellSurface {

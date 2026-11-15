@@ -100,9 +100,7 @@ private:
 class WaylandBufferRef {
 public:
     WaylandBufferRef() : d(std::make_shared<Impl>()) {}
-    explicit WaylandBufferRef(wl_resource* buffer) : d(std::make_shared<Impl>()) {
-        d->buffer = buffer;
-    }
+    explicit WaylandBufferRef(wl_resource* buffer);
     wl_resource* handle() const { return d->buffer; }
     bool valid() const { return d->buffer != nullptr; }
     bool isShm() const;
@@ -111,7 +109,19 @@ public:
     const void* data() const;
 private:
     struct Impl {
+        Impl() = default;
+        ~Impl();
+        Impl(const Impl&) = delete;
+        Impl& operator=(const Impl&) = delete;
+        /// Clears the pointer when the client destroys the wl_buffer. The
+        /// resource belongs to the client, so it can disappear while a
+        /// committed buffer is still referenced: a disconnecting client
+        /// destroys its buffers before the surface they were committed to, and
+        /// the compositor sees the surface destroy callback afterwards.
+        static void destroyed(wl_listener* listener, void* data);
         wl_resource* buffer = nullptr;
+        wl_listener destroyListener{};
+        bool watching = false;
     };
     std::shared_ptr<Impl> d;
 };
@@ -152,7 +162,18 @@ public:
     /// leaves the window blank.
     void sendEnter(wl_resource* surfaceResource) const;
     void sendLeave(wl_resource* surfaceResource) const;
+
+    /**
+     * @brief Clears the user data of every client binding and forgets them.
+     *
+     * Called by WaylandCompositor::removeOutput() right before the object is
+     * deleted: the client keeps its wl_output resource, but a late request finds
+     * no object behind it instead of a freed pointer.
+     */
+    void detachResources();
 private:
+    friend struct OutputBindings;
+
     class Impl;
     std::unique_ptr<Impl> d;
 };
@@ -170,6 +191,20 @@ public:
     void terminate();
     int dispatch(int timeoutMs = 0);
     WaylandOutput* addOutput(Size size = {1280, 720});
+    /**
+     * @brief Destroys @p output and drops it from outputs().
+     *
+     * The wl_output global goes away (so no client binds it any more and no
+     * wl_surface.enter is announced for it) and the object is deleted. Clients
+     * that already bound the output keep their resource, but its user data is
+     * cleared, so a late request cannot reach the freed object; the protocol
+     * has no "output removed" event, so a client learns about the unplug from
+     * the removed global.
+     *
+     * Send WaylandOutput::sendLeave() for the surfaces that were on the output
+     * before calling this.
+     */
+    void removeOutput(WaylandOutput* output);
     const std::vector<WaylandOutput*>& outputs() const;
     const std::vector<WaylandClient*>& clients() const;
     const std::vector<WaylandSurface*>& surfaces() const;

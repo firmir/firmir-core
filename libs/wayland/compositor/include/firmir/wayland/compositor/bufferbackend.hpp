@@ -23,6 +23,8 @@
 
 #include <firmir/wayland/compositor/core.hpp>
 
+#include <firmir/render/types.hpp>
+
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -47,9 +49,33 @@ public:
     virtual bool valid() const = 0;
     virtual int width() const = 0;
     virtual int height() const = 0;
-    /// Tightly packed ARGB8888 rows, width() pixels per row. The compositor
-    /// moves the vector out (no second copy of the frame).
+    /**
+     * @brief The buffer as a dma-buf the render device can import.
+     *
+     * Filling @p desc lets the compositor hand the client's buffer to the GPU
+     * as a texture, so the frame never passes through the CPU. The fds stay
+     * owned by this import: they are valid until the ImportedBuffer is
+     * destroyed, and a successful RenderDevice::importDmaBufTexture() keeps
+     * them alive for the texture (it duplicates them).
+     *
+     * False for a wl_shm buffer and for a backend without a GPU view; the
+     * compositor then paints pixels() instead.
+     */
+    virtual bool dmaBuf(Firmir::Render::DmaBufTextureDesc& /*desc*/) const { return false; }
+    /// Tightly packed ARGB8888 rows, width() pixels per row — the fallback for
+    /// a buffer without a dma-buf view. The compositor moves the vector out (no
+    /// second copy of the frame).
     virtual std::vector<std::uint32_t>& pixels() = 0;
+    /**
+     * @brief True when pixels() already holds the bytes the painter uploads.
+     *
+     * pixels() is documented as 0xAARRGGBB words, which the grabber swaps into
+     * the painter's R,G,B,A order — a pass over every pixel of the frame (2.4M
+     * for a fullscreen tablet window). A backend that reads its pixels straight
+     * out of GL with glReadPixels(GL_RGBA) has them in that order already and
+     * says so here, so the swap is skipped instead of performed twice.
+     */
+    virtual bool pixelsAreRgba() const { return false; }
 };
 
 /// Buffer reader of one backend.
