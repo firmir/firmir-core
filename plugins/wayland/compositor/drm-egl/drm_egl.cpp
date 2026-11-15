@@ -30,6 +30,28 @@
 #include <string>
 #include <vector>
 
+// Tokens of EGL_EXT_image_dma_buf_import (and its modifiers extension), spelled
+// out for a build sysroot that predates them. Guarding the dma-buf path with
+// #ifdef on a header macro compiles it out silently when the headers are older
+// than the driver: the compositor then copies every client frame through the
+// CPU and nothing says why. The values are fixed by the extensions, so a
+// redundant definition is harmless.
+#ifndef EGL_DMA_BUF_PLANE0_FD_EXT
+#define EGL_DMA_BUF_PLANE0_FD_EXT 0x3272
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_OFFSET_EXT
+#define EGL_DMA_BUF_PLANE0_OFFSET_EXT 0x3273
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_PITCH_EXT
+#define EGL_DMA_BUF_PLANE0_PITCH_EXT 0x3274
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT
+#define EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT 0x3443
+#endif
+#ifndef EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT
+#define EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT 0x3444
+#endif
+
 namespace {
 
 using Firmir::Wayland::Compositor::BufferBackend;
@@ -431,8 +453,12 @@ public:
     /// sampled where the scene is painted and never reaches the CPU. It cannot be
     /// done here: this backend's EGL display is not the render device's, and an
     /// EGLImage belongs to the display that created it.
+    ///
+    /// The plane queries are answered by the same EGL that advertised wl_drm to
+    /// the client. A stack that only answers the size and texture format (a
+    /// closed GL on a device) leaves this false: there is no descriptor to hand
+    /// over, and the compositor copies the frame instead.
     bool dmaBuf(Firmir::Render::DmaBufTextureDesc& desc) const override {
-#ifdef EGL_DMA_BUF_PLANE0_FD_EXT
         if (!mValid || !mBuffer)
             return false;
         EGLint textureFormat = 0;
@@ -460,7 +486,6 @@ public:
         desc.planes[0].fd = fd;
         desc.planes[0].offset = static_cast<std::uint32_t>(offset);
         desc.planes[0].stride = static_cast<std::uint32_t>(pitch);
-#ifdef EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT
         EGLint modifierLo = 0;
         EGLint modifierHi = 0;
         if (mEgl.queryAttribute(mBuffer, EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, modifierLo) &&
@@ -469,12 +494,7 @@ public:
                 (static_cast<std::uint64_t>(static_cast<std::uint32_t>(modifierHi)) << 32) |
                 static_cast<std::uint32_t>(modifierLo);
         }
-#endif
         return true;
-#else
-        (void)desc;
-        return false;
-#endif
     }
 
     /// CPU pixels of the frame, read back on the first call and cached.

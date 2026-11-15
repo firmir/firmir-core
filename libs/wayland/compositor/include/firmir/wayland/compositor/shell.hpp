@@ -64,6 +64,13 @@ public:
     WaylandSurface* popupParent() const;
     int popupX() const;
     int popupY() const;
+    /// wl_shell_surface.set_transient: the surface the client named as this
+    /// window's parent (nullptr when it named none). A transient window belongs
+    /// to that window the way a dialog belongs to the one that opened it, so
+    /// the compositor stacks it there instead of treating it as a window of its
+    /// own. Not owned: it is cleared when the parent surface is destroyed.
+    WaylandSurface* transientParent() const;
+    void setTransientParent(WaylandSurface* surface);
 
 private:
     class Impl;
@@ -120,6 +127,13 @@ public:
     /// serial the client must ack) in addition to xdg_toplevel.configure.
     WaylandXdgSurface* xdgSurface() const;
     void setXdgSurface(WaylandXdgSurface* surface);
+    /// xdg_toplevel.set_parent: the surface the client named as this window's
+    /// parent (nullptr when it named none). A dialog names the window it was
+    /// opened from; the compositor then keeps it in that window instead of
+    /// asking a window manager to place it. Not owned — the pointer is cleared
+    /// when the parent surface is destroyed.
+    WaylandSurface* parentSurface() const;
+    void setParentSurface(WaylandSurface* surface);
 private:
     class Impl;
     std::unique_ptr<Impl> d;

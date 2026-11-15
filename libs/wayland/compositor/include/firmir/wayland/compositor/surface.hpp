@@ -131,19 +131,22 @@ public:
     /// item is gone, and cannot be answered then.
     void detachSurface();
     /**
-     * @brief Moves the zero-copy texture of the painted frame out of the item.
+     * @brief Moves the texture of the painted frame out of the item.
      *
      * A compositor keeps it as the last picture of a window whose surface is
      * going away: the texture already holds the frame, so nothing is read back
      * from the client buffer (a fullscreen frame is ~10 MB of memory traffic).
-     * Empty when the client draws through wl_shm — take the frame instead.
+     * Both paths are a texture here — the import of a dma-buf and the upload of
+     * a copied frame — so this is only empty when a compositor paints without a
+     * render device; take the frame then.
      */
     std::unique_ptr<Render::RenderTexture> takeTexture();
     /**
-     * @brief Moves the frame copied out of the surface (wl_shm fallback).
+     * @brief Moves the frame copied out of the surface.
      *
      * Same purpose as takeTexture(): the picture the item already holds is
-     * reused instead of copying the buffer again while the client dies.
+     * reused instead of copying the buffer again while the client dies. Only a
+     * compositor without a render device still holds the pixels.
      */
     WaylandSurfaceGrabber::Frame takeFrame();
     /// Radius in pixels the picture is clipped to (0 = square corners). A
@@ -151,6 +154,45 @@ public:
     /// rounded corners sets this.
     float cornerRadius() const;
     void setCornerRadius(float radius);
+    /**
+     * @brief Whether a frame the zero-copy path could not deliver is copied
+     *        out of the client buffer through the CPU.
+     *
+     * A dma-buf the render device refuses (or a device that cannot sample
+     * dma-bufs at all) leaves only a CPU read of the buffer plus an upload of
+     * the pixels: ~10 MB each way per commit at panel size. No window can do
+     * that at the display rate, and a client whose frames cannot be imported
+     * asks for it on every commit — the copy is what turns one broken client
+     * into a compositor that drops every frame it draws.
+     *
+     * Off: such a window paints nothing and no pixels are allocated for it.
+     * Nothing is drawn because nothing can be: a frame that cannot be sampled
+     * as a texture has no other way to the screen.
+     *
+     * wl_shm buffers are unaffected — a texture cannot be imported for them at
+     * all, so the copy is not a fallback but the only way to draw them. The same
+     * holds for a device that cannot import client buffers at all (no dma-buf
+     * textures, or no buffer backend to read the descriptor): the switch is
+     * about frames the GPU path could have delivered, and copying is the only
+     * way such a client is seen on screen.
+     *
+     * Follows cpuFallbackEnabledByDefault() unless set on this item.
+     */
+    bool cpuFallbackEnabled() const;
+    void setCpuFallbackEnabled(bool enabled);
+    /**
+     * @brief Default cpuFallbackEnabled() for the items that do not set their
+     *        own: the whole compositor's policy.
+     *
+     * On, unless the environment variable FIRMIR_WAYLAND_CPU_FALLBACK says
+     * otherwise ("0" off, any other value on — it wins over this call, so an
+     * on-site check needs no rebuild). An embedding compositor turns it off
+     * only when its GPU path delivers every window it hosts: the copy is what
+     * keeps a client the GPU cannot sample visible, and a compositor that
+     * refuses it shows a black screen while its clients keep running.
+     */
+    static bool cpuFallbackEnabledByDefault();
+    static void setCpuFallbackEnabledByDefault(bool enabled);
     /// Emitted (no arguments) on a pointer press and when the item gains
     /// focus — the embedding compositor raises/activates its window here.
     static constexpr auto signalActivated = "activated";

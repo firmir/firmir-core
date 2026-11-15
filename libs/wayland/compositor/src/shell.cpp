@@ -39,6 +39,11 @@ public:
     WaylandSurface* popupParent = nullptr;
     int popupX = 0;
     int popupY = 0;
+    /// wl_shell_surface.set_transient: the window this one belongs to (nullptr
+    /// when the client named none). Watched, so the parent going away does not
+    /// leave a pointer to a deleted surface behind.
+    WaylandSurface* transientParent = nullptr;
+    Connection transientParentGone;
 };
 
 class WaylandXdgToplevel::Impl {
@@ -49,6 +54,10 @@ public:
     /// request has not been consumed by the compositor yet.
     bool minimizeRequest = false;
     WaylandXdgSurface* xdgSurface = nullptr;
+    /// xdg_toplevel.set_parent: the window a dialog was opened from (nullptr
+    /// when the client named none), watched like the transient parent above.
+    WaylandSurface* parentSurface = nullptr;
+    Connection parentSurfaceGone;
 };
 
 class WaylandXdgSurface::Impl {
@@ -140,6 +149,17 @@ void WaylandWlShellSurface::setPopup(WaylandSurface* parent, int x, int y) {
 WaylandSurface* WaylandWlShellSurface::popupParent() const { return d->popupParent; }
 int WaylandWlShellSurface::popupX() const { return d->popupX; }
 int WaylandWlShellSurface::popupY() const { return d->popupY; }
+WaylandSurface* WaylandWlShellSurface::transientParent() const { return d->transientParent; }
+void WaylandWlShellSurface::setTransientParent(WaylandSurface* surface) {
+    if (d->transientParent == surface)
+        return;
+    d->transientParentGone.disconnect();
+    d->transientParent = surface;
+    if (surface)
+        d->transientParentGone = surface->connect(
+            this, WaylandSurface::signalAboutToBeDestroyed,
+            [this] { d->transientParent = nullptr; });
+}
 
 WaylandXdgToplevel::WaylandXdgToplevel(Object* parent)
     : WaylandShellSurface(parent), d(std::make_unique<Impl>()) {}
@@ -229,6 +249,17 @@ void WaylandXdgToplevel::setFullscreen(bool fullscreen) {
 void WaylandXdgToplevel::setMinimized() { d->minimizeRequest = true; }
 WaylandXdgSurface* WaylandXdgToplevel::xdgSurface() const { return d->xdgSurface; }
 void WaylandXdgToplevel::setXdgSurface(WaylandXdgSurface* surface) { d->xdgSurface = surface; }
+WaylandSurface* WaylandXdgToplevel::parentSurface() const { return d->parentSurface; }
+void WaylandXdgToplevel::setParentSurface(WaylandSurface* surface) {
+    if (d->parentSurface == surface)
+        return;
+    d->parentSurfaceGone.disconnect();
+    d->parentSurface = surface;
+    if (surface)
+        d->parentSurfaceGone = surface->connect(
+            this, WaylandSurface::signalAboutToBeDestroyed,
+            [this] { d->parentSurface = nullptr; });
+}
 void WaylandXdgSurface::sendConfigure(int width, int height) {
     setSize({width, height});
     if (d->toplevel) d->toplevel->sendConfigure(width, height);
@@ -245,6 +276,18 @@ WaylandSurface* findSurface(WaylandCompositor* compositor, wl_object* object) {
     if (!compositor) return nullptr;
     for (WaylandSurface* surface : compositor->surfaces())
         if (reinterpret_cast<wl_object*>(surface->resource().handle()) == object) return surface;
+    return nullptr;
+}
+
+/// The surface behind an xdg_toplevel resource (xdg_toplevel.set_parent takes
+/// one of those, not a wl_surface).
+WaylandSurface* findToplevelSurface(WaylandXdgShell* shell, wl_object* object) {
+    if (!shell || !object) return nullptr;
+    for (WaylandShellSurface* candidate : shell->shellSurfaces()) {
+        auto* toplevel = dynamic_cast<WaylandXdgToplevel*>(candidate);
+        if (toplevel && reinterpret_cast<wl_object*>(toplevel->resource().handle()) == object)
+            return toplevel->surface();
+    }
     return nullptr;
 }
 
@@ -286,6 +329,12 @@ int legacyDispatch(const void*, void* target, std::uint32_t, const wl_message* m
         // keep the relationship and the position the client chose.
         context->surface->setPopup(
             findSurface(context->shell->compositor(), args[2].o), args[3].i, args[4].i);
+    } else if (context->surface && std::strcmp(message->name, "set_transient") == 0) {
+        // (parent wl_surface, x, y, flags): a dialog of that window — the same
+        // relationship xdg_toplevel.set_parent expresses, and the compositor
+        // needs it to keep the window in its owner's frame.
+        context->surface->setTransientParent(
+            findSurface(context->shell->compositor(), args[0].o));
     }
     return 0;
 }
@@ -419,6 +468,12 @@ struct XdgShellGlobal {
         } else if (auto* toplevel = dynamic_cast<WaylandXdgToplevel*>(context->object)) {
             if (std::strcmp(name, "set_title") == 0)
                 toplevel->setTitle(args[0].s ? args[0].s : "");
+            else if (std::strcmp(name, "set_parent") == 0)
+                // A dialog names the window it was opened from: the compositor
+                // keeps it in that window instead of window-managing it on its
+                // own. A null parent (the window became a window of its own) is
+                // the same call with no surface.
+                toplevel->setParentSurface(findToplevelSurface(shell, args[0].o));
             else if (std::strcmp(name, "set_maximized") == 0) toplevel->setMaximized(true);
             else if (std::strcmp(name, "unset_maximized") == 0) toplevel->setMaximized(false);
             else if (std::strcmp(name, "set_fullscreen") == 0) toplevel->setFullscreen(true);

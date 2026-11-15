@@ -6,6 +6,7 @@
 #include <wayland-server-protocol.h>
 
 #include <memory>
+#include <shared_mutex>
 #include <string>
 #include <vector>
 
@@ -107,6 +108,21 @@ public:
     Size size() const;
     int stride() const;
     const void* data() const;
+    /**
+     * @brief Keeps the pixels of the buffer readable for the guard's lifetime.
+     *
+     * The memory of a wl_shm buffer is the client's shared mapping: it is
+     * unmapped as soon as the client destroys the wl_buffer, which a
+     * disconnecting client does on the wayland thread — possibly while the
+     * render thread is still copying the last frame out of it. A reader holds
+     * this lock across the copy and the destruction waits for it, so a copy
+     * never runs against a mapping that is going away.
+     *
+     * Hold one per copy, not one nested inside another: the lock is shared, but
+     * a thread that already holds it blocks on a second acquisition as soon as a
+     * destruction is waiting.
+     */
+    std::shared_lock<std::shared_mutex> readLock() const;
 private:
     struct Impl {
         Impl() = default;
@@ -122,6 +138,11 @@ private:
         wl_resource* buffer = nullptr;
         wl_listener destroyListener{};
         bool watching = false;
+        /// See readLock(): readers share it, destroyed() takes it exclusively
+        /// before the mapping is unmapped (libwayland emits the destroy
+        /// listeners before the interface destroy runs, and that is what
+        /// unmaps the pool).
+        std::shared_mutex accessMutex;
     };
     std::shared_ptr<Impl> d;
 };

@@ -236,6 +236,52 @@ TEST_CASE(wayland_gui_item_corner_radius) {
     CHECK_EQ(item.cornerRadius(), 0.0f);
 }
 
+// Copying a frame the GPU could not import is a per-commit CPU cost the whole
+// compositor pays for: an item either does it or is left empty, and a compositor
+// sets the policy once for all of its windows.
+TEST_CASE(wayland_gui_item_cpu_fallback) {
+    using namespace Wayland::Compositor;
+    // Nothing was decided: a compositor that can copy frames keeps doing it.
+    ::unsetenv("FIRMIR_WAYLAND_CPU_FALLBACK");
+    const bool savedDefault = WaylandGuiItem::cpuFallbackEnabledByDefault();
+    WaylandGuiItem::setCpuFallbackEnabledByDefault(true);
+    CHECK(WaylandGuiItem::cpuFallbackEnabledByDefault());
+    WaylandGuiItem item;
+    CHECK(item.cpuFallbackEnabled());
+
+    // A window can opt out on its own, and the neighbouring window is not
+    // affected by that.
+    item.setCpuFallbackEnabled(false);
+    CHECK(!item.cpuFallbackEnabled());
+    WaylandGuiItem following;
+    CHECK(following.cpuFallbackEnabled());
+
+    // A compositor that turns the copies off does it once, for every window:
+    // the items that never decided follow the default, including the ones
+    // created afterwards.
+    WaylandGuiItem::setCpuFallbackEnabledByDefault(false);
+    CHECK(!WaylandGuiItem::cpuFallbackEnabledByDefault());
+    CHECK(!following.cpuFallbackEnabled());
+    CHECK(!item.cpuFallbackEnabled());
+    WaylandGuiItem later;
+    CHECK(!later.cpuFallbackEnabled());
+
+    // The process-wide switch is the environment variable: an on-site check
+    // does not need a rebuild, and it wins over the programmatic default.
+    ::setenv("FIRMIR_WAYLAND_CPU_FALLBACK", "1", 1);
+    CHECK(WaylandGuiItem::cpuFallbackEnabledByDefault());
+    CHECK(following.cpuFallbackEnabled());
+    ::setenv("FIRMIR_WAYLAND_CPU_FALLBACK", "0", 1);
+    CHECK(!WaylandGuiItem::cpuFallbackEnabledByDefault());
+    CHECK(!following.cpuFallbackEnabled());
+    // A window that was told explicitly keeps its own answer.
+    item.setCpuFallbackEnabled(true);
+    CHECK(item.cpuFallbackEnabled());
+
+    ::unsetenv("FIRMIR_WAYLAND_CPU_FALLBACK");
+    WaylandGuiItem::setCpuFallbackEnabledByDefault(savedDefault);
+    CHECK(following.cpuFallbackEnabled());
+}
 
 // WaylandBufferRef plus the compositor's buffer backend subsystem: the plugin
 // list is what selects drm_egl over shm, so pin its order and the file names.
@@ -406,6 +452,135 @@ TEST_CASE(wayland_disconnected_client_is_forgotten) {
     CHECK(compositor.clients().empty());
     CHECK(compositor.surfaces().empty());
     CHECK(legacy->shellSurfaces().empty());
+}
+
+// A dialog is a window that names the one it was opened from: xdg_toplevel.
+// set_parent for the current shell, wl_shell_surface.set_transient for the
+// older one. The compositor is told which surface that is, so it can keep the
+// window inside its owner instead of window-managing it on its own, and the
+// pointer is dropped when the parent surface goes away.
+TEST_CASE(wayland_toplevel_parent_surfaces) {
+    using namespace Wayland::Compositor;
+    SocketEnvironmentGuard guard;
+    resetSocketDir();
+    ::setenv("FIRMIR_WAYLAND_SOCKET_DIR", kTestSocketDir, 1);
+
+    WaylandCompositor compositor;
+    CHECK(compositor.create());
+    auto* xdgShell = new WaylandXdgShell(&compositor);
+    CHECK(xdgShell->initialize(&compositor));
+    auto* legacyShell = new WaylandWlShell(&compositor);
+    CHECK(legacyShell->initialize(&compositor));
+    const std::string socket = compositor.addSocketAuto();
+    CHECK(!socket.empty());
+    if (socket.empty())
+        return;
+
+    const auto flushToServer = [&] {
+        for (int round = 0; round < 4; ++round)
+            compositor.dispatch(5);
+        if (compositor.display())
+            compositor.display()->flushClients();
+    };
+
+    Wayland::Client::Display display(socket.c_str());
+    CHECK(display.valid());
+    if (!display.valid())
+        return;
+    auto registry = display.createRegistry();
+    std::uint32_t compositorName = 0;
+    std::uint32_t xdgName = 0;
+    std::uint32_t shellName = 0;
+    registry->setGlobalHandler([&](std::uint32_t name, const char* interface, std::uint32_t) {
+        if (std::strcmp(interface, wl_compositor_interface.name) == 0)
+            compositorName = name;
+        else if (std::strcmp(interface, xdg_wm_base_interface.name) == 0)
+            xdgName = name;
+        else if (std::strcmp(interface, wl_shell_interface.name) == 0)
+            shellName = name;
+    });
+    display.flush();
+    flushToServer();
+    display.dispatch();
+    CHECK(compositorName != 0);
+    CHECK(xdgName != 0);
+    CHECK(shellName != 0);
+    if (!compositorName || !xdgName || !shellName)
+        return;
+
+    auto clientCompositor = Wayland::Client::Compositor::bind(*registry, compositorName, 4);
+
+    // xdg: a dialog of another window.
+    auto wmBase = Wayland::Client::XdgWmBase::bind(*registry, xdgName, 1);
+    auto ownerSurface = clientCompositor.createSurface();
+    auto ownerXdg = wmBase.getXdgSurface(ownerSurface.handle());
+    auto ownerToplevel = ownerXdg.getToplevel();
+    ownerToplevel.setTitle("owner");
+    auto dialogSurface = clientCompositor.createSurface();
+    auto dialogXdg = wmBase.getXdgSurface(dialogSurface.handle());
+    auto dialogToplevel = dialogXdg.getToplevel();
+    dialogToplevel.setTitle("dialog");
+    dialogToplevel.setParent(ownerToplevel.handle());
+    display.flush();
+    flushToServer();
+
+    WaylandXdgToplevel* owner = nullptr;
+    WaylandXdgToplevel* dialog = nullptr;
+    for (WaylandShellSurface* candidate : xdgShell->shellSurfaces()) {
+        auto* toplevel = dynamic_cast<WaylandXdgToplevel*>(candidate);
+        if (!toplevel)
+            continue;
+        if (toplevel->title() == "owner")
+            owner = toplevel;
+        else if (toplevel->title() == "dialog")
+            dialog = toplevel;
+    }
+    CHECK(owner != nullptr);
+    CHECK(dialog != nullptr);
+    if (!owner || !dialog)
+        return;
+    CHECK(owner->parentSurface() == nullptr);
+    CHECK(dialog->parentSurface() == owner->surface());
+
+    // The older shell says the same thing with set_transient.
+    auto legacy = Wayland::Client::Shell::bind(*registry, shellName, 1);
+    auto legacyOwnerSurface = clientCompositor.createSurface();
+    auto legacyOwner = legacy.getShellSurface(legacyOwnerSurface.handle());
+    legacyOwner.setToplevel();
+    legacyOwner.setTitle("legacy owner");
+    auto legacyDialogSurface = clientCompositor.createSurface();
+    auto legacyDialog = legacy.getShellSurface(legacyDialogSurface.handle());
+    legacyDialog.setTitle("legacy dialog");
+    legacyDialog.setTransient(legacyOwnerSurface.handle(), 0, 0, 0);
+    display.flush();
+    flushToServer();
+
+    WaylandWlShellSurface* legacyOwnerObject = nullptr;
+    WaylandWlShellSurface* legacyDialogObject = nullptr;
+    for (WaylandShellSurface* candidate : legacyShell->shellSurfaces()) {
+        auto* shellSurface = dynamic_cast<WaylandWlShellSurface*>(candidate);
+        if (!shellSurface)
+            continue;
+        if (shellSurface->title() == "legacy owner")
+            legacyOwnerObject = shellSurface;
+        else if (shellSurface->title() == "legacy dialog")
+            legacyDialogObject = shellSurface;
+    }
+    CHECK(legacyOwnerObject != nullptr);
+    CHECK(legacyDialogObject != nullptr);
+    if (!legacyOwnerObject || !legacyDialogObject)
+        return;
+    CHECK(legacyDialogObject->transientParent() == legacyOwnerObject->surface());
+    CHECK(legacyOwnerObject->transientParent() == nullptr);
+
+    // The parent's surface going away clears the pointer: the compositor is
+    // never handed a surface that no longer exists.
+    ownerToplevel.destroy();
+    ownerXdg.destroy();
+    ownerSurface.destroy();
+    display.flush();
+    flushToServer();
+    CHECK(dialog->parentSurface() == nullptr);
 }
 
 // End to end: the loader dlopen()s the shm client backend, the plugin allocates

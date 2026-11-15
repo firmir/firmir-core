@@ -3,6 +3,7 @@
 #include <firmir/wayland/compositor/surface.hpp>
 #include <wayland-server.h>
 #include <algorithm>
+#include <mutex>
 
 namespace Firmir {
 namespace Wayland {
@@ -116,9 +117,18 @@ void WaylandClient::addResource(wl_resource* resource) {
 
 void WaylandBufferRef::Impl::destroyed(wl_listener* listener, void*) {
     Impl* impl = wl_container_of(listener, impl, destroyListener);
+    // The pixels of a wl_shm buffer live in the client's mapping and libwayland
+    // unmaps the pool right after this returns: wait for a copy that is in
+    // flight, or it would read memory that is gone (a client that disconnects
+    // destroys its buffers while the render thread paints the last frame).
+    std::unique_lock<std::shared_mutex> waitForReaders(impl->accessMutex);
     impl->buffer = nullptr;
     // libwayland unlinks a destroy listener itself when it fires.
     impl->watching = false;
+}
+
+std::shared_lock<std::shared_mutex> WaylandBufferRef::readLock() const {
+    return std::shared_lock<std::shared_mutex>(d->accessMutex);
 }
 
 WaylandBufferRef::Impl::~Impl() {

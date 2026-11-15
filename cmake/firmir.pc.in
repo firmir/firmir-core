@@ -1,6 +1,8 @@
 # Relocatable: the prefix is derived from the .pc file's own location, so an
-# install tree can be moved (or staged with --prefix/DESTDIR) freely.
-prefix=${pcfiledir}/../..
+# install tree can be moved (or staged with --prefix/DESTDIR) freely. The number
+# of levels to step up depends on the library directory the file was installed
+# into (lib/, lib64/, lib/<triplet>/), so it is emitted by the build.
+prefix=${pcfiledir}/@FIRMIR_PC_PREFIX_UP@
 exec_prefix=${prefix}
 libdir=${prefix}/@FIRMIR_INSTALL_LIBDIR@
 includedir=${prefix}/@FIRMIR_INSTALL_INCLUDEDIR@

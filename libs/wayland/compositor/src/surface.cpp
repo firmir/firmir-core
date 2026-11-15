@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <shared_mutex>
 #include <vector>
 
 namespace Firmir {
@@ -99,6 +100,30 @@ void dumpFrame(const WaylandBufferRef& buffer,
                  buffer.isShm() ? "wl_shm" : "dma-buf (wl_drm)");
 }
 
+/**
+ * @brief Process-wide default of WaylandGuiItem::cpuFallbackEnabled().
+ *
+ * A copy per commit is the right default: a compositor that cannot sample the
+ * client's buffer still shows something. An embedding compositor that runs on a
+ * device where the import never works can turn it off (firmir-compositor2 keeps
+ * it on for exactly that reason), and FIRMIR_WAYLAND_CPU_FALLBACK overrides
+ * both ways — "0" off, anything else on — the escape hatch for an on-site check
+ * without a rebuild.
+ */
+bool& cpuFallbackDefault() {
+    static bool enabled = true;
+    return enabled;
+}
+
+bool cpuFallbackPolicy() {
+    // Read on every use: the variable is a debugging switch, and a paint is
+    // nowhere near cheap enough for one getenv() to matter.
+    const char* value = std::getenv("FIRMIR_WAYLAND_CPU_FALLBACK");
+    if (value)
+        return std::strcmp(value, "0") != 0;
+    return cpuFallbackDefault();
+}
+
 /// Gui::MouseEvent button (1/2/3) -> evdev button code.
 std::uint32_t linuxButton(int button) {
     switch (button) {
@@ -160,8 +185,21 @@ public:
     /// rate — for a fullscreen 1200x2000 window that is ~10 MB per frame — and
     /// re-upload it, holding the scene lock long enough to starve the GUI
     /// thread (input stops being dispatched while a window is dragged or
-    /// animated).
+    /// animated). The pixels only exist while there is no render device to
+    /// upload them to: otherwise the copy lives in `copied` below and the frame
+    /// itself is dropped as soon as it has been uploaded.
     WaylandSurfaceGrabber::Frame frame;
+    /// The copied frame as this item's own texture. Holding it here (instead of
+    /// letting the painter cache the pixels) is what lets the frame's pixels go:
+    /// a window would otherwise keep the frame and a texture of it, ~10 MB each
+    /// for a fullscreen client, and a compositor hosting a dozen windows pays it
+    /// a dozen times.
+    std::unique_ptr<Render::RenderTexture> copied;
+    /// Device `copied` belongs to (a texture of another device cannot be used).
+    Render::RenderDevice* copyDevice = nullptr;
+    /// Size of `copied`, which outlives the pixels it was uploaded from.
+    int copyWidth = 0;
+    int copyHeight = 0;
     std::uint64_t frameSerial = 0;
     WaylandSurface* frameSurface = nullptr;
     /// Zero-copy imports of the client's buffers, one per wl_buffer the window
@@ -169,28 +207,32 @@ public:
     /// a client draws into a small set of buffers in rotation, so the texture
     /// (and its EGLImage) is created once per buffer instead of once per
     /// commit, and a swapchain that comes around again finds its texture. An
-    /// entry with no texture remembers a buffer the import failed for, so the
-    /// attempt is not repeated every frame. The CPU frame above is only filled
-    /// for wl_shm clients and for devices without dma-buf import.
+    /// entry with no texture remembers a buffer the import failed for: the
+    /// attempt is repeated when the buffer is committed again, not on every
+    /// painted frame. The CPU frame above is only filled for wl_shm clients
+    /// and — when cpuFallbackEnabled() allows it — for the dma-bufs the import
+    /// failed for.
     struct ImportedBuffer {
         WaylandBufferRef buffer;
         std::unique_ptr<Render::RenderTexture> texture;
         std::uint64_t lastUsed = 0;
+        /// Commit the import was last attempted for (see paint()).
+        std::uint64_t triedSerial = 0;
     };
     std::vector<ImportedBuffer> imports;
     /// Device the imports above were made on: a texture of a different device
     /// cannot be sampled by this one.
     Render::RenderDevice* importDevice = nullptr;
     std::uint64_t importClock = 0;
-    /// A blank window is reported once: repeating the same line every frame
-    /// would hide the rest of the log.
-    bool reportedEmptyFrame = false;
     /// FIRMIR_WAYLAND_DUMP wrote this surface's first frame already.
     bool dumped = false;
-    /// The copy path was logged once for this window.
-    bool reportedCopy = false;
     /// Picture clipping radius in pixels (see setCornerRadius()).
     float cornerRadius = 0.0f;
+    /// Whether a frame the zero-copy path could not deliver is copied through
+    /// the CPU (see cpuFallbackEnabled()), and whether that is this item's own
+    /// decision or the process default's.
+    bool cpuFallback = true;
+    bool cpuFallbackSet = false;
 };
 
 class WaylandGuiShellSurfaceItem::Impl {
@@ -305,6 +347,10 @@ WaylandSurfaceGrabber::Frame WaylandSurfaceGrabber::grab(WaylandSurface* surface
             std::fprintf(stderr, "firmir-wayland-surface: grab: no buffer committed yet\n");
         return frame;
     }
+    // The client may destroy the buffer while it is being read — and take the
+    // memory of a wl_shm buffer with it. The guard makes the destruction wait
+    // for the copy below (see WaylandBufferRef::readLock()).
+    const std::shared_lock<std::shared_mutex> readable = buffer.readLock();
     // A backend plugin reads the buffer (an EGL import for GPU clients, a
     // mapping for wl_shm). Without one, wl_shm buffers are read here so the
     // library still works in a tree that has no plugins installed.
@@ -394,23 +440,54 @@ std::unique_ptr<Render::RenderTexture> WaylandSurfaceGrabber::importTexture(
     }();
     if (!zeroCopy)
         return nullptr;
-    if (!surface || !device || !device->supportsDmaBufTextures())
+    // Every silent return below is a trace, not a report: the caller copies the
+    // frame instead, so a window stays visible either way. With
+    // FIRMIR_WAYLAND_DEBUG=1 the line names the step that could not deliver a
+    // texture, which is what tells a format/modifier problem (the render device
+    // refuses the descriptor) from a descriptor one (the backend has none).
+    if (!surface || !device || !device->supportsDmaBufTextures()) {
+        if (debugEnabled())
+            std::fprintf(stderr,
+                         "firmir-wayland-surface: importTexture: the render device cannot "
+                         "import dma-buf textures; the frame is copied instead\n");
         return nullptr;
+    }
     BufferBackend* backend = BufferBackends::selected();
-    if (!backend)
+    if (!backend) {
+        if (debugEnabled())
+            std::fprintf(stderr,
+                         "firmir-wayland-surface: importTexture: no buffer backend reads a "
+                         "client frame as a dma-buf; the frame is copied instead\n");
         return nullptr;
+    }
     // Same lock as grab(): the client cannot replace the buffer under the
     // import, and commit() releases the old one only afterwards.
     std::lock_guard<std::mutex> bufferLock(surface->d->bufferMutex);
     const WaylandBufferRef buffer = surface->d->buffer;
     if (!buffer.valid() || buffer.isShm())
         return nullptr;
+    // The client can destroy the buffer while its planes are being imported;
+    // the guard makes that wait until the import is done.
+    const std::shared_lock<std::shared_mutex> readable = buffer.readLock();
     std::unique_ptr<ImportedBuffer> imported = backend->import(buffer);
-    if (!imported || !imported->valid())
+    if (!imported || !imported->valid()) {
+        if (debugEnabled())
+            std::fprintf(stderr,
+                         "firmir-wayland-surface: importTexture: backend '%s' could not read "
+                         "the client buffer; the frame is copied instead\n",
+                         backend->name());
         return nullptr;
+    }
     Render::DmaBufTextureDesc desc;
-    if (!imported->dmaBuf(desc))
+    if (!imported->dmaBuf(desc)) {
+        if (debugEnabled())
+            std::fprintf(stderr,
+                         "firmir-wayland-surface: importTexture: backend '%s' has no dma-buf "
+                         "descriptor for the %dx%d client buffer; the frame is copied "
+                         "instead\n",
+                         backend->name(), imported->width(), imported->height());
         return nullptr;
+    }
     // Still inside the import's lifetime: importDmaBufTexture() duplicates the
     // fds, so the texture outlives it.
     std::unique_ptr<Render::RenderTexture> texture(device->importDmaBufTexture(desc));
@@ -451,6 +528,22 @@ void WaylandGuiItem::setCornerRadius(float radius) {
 }
 WaylandSeat* WaylandGuiItem::seat() const { return d->seat; }
 void WaylandGuiItem::setSeat(WaylandSeat* seat) { d->seat = seat; }
+bool WaylandGuiItem::cpuFallbackEnabled() const {
+    return d->cpuFallbackSet ? d->cpuFallback : cpuFallbackPolicy();
+}
+void WaylandGuiItem::setCpuFallbackEnabled(bool enabled) {
+    if (d->cpuFallbackSet && d->cpuFallback == enabled)
+        return;
+    d->cpuFallbackSet = true;
+    d->cpuFallback = enabled;
+    // The picture changes with the next paint: either the copy starts or it
+    // stops being made.
+    update();
+}
+bool WaylandGuiItem::cpuFallbackEnabledByDefault() { return cpuFallbackPolicy(); }
+void WaylandGuiItem::setCpuFallbackEnabledByDefault(bool enabled) {
+    cpuFallbackDefault() = enabled;
+}
 void WaylandGuiItem::detachSurface() {
     // Hold the scene lock across the swap: the render thread dereferences
     // the surface while painting, and the caller may be destroying it.
@@ -616,17 +709,26 @@ WaylandView::~WaylandView() = default;
 std::unique_ptr<Render::RenderTexture> WaylandGuiItem::takeTexture() {
     // The render thread may be painting with the texture right now.
     auto lock = lockScene();
+    // The frame this item copied out of the client buffer lives in its own
+    // texture (see paint()): that is the picture the window shows, exactly like
+    // the newest import, and it is the one to keep.
+    std::unique_ptr<Render::RenderTexture> texture = std::move(d->copied);
+    d->copyDevice = nullptr;
+    d->copyWidth = 0;
+    d->copyHeight = 0;
     // The buffer the window shows now is the one used last.
     Impl::ImportedBuffer* newest = nullptr;
     for (auto& entry : d->imports)
         if (entry.texture && (!newest || entry.lastUsed > newest->lastUsed))
             newest = &entry;
-    std::unique_ptr<Render::RenderTexture> texture;
-    if (newest)
+    if (!texture && newest)
         texture = std::move(newest->texture);
     // The item paints nothing until the client commits again.
     d->imports.clear();
     d->importDevice = nullptr;
+    d->frame = WaylandSurfaceGrabber::Frame();
+    d->frameSerial = 0;
+    d->frameSurface = nullptr;
     return texture;
 }
 
@@ -688,7 +790,7 @@ void WaylandGuiItem::paint(Gui::Painter& painter) {
                 if (candidate.buffer.handle() == buffer.handle())
                     entry = &candidate;
             if (!entry) {
-                // A buffer the window has not shown before: import it once.
+                // A buffer the window has not shown before.
                 if (d->imports.size() >= kImportedBuffers)
                     d->imports.erase(std::min_element(
                         d->imports.begin(), d->imports.end(),
@@ -696,6 +798,14 @@ void WaylandGuiItem::paint(Gui::Painter& painter) {
                 d->imports.push_back(Impl::ImportedBuffer());
                 entry = &d->imports.back();
                 entry->buffer = buffer;
+            }
+            // A failed import is not final: the device may not have been ready
+            // for this buffer when it first appeared, and a client may hand the
+            // same wl_buffer over again after drawing into it. One attempt per
+            // commit — not per painted frame, which would cost an import for
+            // every frame the window is on screen.
+            if (!entry->texture && entry->triedSerial != serial) {
+                entry->triedSerial = serial;
                 entry->texture = WaylandSurfaceGrabber().importTexture(surface, device);
             }
             entry->lastUsed = ++d->importClock;
@@ -707,58 +817,120 @@ void WaylandGuiItem::paint(Gui::Painter& painter) {
                 setImplicitWidth(desc.width);
             if (desc.height > 0 && implicitHeight() != desc.height)
                 setImplicitHeight(desc.height);
-            d->reportedEmptyFrame = false;
             painter.drawRoundedTexture(
                 Gui::RectF{0, 0,
                            width() > 0 ? width() : static_cast<float>(desc.width),
                            height() > 0 ? height() : static_cast<float>(desc.height)},
                 d->cornerRadius, texture);
+            // The surface has a texture now: everything this item copied for it
+            // before (the pixels, or the texture it uploaded them into) is a
+            // second full copy of the same picture — ~10 MB for a fullscreen
+            // window — and is dropped. A surface whose import starts failing
+            // again is copied again, the next paint re-reads it.
+            d->copied.reset();
+            d->copyDevice = nullptr;
+            d->copyWidth = 0;
+            d->copyHeight = 0;
+            d->frame = WaylandSurfaceGrabber::Frame{};
+            d->frameSerial = 0;
+            d->frameSurface = nullptr;
             return;
         }
     }
 
     // wl_shm, or a device that cannot import client buffers: copy the frame out
-    // of the buffer and upload it as pixels. That is a full-frame read + upload
-    // per commit (~10 MB each way at panel size), so the window cannot hold the
-    // display rate — say so once per window, unconditionally: a log that stays
-    // silent about it leaves "the compositor is slow" unexplained.
-    if (!d->reportedCopy) {
-        d->reportedCopy = true;
-        const WaylandBufferRef buffer = surface->buffer();
-        std::fprintf(stderr,
-                     "firmir-wayland-surface: painting copied client frames (buffer: %s): "
-                     "every commit goes through the CPU; set FIRMIR_WAYLAND_DEBUG=1 for the "
-                     "reason the dma-buf import was not used\n",
-                     buffer.isShm() ? "wl_shm" : "dma-buf, the zero-copy import failed");
+    // of the buffer and upload it. That is a full-frame read + upload per commit
+    // (~10 MB each way at panel size), so the window cannot hold the display
+    // rate; the pixels are released the moment they are a texture (below).
+    const WaylandBufferRef current = surface->buffer();
+    // attach(null) or nothing attached yet: the client asked for an empty
+    // window. Nothing to draw, and the frame counts as handled.
+    if (!current.valid()) {
+        d->frameSerial = serial;
+        d->frameSurface = surface;
+        return;
+    }
+    // A buffer the zero-copy path could not deliver is not copied when the
+    // compositor says so: the copy is a full frame per commit, and a client the
+    // compositor cannot draw as a texture would otherwise cost more than the
+    // rest of the scene together. wl_shm never had a texture to import, so the
+    // copy is its normal path, not a fallback. This is not logged as a fault: a
+    // window that stays empty is the intended outcome, and only the debug trace
+    // below names the decision.
+    //
+    // The switch is about frames the GPU path *could* have delivered. A device
+    // that cannot import client buffers at all — no dma-buf textures, or no
+    // buffer backend to read the descriptor — can never draw one of them, and
+    // copying is then the only way the client is seen on screen at all; that
+    // case keeps the copy so a client is never invisible for no reason.
+    Render::RenderDevice* device = painter.device();
+    const bool couldImport = device && device->supportsDmaBufTextures() &&
+                             BufferBackends::selected();
+    if (!current.isShm() && couldImport && !cpuFallbackEnabled()) {
+        // One line per commit, not per painted frame: the window asks for this
+        // on every frame it is on screen.
+        if (debugEnabled() && (d->frameSurface != surface || serial != d->frameSerial))
+            std::fprintf(stderr,
+                         "firmir-wayland-surface: the client frame is not a texture and the "
+                         "CPU copy is off (FIRMIR_WAYLAND_CPU_FALLBACK=1 copies it); the "
+                         "window stays empty\n");
+        d->frameSerial = serial;
+        d->frameSurface = surface;
+        return;
+    }
+    // A texture of a device the painter no longer uses cannot be sampled here:
+    // the frame is read again on the current one.
+    if (d->copied && d->copyDevice != device) {
+        d->copied.reset();
+        d->copyDevice = nullptr;
+        d->frameSerial = 0;
+        d->frameSurface = nullptr;
     }
     if (d->frameSurface != surface || serial != d->frameSerial) {
         WaylandSurfaceGrabber::Frame frame =
             WaylandSurfaceGrabber().grab(surface);
-        if (frame.pixels.empty()) {
-            if (!d->reportedEmptyFrame) {
-                d->reportedEmptyFrame = true;
-                const WaylandBufferRef buffer = surface->buffer();
-                std::fprintf(stderr,
-                             "firmir-wayland-item: commit %llu produced no pixels (buffer: %s); "
-                             "the window stays empty. Set FIRMIR_WAYLAND_DEBUG=1 for the "
-                             "per-buffer trace.\n",
-                             static_cast<unsigned long long>(serial),
-                             !buffer.valid() ? "none"
-                             : buffer.isShm() ? "wl_shm"
-                                              : "not wl_shm (dma-buf / wl_drm), needs a backend "
-                                                "plugin that can read it");
-            }
-            // Remember the attempt: the surface will not change until the
-            // client commits again.
-            d->frameSerial = serial;
-            d->frameSurface = surface;
-            return;
-        }
-        d->reportedEmptyFrame = false;
-        d->frame = std::move(frame);
         d->frameSerial = serial;
         d->frameSurface = surface;
+        if (frame.pixels.empty())
+            return; // the surface will not change until the client commits again
+        d->copyWidth = frame.width;
+        d->copyHeight = frame.height;
+        d->copied.reset();
+        d->frame = WaylandSurfaceGrabber::Frame{};
+        if (device) {
+            // Uploaded here rather than through Painter::drawRgba(): the item
+            // then owns the texture and releases the pixels right away, instead
+            // of living next to them in the painter's cache — a fullscreen
+            // client frame is ~10 MB and every window would hold two copies.
+            Render::TextureDesc desc;
+            desc.width = frame.width;
+            desc.height = frame.height;
+            desc.sampler.minFilter = Render::Filter::Linear;
+            desc.sampler.magFilter = Render::Filter::Linear;
+            std::unique_ptr<Render::RenderTexture> texture(
+                device->createTexture(desc));
+            if (texture &&
+                texture->write(frame.pixels.data(),
+                               frame.pixels.size() * sizeof(std::uint32_t))) {
+                d->copied = std::move(texture);
+                d->copyDevice = device;
+            }
+        }
+        // No render device (or no texture from it): the pixels are the only
+        // copy there is, and the painter uploads them itself.
+        if (!d->copied)
+            d->frame = std::move(frame);
         ++d->generation;
+    }
+    if (d->copied) {
+        if (implicitWidth() != d->copyWidth) setImplicitWidth(d->copyWidth);
+        if (implicitHeight() != d->copyHeight) setImplicitHeight(d->copyHeight);
+        painter.drawRoundedTexture(
+            Gui::RectF{0, 0,
+                       width() > 0 ? width() : static_cast<float>(d->copyWidth),
+                       height() > 0 ? height() : static_cast<float>(d->copyHeight)},
+            d->cornerRadius, d->copied.get());
+        return;
     }
     const WaylandSurfaceGrabber::Frame& frame = d->frame;
     if (frame.pixels.empty()) return;
